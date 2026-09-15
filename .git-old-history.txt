@@ -1,0 +1,110 @@
+﻿# 旧仓库历史存档（.git 重建前记录）
+
+- 记录时间: 
+2026-09-13 11:07:06
+- 分支: main
+- HEAD: 
+2673440f2c692f04c22dbc3c9539dc5369524939
+- 提交数: 
+18
+- 远程: 无（该密钥从未被 push，影响限于本地 .git）
+- 作者身份: twilight <twilight@local>
+- .git 备份: 
+C:\Users\twilight\AppData\Local\Temp\dsh-ERSk8L\twilight-blog-git-backup-20260913-110653.zip
+
+## 重建原因
+旧 HEAD 提交 2673440 的 PENTEST-REPORT.md blob 中含一枚可用的 Resend API Key。
+该文件的脱敏改动一直停留在工作区、从未提交，且 reflog 中存在 amend 产生的悬空对象（b7d670b、3a54464），
+因此无法用 filter-repo 简单清除，改为删除 .git 重建。
+
+## 完整提交列表（旧 → 新）
+```
+bf3147ad47acca507396c51affeaeb57529fb65b 2026-09-11 chore: 建立工作区版本控制基线
+4776f82d9bcd3453205177f171af99e7c9ea27e2 2026-09-11 fix(service): 加固登录时序防护，消除媒体处理重复与静默失败
+d6e136438081f06026e536c7045b80becbf2479a 2026-09-11 refactor(web,inkui): 合并重复分页组件，修复被静默吞掉的鉴权异常
+4e13f242fe4c74154c4e9937f9a4415d53db3be4 2026-09-11 refactor: schema 抽离、清理死参数，补齐编辑器与校验约定
+49aabd5354c3d690056bd08105b4bea20b1cc104 2026-09-11 docs(web,inkui,api): 补齐三个前端子项目的中文注释
+defbcd77cc6b47c3efe36fa5529ec68d52db99d2 2026-09-11 docs(model): 补齐领域对象与仓储层注释
+f9bd5e553c287813789a54a8d5fd87a3332fa4c1 2026-09-11 docs(service): 补齐业务规则层注释
+8050d5f3f40fdc9a1f63142b60800f6993e4e55c 2026-09-11 docs(viewmodel): 补齐装配层注释
+acbbdb85b6079d5575868d52dac0e6de3b7ed4d6 2026-09-11 fix(docs): 删除注释块与声明之间的多余空行
+267db6282bc7d3079376125e27a2f9348f5204c4 2026-09-11 docs(view): 补齐路由层与 handler 层注释
+50f4452848d1b054a8b295d77d870d55974e2f07 2026-09-11 docs(search): 补齐搜索包注释
+77f0c762e0070bc7cc138ae3123d0fbed233b739 2026-09-11 docs(infra): 补齐配置/数据库/会话/中间件等基础设施层注释
+19ef95d4eb711d238801e4e8106d88fcc328cd2e 2026-09-11 docs(web,inkui,api): 补齐最后三个此前零注释的文件
+f47a7759b6d31010cb3dbf49a7f684f962bcbe11 2026-09-11 refactor(database): 移除已废弃的 admin_sessions 表
+ac1cdb4266ee5072d55926ced7f344053a8de686 2026-09-11 refactor(model): 修掉 HardDelete 的越权清理、总数与列表不同快照、装配关联的 N+1
+d46154230f5dcab031469ea9fdca6d2852367f71 2026-09-11 test(model): 加固 readTx 的守护测试，并补记 5 项反证结果
+2c28ab51b8e3a1522a178204c23030299110c166 2026-09-11 docs(handler): 修掉 moment.go 里已过时的关联清理说明
+2673440f2c692f04c22dbc3c9539dc5369524939 2026-09-12 refactor(auth): 把管理员凭据并入 users 表（is_admin），修掉管理员改密 403
+```
+
+## 工作区中相对旧 HEAD 的删除（这些内容仅存在于旧历史里）
+```
+twilight-blog-api/package-lock.json
+twilight-blog/internal/model/comment_token.go
+twilight-blog/internal/model/comment_token_repo.go
+twilight-blog/internal/view/web/assets/index-6z039m2O.js
+twilight-blog/internal/view/web/assets/index-CGeOqNHW.css
+twilight-web/frontend-refer/README.md
+twilight-web/frontend-refer/index.html
+twilight-web/frontend-refer/package.json
+twilight-web/frontend-refer/pnpm-lock.yaml
+twilight-web/frontend-refer/pnpm-workspace.yaml
+twilight-web/frontend-refer/public/favicon.svg
+twilight-web/frontend-refer/src/App.tsx
+twilight-web/frontend-refer/src/components/AdminLayout.tsx
+twilight-web/frontend-refer/src/components/CommentSection.tsx
+twilight-web/frontend-refer/src/components/Icon.tsx
+twilight-web/frontend-refer/src/components/ImageStrip.tsx
+twilight-web/frontend-refer/src/components/ModeToggle.tsx
+twilight-web/frontend-refer/src/components/PublicLayout.tsx
+twilight-web/frontend-refer/src/components/SearchOverlay.tsx
+twilight-web/frontend-refer/src/components/common.tsx
+twilight-web/frontend-refer/src/lib/api.ts
+twilight-web/frontend-refer/src/lib/dialog.tsx
+twilight-web/frontend-refer/src/lib/enhance.ts
+twilight-web/frontend-refer/src/lib/format.ts
+twilight-web/frontend-refer/src/lib/markdown.ts
+twilight-web/frontend-refer/src/lib/notify.ts
+twilight-web/frontend-refer/src/lib/rss.ts
+twilight-web/frontend-refer/src/lib/theme.tsx
+twilight-web/frontend-refer/src/lib/toast.tsx
+twilight-web/frontend-refer/src/lib/types.ts
+twilight-web/frontend-refer/src/main.tsx
+twilight-web/frontend-refer/src/pages/Install.tsx
+twilight-web/frontend-refer/src/pages/admin/AdminManage.tsx
+twilight-web/frontend-refer/src/pages/admin/CategoriesAdmin.tsx
+twilight-web/frontend-refer/src/pages/admin/Comments.tsx
+twilight-web/frontend-refer/src/pages/admin/Dashboard.tsx
+twilight-web/frontend-refer/src/pages/admin/Editor.tsx
+twilight-web/frontend-refer/src/pages/admin/Login.tsx
+twilight-web/frontend-refer/src/pages/admin/Media.tsx
+twilight-web/frontend-refer/src/pages/admin/Moments.tsx
+twilight-web/frontend-refer/src/pages/admin/Posts.tsx
+twilight-web/frontend-refer/src/pages/admin/SettingsAdmin.tsx
+twilight-web/frontend-refer/src/pages/admin/ThemeAdmin.tsx
+twilight-web/frontend-refer/src/pages/public/About.tsx
+twilight-web/frontend-refer/src/pages/public/Archive.tsx
+twilight-web/frontend-refer/src/pages/public/Categories.tsx
+twilight-web/frontend-refer/src/pages/public/GenericPage.tsx
+twilight-web/frontend-refer/src/pages/public/Guestbook.tsx
+twilight-web/frontend-refer/src/pages/public/Home.tsx
+twilight-web/frontend-refer/src/pages/public/Links.tsx
+twilight-web/frontend-refer/src/pages/public/Moments.tsx
+twilight-web/frontend-refer/src/pages/public/NotFound.tsx
+twilight-web/frontend-refer/src/pages/public/Post.tsx
+twilight-web/frontend-refer/src/pages/public/Search.tsx
+twilight-web/frontend-refer/src/pages/public/Series.tsx
+twilight-web/frontend-refer/src/pages/public/SeriesDetail.tsx
+twilight-web/frontend-refer/src/pages/public/Spec.tsx
+twilight-web/frontend-refer/src/pages/public/Tags.tsx
+twilight-web/frontend-refer/src/styles/design.css
+twilight-web/frontend-refer/src/vite-env.d.ts
+twilight-web/frontend-refer/tsconfig.app.json
+twilight-web/frontend-refer/tsconfig.json
+twilight-web/frontend-refer/tsconfig.node.json
+twilight-web/frontend-refer/vite.config.ts
+twilight-web/src/components/media/index.ts
+twilight-web/src/pages/public/Pages.tsx
+```

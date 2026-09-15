@@ -1,0 +1,110 @@
+# ===============================================================
+# twilight-blog workspace
+# 根级规则：覆盖四个子项目（Go 后端 + 两个本地包 + 前端）
+# 子项目内的 .gitignore（如 twilight-blog/.gitignore）继续各自生效
+# ===============================================================
+
+# --- Node / 前端 -------------------------------------------------
+node_modules/
+.pnpm-store/
+dist/
+build/
+coverage/
+.vite/
+*.tsbuildinfo
+
+# --- Python（build.py 等构建脚本） -------------------------------
+__pycache__/
+*.py[cod]
+
+# --- Go 构建产物 -------------------------------------------------
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/twilight-blog/main
+
+# --- Go 本地缓存（项目内 GOCACHE / GOMODCACHE） ------------------
+.gocache/
+.modcache/
+# GOPATH 也指到工作区内：默认位置的 go mod download 会写 $GOPATH/pkg/sumdb，
+# 在受限沙箱下会被拒绝。它只是缓存与工具链副本，不入库。
+.gopath/
+
+# --- Go 内嵌资源交换过程中的临时目录 -----------------------------
+# build.py 会用 staging/previous 目录做原子替换，不应入库
+/twilight-blog/internal/view/web.staging/
+/twilight-blog/internal/view/web.previous/
+
+# --- 本地配置与密钥（绝不入库） ----------------------------------
+/twilight-blog/settings.json
+dkim_private.pem
+*.key
+.env
+.env.local
+.env.*.local
+
+# --- SQLite 运行期数据 -------------------------------------------
+*.db
+*.db-shm
+*.db-wal
+
+# --- 日志 --------------------------------------------------------
+*.log
+log.txt
+
+# --- 上传媒体 / 检索索引 / 下载的二进制等运行期数据 --------------
+/twilight-blog/media/
+/twilight-blog/meilisearch-data/
+/twilight-blog/dumps/
+/twilight-blog/bin/meilisearch-*
+/twilight-blog/bin/*.exe
+
+# --- 编辑器与操作系统 -------------------------------------------
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- 本工作区的本地智能体数据（非项目源码） ----------------------
+.workbuddy/
+
+# --- 渗透测试隔离实例与探针产物（非项目源码） --------------------
+# 这些目录里含 settings.json 副本（含 password_hash）、SQLite 库、
+# Meilisearch 索引数据与测试二进制；绝不能入库。
+/.pentest-run*/
+**/.pentest/
+*.mdb
+
+# --- I2 验收（响应体 diff）的隔离实例与探针 -----------------------
+# 含两个不同版本的 main.exe 与它们各自的 blog.db / settings.json 副本。
+/.i2/
+
+# --- 第二轮渗透测试的隔离实例与探针产物（非项目源码）--------------
+# 与上面的 /.pentest-run*/ 同性质。额外注意：审计类 markdown 报告
+# （如 PENTEST-REPORT.md）不在任何忽略规则内，而它们很可能引用真实
+# 凭据——把报告摘录进本目录时务必先脱敏。
+/.pentest-hunt/
+
+# --- 第三轮渗透测试的隔离实例、探针与证据（非项目源码）------------
+# 含沙箱 settings.json / blog.db / media、构建缓存、原始日志证据
+# （evidence-log-injection.txt）。汇总报告已脱敏并放在仓库根目录，
+# 即 PENTEST-REPORT-ROUND3.md；本目录只作为工作区。
+/.pentest-round3/
+
+# --- 提交信息等一次性临时文件 ------------------------------------
+.git-commit-msg.tmp
+
+# --- AI Agent 工作目录 ---
+.claude/
+.codebuddy/
+.cursor/
+.copilot/
+.aider*
+.gemini/
+.trae/
+.windsurf/
+.continue/
+.serena/

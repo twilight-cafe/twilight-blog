@@ -1,0 +1,41 @@
+# https://editorconfig.org
+#
+# 统一各编辑器与 IDE 的基础格式设置，避免无意义的变化混进 diff。
+# 换行符由 .gitattributes 统一为 LF，此处不重复声明。
+#
+# 本文件覆盖 Go / TypeScript / Python 三种语言，各自缩进规则不同。
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Go：gofmt 强制使用制表符缩进
+[*.go]
+indent_style = tab
+indent_size = 4
+
+# TypeScript / JavaScript / JSON / YAML：2 空格
+[*.{ts,tsx,js,jsx,mjs,cjs,json,yml,yaml,css}]
+indent_size = 2
+
+# Python（build.py 等构建脚本）
+[*.py]
+indent_size = 4
+
+# Markdown：保留行尾空格（两个空格表示换行）
+[*.{md,markdown}]
+trim_trailing_whitespace = false
+
+# Makefile 必须使用制表符
+[Makefile]
+indent_style = tab
+
+# Windows 批处理需要 CRLF
+[*.{bat,cmd}]
+end_of_line = crlf

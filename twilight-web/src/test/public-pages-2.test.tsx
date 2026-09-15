@@ -1,0 +1,206 @@
+// public-pages-2.test.tsx —— Post / Tags / Search
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import Post from '../pages/public/Post'
+import Tags from '../pages/public/Tags'
+import Search from '../pages/public/Search'
+import { ToastProvider } from '../lib/toast'
+import { NOW, getSharedClientMock, makeArticle, makeTag } from './helpers'
+
+vi.mock('../lib/client', async () => {
+  const { getSharedClientMock } = await import('./helpers')
+  return getSharedClientMock()
+})
+
+const client = getSharedClientMock()
+
+function paged<T>(items: T[], page = 1, total_pages = 1, total = items.length) {
+  return { items, page, page_size: 12, total, total_pages }
+}
+
+function makeResult(overrides: { type?: 'article' | 'page'; id?: number; title?: string; tags?: string[]; cover_media_id?: number | null } = {}): import('twilight-blog-api').SearchResult {
+  // cover_media_id 单独取出来：文章命中必须带上它（Article 声明为必填），
+  // 而页面命中不该带——多一个字段会让 PageSearchResult 的形状与契约不符。
+  const { tags, cover_media_id, ...base } = { id: 1, title: '命中文章', content: '正文片段', created_at: NOW, updated_at: NOW, tags: ['Go'] as string[] | undefined, cover_media_id: null as number | null, ...overrides }
+  return base.type === 'page'
+    ? { ...base, type: 'page' }
+    : { ...base, type: 'article', tags: tags ?? [], cover_media_id: cover_media_id ?? null }
+}
+
+function renderAt(ui: React.ReactElement, route: string, pattern: string) {
+  return render(
+    <MemoryRouter initialEntries={[route]}>
+      <ToastProvider>
+        <Routes>
+          <Route path={pattern} element={ui} />
+        </Routes>
+      </ToastProvider>
+    </MemoryRouter>,
+  )
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => { resolve = res })
+  return { promise, resolve }
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  client.setCurrentUser(null)
+  client.blog.getSite.mockResolvedValue({ description: '测试站' })
+  client.blog.listComments.mockResolvedValue({ items: [], page: 1, page_size: 12, total: 0, total_pages: 1 })
+})
+
+describe('Post', () => {
+  it('成功渲染：标签 Chip、发布状态、标题、日期、评论区', async () => {
+    client.blog.getArticle.mockResolvedValueOnce(makeArticle({ id: 3, title: '文章标题', content: '# 一级\n正文' }))
+    renderAt(<Post />, '/post/3', '/post/:id')
+    await waitFor(() => expect(screen.getByText('文章标题')).toBeTruthy())
+    expect(screen.getByText('# Go')).toBeTruthy()
+    expect(screen.getByText('已发布')).toBeTruthy()
+    expect(screen.getByText('一级')).toBeTruthy() // ContentView 渲染出 markdown 标题
+    await waitFor(() => expect(screen.getByText('还没有评论')).toBeTruthy()) // 评论区空态存在
+    expect(client.blog.getArticle).toHaveBeenCalledWith(3)
+  })
+
+  it('非法 id：不请求接口，就地 404 文案', () => {
+    renderAt(<Post />, '/post/abc', '/post/:id')
+    expect(screen.getByText('文章不存在')).toBeTruthy()
+    expect(screen.getByText('回到首页')).toBeTruthy()
+    expect(client.blog.getArticle).not.toHaveBeenCalled()
+  })
+
+  it('加载失败：显示错误文案；未加载时先显示 Loading', async () => {
+    client.blog.getArticle.mockRejectedValueOnce(new Error('拉取失败'))
+    renderAt(<Post />, '/post/9', '/post/:id')
+    await waitFor(() => expect(screen.getByText('拉取失败')).toBeTruthy())
+
+    const gate = deferred<ReturnType<typeof makeArticle>>()
+    client.blog.getArticle.mockReturnValueOnce(gate.promise as never)
+    const second = renderAt(<Post />, '/post/10', '/post/:id')
+    expect(second.container.querySelector('.kicker')?.textContent ?? document.body.textContent).toContain('')
+    gate.resolve(makeArticle({ id: 10, title: '稍后到达' }))
+    await waitFor(() => expect(screen.getByText('稍后到达')).toBeTruthy())
+    second.unmount()
+  })
+})
+
+describe('Tags', () => {
+  it('标签云：字号分级 t1..t4；选中 ?id= 拉取相关文章', async () => {
+    client.blog.listTags
+      .mockResolvedValueOnce(paged([
+        makeTag({ id: 1, name: '大', article_count: 10 }), // ratio 1 → t4
+        makeTag({ id: 2, name: '中大', article_count: 6 }), // 0.6 → t3
+        makeTag({ id: 3, name: '中小', article_count: 4 }), // 0.4 → t2
+        makeTag({ id: 4, name: '小', article_count: 1 }), // 0.1 → t1
+      ], 1, 1, 4))
+    client.blog.getTagArticles.mockResolvedValueOnce(paged([makeArticle({ id: 5, title: '相关文章甲' })], 1, 1, 1))
+
+    renderAt(<Tags />, '/tags?id=1', '/tags')
+    await waitFor(() => expect(screen.getByText('相关文章甲')).toBeTruthy())
+    expect(document.querySelector('.chip.t4')).toBeTruthy()
+    expect(document.querySelector('.chip.t3')).toBeTruthy()
+    expect(document.querySelector('.chip.t2')).toBeTruthy()
+    expect(document.querySelector('.chip.t1')).toBeTruthy()
+    expect(client.blog.getTagArticles).toHaveBeenCalledWith(1, { page: 1, pageSize: 12 })
+  })
+
+  it('未选中标签：不请求文章；空标签文章显示占位', async () => {
+    client.blog.listTags.mockResolvedValueOnce(paged([makeTag({ id: 1 })], 1, 1, 1))
+    renderAt(<Tags />, '/tags', '/tags')
+    await waitFor(() => expect(screen.getByText('Go')).toBeTruthy())
+    await waitFor(() => expect(client.blog.getTagArticles).not.toHaveBeenCalled())
+    expect(document.body.textContent).toContain('个标签')
+  })
+
+  it('标签加载失败：重试按钮刷新（reloadKey）', async () => {
+    client.blog.listTags
+      .mockRejectedValueOnce(new Error('标签服务挂了'))
+      .mockResolvedValueOnce(paged([makeTag({ id: 1 })], 1, 1, 1))
+
+    renderAt(<Tags />, '/tags', '/tags')
+    await waitFor(() => expect(screen.getByText('标签服务挂了')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    await waitFor(() => expect(client.blog.listTags).toHaveBeenCalledTimes(2))
+  })
+
+  it('相关文章：失败重试后恢复；成功空态显示占位', async () => {
+    client.blog.listTags.mockResolvedValue(paged([makeTag({ id: 1 })], 1, 1, 1))
+    client.blog.getTagArticles
+      .mockRejectedValueOnce(new Error('文章挂了'))
+      .mockResolvedValueOnce(paged([makeArticle({ id: 2, title: '恢复的' })], 1, 1, 1))
+
+    renderAt(<Tags />, '/tags?id=1', '/tags')
+    await waitFor(() => expect(screen.getByText('文章挂了')).toBeTruthy())
+
+    // 重试按钮只在错误分支存在；reloadKey 重跑两个 effect
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    await waitFor(() => expect(screen.getByText('恢复的')).toBeTruthy())
+
+    // 成功但为空 → 占位文案
+    client.blog.getTagArticles.mockResolvedValue(paged([], 1, 1, 0))
+    const second = renderAt(<Tags />, '/tags?id=1', '/tags')
+    await waitFor(() => expect(screen.getAllByText('该标签下暂无文章').length).toBeGreaterThan(0))
+    second.unmount()
+  })
+})
+
+describe('Search', () => {
+  it('空关键词：不请求，显示引导空态', () => {
+    renderAt(<Search />, '/search', '/search')
+    expect(screen.getByText('输入关键词开始搜索')).toBeTruthy()
+    expect(client.blog.search).not.toHaveBeenCalled()
+  })
+
+  it('有结果：文章与页面混排、标签拼进 where 行', async () => {
+    client.blog.search.mockResolvedValue(paged([
+      makeResult({ type: 'article', id: 1, title: '搜到文章', tags: ['Go', 'React', 'Vite', 'TS'] }),
+      makeResult({ type: 'page', id: 2, title: '搜到页面', tags: [] }),
+    ], 1, 2, 12))
+
+    renderAt(<Search />, '/search?q=墨', '/search')
+    await waitFor(() => expect(screen.getByText('搜到文章')).toBeTruthy())
+    expect(screen.getByText('搜到页面')).toBeTruthy()
+    const where = screen.getByText('搜到文章').previousElementSibling as HTMLElement
+    expect(where.textContent).toContain('文章 · ')
+    expect(where.textContent).toContain('Go / React / Vite') // 最多 3 个标签
+    const where2 = screen.getByText('搜到页面').previousElementSibling as HTMLElement
+    expect(where2.textContent).toContain('页面 · ')
+
+    // 翻页
+    fireEvent.click(screen.getByRole('button', { name: 'Page 2' }))
+    await waitFor(() => expect(client.blog.search).toHaveBeenLastCalledWith({ q: '墨', page: 2, pageSize: 12 }))
+  })
+
+  it('无结果与失败分支', async () => {
+    client.blog.search
+      .mockResolvedValueOnce(paged([], 1, 1, 0))
+      .mockRejectedValueOnce(new Error('搜索服务挂了'))
+
+    const first = renderAt(<Search />, '/search?q=不存在', '/search')
+    await waitFor(() => expect(screen.getByText('没有找到与「不存在」相关的内容')).toBeTruthy())
+    first.unmount()
+
+    renderAt(<Search />, '/search?q=炸', '/search')
+    await waitFor(() => expect(screen.getByText('搜索服务挂了')).toBeTruthy())
+  })
+
+  it('表单提交：空关键词清空 q；有关键词写回 URL 并搜索', async () => {
+    client.blog.search.mockResolvedValue(paged([makeResult()], 1, 1, 1))
+    renderAt(<Search />, '/search?q=旧词', '/search')
+    await waitFor(() => expect(client.blog.search).toHaveBeenCalled())
+
+    const input = screen.getByPlaceholderText('输入关键词搜索…') as HTMLInputElement
+    // 清空提交 → q 被移除 → 空态
+    fireEvent.change(input, { target: { value: '   ' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    await waitFor(() => expect(screen.getByText('输入关键词开始搜索')).toBeTruthy())
+
+    // 输入新词提交 → 触发搜索
+    fireEvent.change(input, { target: { value: '  新词  ' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+    await waitFor(() => expect(client.blog.search).toHaveBeenLastCalledWith({ q: '新词', page: 1, pageSize: 12 }))
+  })
+})

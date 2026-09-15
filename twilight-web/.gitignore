@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output. The Vite build writes dist/, which build.py copies into the Go
+# embed directory; frontend-refer is a separate reference app with its own dist.
+dist/
+frontend-refer/dist/
+
+# Local env overrides (VITE_API_BASE etc.)
+.env
+.env.local
+.env.*.local
+
+# Editor / OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

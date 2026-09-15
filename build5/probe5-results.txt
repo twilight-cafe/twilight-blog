@@ -1,0 +1,72 @@
+=== R5 dynamic probes ===
+GET / -> 200
+install_status -> 200
+POST /install (weak pwd) -> 400
+POST /install (strong) -> 200
+POST /install replay -> 409
+login done, csrf_len=64
+--- traversal (unauth, expect 401/403/404 never 200 data) ---
+  GET /api/../api/admin/users -> 404
+  GET //api/admin/users -> 200
+  GET /./api/admin/users -> 200
+  GET /api/%2e%2e/api/admin/users -> 404
+  GET /api/admin/../admin/users -> 401
+  GET /API/admin/users -> 200
+  GET /api/admin/users/ -> 401
+  GET /api/ADMIN/users -> 404
+  GET /api/admin/users%20 -> 401
+  GET /api%2Fadmin%2Fusers -> 404
+  GET(auth) /api/../api/admin/users -> 404
+  GET(auth) //api/admin/users -> 200
+  GET(auth) /api/admin/../admin/users -> 404
+--- method abuse ---
+  TRACE /api/auth/login -> 405
+  PATCH /api/articles -> 405
+  GET /api/admin/users (auth) -> 400
+  PUT /api/articles (auth, no body) -> 405
+  DELETE /api/articles -> 405
+  OPTIONS /api/auth/login -> 204
+--- CSRF ---
+  PATCH /api/me w/o CSRF (auth) -> 403
+  PATCH /api/me wrong CSRF -> 403
+  PATCH /api/me correct CSRF, opaque Origin null -> 000000000{"message":"cross-site request rejected"}
+403
+--- weird ids ---
+  GET /api/articles/+1 -> 404
+  GET /api/articles/01 -> 404
+  GET /api/articles/1e2 -> 400
+  GET /api/articles/0 -> 400
+  GET /api/articles/-1 -> 400
+  GET /api/articles/9223372036854775807 -> 404
+  GET /api/articles/99999999999999999999 -> 400
+  GET /api/articles/%201 -> 400
+  GET /api/articles/1.0 -> 400
+--- duplicate params ---
+  page dup -> 200
+  page_size dup -> 200
+--- stored XSS probe via admin comment ---
+  created article id=1
+  comment create -> {"id":1,"author":{"type":"admin","name":"admin"},"target_type":"article","target_id":1,"content":"\u003cscript\u003ealer
+  comment read: 
+--- upload scriptable content ---
+  html upload -> 400
+  gif-with-script upload -> 413
+--- headers ---
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+--- cookie flags (login response) ---
+  Set-Cookie: tw_session=5c0fd9ccc3eee3149085e430451df35555e155f248c27e3b87b5a1475a6b2ccd; Path=/; Expires=Tue, 15 Sep 2026 07:50:31 GMT; HttpOnly; SameSite=Lax
+  Set-Cookie: tw_csrf=d47da83b48133bd61c55adca69f697966c12230ff30781e7cf2f7630749097dc; Path=/; Expires=Tue, 15 Sep 2026 07:50:31 GMT; SameSite=Lax
+--- search ---
+  search -> 200
+  search no q -> 400
+  search huge q -> 400
+--- comment target ids ---
+  target_id=+1 -> 400
+  target_id=01 -> 200
+  target_id=1e2 -> 400
+  target_id=0 -> 400
+  target_id=-1 -> 400
+  target_id=99999999999999999999 -> 400
+=== done ===

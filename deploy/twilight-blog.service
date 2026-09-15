@@ -1,0 +1,109 @@
+[Unit]
+Description=twilight-blog (Go blog engine with embedded Meilisearch)
+Documentation=https://github.com/example/twilight-blog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=twilight-blog
+Group=twilight-blog
+
+# Type=simple 必须有 ExecStart，否则单元无法启动（enable --now 直接失败）。
+# 路径对应 README 第二节的第 2 步：二进制装在系统目录、归 root 所有，
+# 服务账号只执行它、不能改写它（数据目录里的二进制会被误删/误改）。
+ExecStart=/usr/local/bin/twilight-blog
+
+# ── 工作目录：这是最关键的一行，不要改 ────────────────────────────────
+#
+# 应用把 settings.json / blog.db / log.txt / media/ / meilisearch-data/
+# 全部写成**相对于当前工作目录**的路径（见 main.go 的 settingsPath/databasePath、
+# logging.DefaultLogFile、search.DefaultDataDir）。systemd 的默认工作目录是 `/`，
+# 如果这里留空：
+#   - log.txt 打不开（/ 只读），日志静默退回 stderr；
+#   - blog.db 与 settings.json 会被**新建**出来，表现为「数据全丢了，
+#     而且 /install 重新开放」——一个任何人访问站点都能设新管理员密码的窗口。
+#
+# StateDirectory 让 systemd 自动创建 /var/lib/twilight-blog 并 chown 给上面
+# 的 User/Group，因此它同时承担了「建目录」与「权限」两件事。
+WorkingDirectory=/var/lib/twilight-blog
+StateDirectory=twilight-blog
+StateDirectoryMode=0700
+
+# ── 文件权限兜底 ─────────────────────────────────────────────────────
+#
+# 应用自己会把 blog.db（含 bcrypt 密码哈希、会话/CSRF 哈希、全部邮箱）
+# 收紧到 0600、把数据目录收到 0700（见 database.restrictDatabasePermissions），
+# 但 SQLite 是**自己**用 0644 创建库文件的，而在没有 POSIX 权限概念的文件系统上
+# 那次 chmod 会失败（只记 Warn）。UMask 是更底层、更可靠的一道：它同时覆盖
+# SQLite 后续重建的 -wal/-shm、Meilisearch 子进程写出的 LMDB 文件、
+# 以及任何将来新增的落盘文件。
+UMask=0077
+
+# ── 发信密钥注入 ─────────────────────────────────────────────────────
+#
+# mail.api_key 现在只接受环境变量引用（settings.json 里写 "env:BLOG_MAIL_API_KEY"，
+# 字面量密钥不会被写回磁盘）。把密钥放在这个文件里，不要放进 settings.json：
+#
+#   sudo install -m 0600 -o root -g root /dev/null /etc/twilight-blog.env
+#   echo 'BLOG_MAIL_API_KEY=re_你的密钥' | sudo tee /etc/twilight-blog.env
+#
+# 前面的 `-` 表示文件不存在时不报错（未配置邮件是合法状态，此时发信功能关闭）。
+EnvironmentFile=-/etc/twilight-blog.env
+
+# ── 加固 ─────────────────────────────────────────────────────────────
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# ProtectSystem=strict 会把整个文件系统挂成只读，只有下面列出的路径可写。
+# StateDirectory 已在其中，这里再显式列出是为了让「应用需要写哪些地方」一目了然：
+#   - 数据根目录（含 media/ 与 meilisearch-data/）
+#   - bin/ ：首次运行时自动下载 Meilisearch 的落点
+ReadWritePaths=/var/lib/twilight-blog
+
+# ── 进程与重启 ───────────────────────────────────────────────────────
+#
+# KillSignal 用 SIGTERM：main.go 注册了 SIGINT/SIGTERM，收到后会显式停掉
+# Meilisearch 子进程再退出。Stop() 现在也是「先 SIGTERM、给 3 秒收尾、再 SIGKILL」，
+# 而不是过去的直接强杀——Meilisearch 基于 LMDB，硬杀会让它跳过正常的落盘与释放。
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+Restart=on-failure
+RestartSec=5s
+
+# 启动期 Meilisearch 首次下载可达数百 MB，慢链路上会久一些；
+# 应用自身的就绪探测上限是 60 秒（search.waitReady）。
+TimeoutStartSec=300
+
+# 可选：给足内存余量（解压炸弹防线允许单张图约 160MB 峰值，转码并发 2 路）。
+# 按机器实际情况调整，不要照抄：
+# MemoryMax=1G
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=twilight-blog
+
+[Install]
+WantedBy=multi-user.target

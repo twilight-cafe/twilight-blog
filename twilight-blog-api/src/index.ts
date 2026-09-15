@@ -1,0 +1,61 @@
+// twilight-blog-api：博客后端 HTTP 客户端（类型定义 + 请求封装）。
+// 注意：twilight-web 通过 vite alias 直接引用本目录源码、不做预构建，
+// 因此这里导出的签名（类名、方法名、参数类型）不可随意改动，否则会破坏前端。
+export { BlogClient, createClient } from './client';
+export type { BlogClientOptions } from './client';
+export { BlogApiError, isBlogApiError } from './errors';
+export { CSRF_COOKIE_NAME, CSRF_HEADER_NAME, readCookie, readCsrfToken } from './http';
+// mediaUrl 是纯函数（media id → 站内相对地址），刻意不挂在 client 上：
+// 它不需要会话、不需要配置，也不是一次请求，挂上去只会让人以为要用实例才能拼地址。
+export { mediaUrl } from './endpoints/media';
+export type {
+  AdminAuthor,
+  Article,
+  ArticleSearchResult,
+  BatchIdsInput,
+  ChangePasswordInput,
+  Comment,
+  CommentAuthor,
+  CountResponse,
+  CreateArticleInput,
+  CreateCommentInput,
+  CreateMomentInput,
+  CreatePageInput,
+  Email,
+  EmailCodeInput,
+  InstallInput,
+  InstallStatus,
+  ListCommentsOptions,
+  LoginInput,
+  MeResponse,
+  MediaContent,
+  MediaInput,
+  MediaInputDescriptor,
+  MediaItem,
+  MediaSource,
+  MediaType,
+  MessageResponse,
+  Moment,
+  Page,
+  PageSearchResult,
+  Paginated,
+  PaginationOptions,
+  RegisterInput,
+  RenameTagInput,
+  ResetPasswordInput,
+  Role,
+  SearchOptions,
+  SearchResult,
+  SiteSettingsInput,
+  SiteSettingsResponse,
+  TargetType,
+  Tag,
+  UpdateAdminProfileInput,
+  UpdateArticleInput,
+  UpdateMomentInput,
+  UpdatePageInput,
+  UpdateProfileInput,
+  UpdateUserInput,
+  UserAuthor,
+  UserResponse,
+} from './types';

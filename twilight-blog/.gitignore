@@ -1,0 +1,45 @@
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+main
+
+# Transient directories used while swapping in freshly built embedded assets
+internal/view/web.staging/
+internal/view/web.previous/
+
+# Go build cache (when using project-local GOCACHE/GOMODCACHE)
+.gocache/
+.modcache/
+
+# Local settings and secrets
+settings.json
+dkim_private.pem
+
+# SQLite runtime data
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+log.txt
+*.log
+
+# Uploaded media
+/media/
+
+# Meilisearch runtime data
+/meilisearch-data/
+
+# Downloaded Meilisearch binary cache
+/bin/meilisearch-*
+/bin/*.exe
+
+# Editor / OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
