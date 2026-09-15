@@ -386,19 +386,27 @@ func (h *AuthHandler) ChangePassword(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// UpdateAdminProfile 对应 PUT /api/admin/profile，修改站长的展示名与（可选的）登录名。
+// UpdateAdminProfile 对应 PUT /api/admin/profile，修改站长的展示名、登录名与头像。
 //
-// 两个字段分开处理：`name` 只改前台显示，`username` 改的是登录标识。
-// 旧版把二者合成一个 admin_name，于是「换个显示名」会连带换掉登录名——
-// 本版拆开后，只改 `name` 绝不会影响下一次怎么登录。
+// 三个字段分开处理：`name` 只改前台显示，`username` 改的是登录标识，
+// `avatar_media_id` 换的是头像（三态，见 viewmodel.OptionalID：缺失=不动、
+// null=摘除、数字=换成这张）。旧版把前两者合成一个 admin_name，于是「换个显示名」
+// 会连带换掉登录名——本版拆开后，只改 `name` 绝不会影响下一次怎么登录。
 //
 // 与旧版最大的差别：写的不再是 settings.json，而是 users 表里那一行。
 // 于是「登录名会不会撞上某个访客的用户名」不再需要预检——登录名与访客用户名共用
 // 同一个部分唯一索引，数据库直接拦下，service 把它翻译成 ErrUsernameTaken。
 // 旧版那次 UsernameTakenByAccount 预检连同它要防的竞态一起删掉了。
 //
-// 也没有「先改内存、落盘失败再回滚」这一套了：唯一的状态就是数据库里的那一行，
-// 一次 UPDATE 要么成功要么什么都没变。
+// 也没有「先改内存、落盘失败再回滚」这一套了：唯一的状态就是数据库里的那一行。
+//
+// ⚠️ **写入顺序是有意的，不要调换**：先用 ValidateAvatar 预检头像，再写身份，
+// 最后写头像。原因是这个项目跑在单连接池上（SetMaxOpenConns(1)），跨仓储事务被
+// 明确禁止，因此两步写入之间没有原子性可言。把最可能被拒的一步（头像：媒体可能
+// 不存在、也可能不是图片）放在**任何写入之前**，就能保证一次 4xx 真的意味着
+// 「什么都没改」——反过来先写身份的话，用户会拿到一个错误提示，名字却已经变了。
+// 剩下的窗口只有「登录名恰好被并发占用」，那时代码返回 409 而头像已换，
+// 属于已知的、极小的不一致（见 UpdateAvatar 的说明）。
 func (h *AuthHandler) UpdateAdminProfile(c echo.Context) error {
 	var req viewmodel.AdminProfileRequest
 	if err := c.Bind(&req); err != nil {
@@ -418,28 +426,53 @@ func (h *AuthHandler) UpdateAdminProfile(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to save the new profile")
 	}
 	username := current.Username
-	if req.Username != nil {
+	if req.SetUsername() {
 		username = *req.Username
+	}
+
+	// 头像预检：只校验，不写。失败时还没动过任何一行。
+	if req.SetAvatarMediaID() {
+		if err := h.admins.ValidateAvatar(ctx, req.AvatarMediaID.Value); err != nil {
+			return adminProfileError(err)
+		}
 	}
 
 	admin, err := h.admins.UpdateIdentity(ctx, username, req.Name)
 	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrUsernameTaken):
-			logging.Warnf("[auth] refused to move the administrator login name onto another account")
-			return echo.NewHTTPError(http.StatusConflict, "username is already taken")
-		default:
-			var validationErr *service.ValidationError
-			if errors.As(err, &validationErr) {
-				return echo.NewHTTPError(http.StatusBadRequest, validationErr.Message)
-			}
-			logging.Errorf("[auth] persist administrator profile failed: %v", err)
-			return echo.NewHTTPError(http.StatusInternalServerError, "failed to save the new profile")
+		return adminProfileError(err)
+	}
+
+	if req.SetAvatarMediaID() {
+		admin, err = h.admins.UpdateAvatar(ctx, req.AvatarMediaID.Value)
+		if err != nil {
+			// 预检已经通过，这里只剩存储类错误（或极端并发下媒体被删）。
+			// 仍然按校验错误映射：对调用方来说「这张图现在不能用了」是同一件事。
+			return adminProfileError(err)
 		}
 	}
 
-	logging.Infof("[auth] administrator profile updated username_changed=%t", req.Username != nil)
+	logging.Infof("[auth] administrator profile updated username_changed=%t avatar_changed=%t",
+		req.SetUsername(), req.SetAvatarMediaID())
 	return c.JSON(http.StatusOK, h.adminMe(admin))
+}
+
+// adminProfileError 把 UpdateAdminProfile 里两步写入的错误映射成 HTTP 响应。
+//
+// 与 mapUserAuthError 分开，是因为这里只有三种结果：取值不合法（400）、
+// 登录名被占（409）、以及其余一律 500。共用一张大表会让阅读者以为这条路径
+// 也会返回 401 / 429。
+func adminProfileError(err error) error {
+	var validationErr *service.ValidationError
+	switch {
+	case errors.As(err, &validationErr):
+		return echo.NewHTTPError(http.StatusBadRequest, validationErr.Message)
+	case errors.Is(err, service.ErrUsernameTaken):
+		logging.Warnf("[auth] refused to move the administrator login name onto another account")
+		return echo.NewHTTPError(http.StatusConflict, "username is already taken")
+	default:
+		logging.Errorf("[auth] persist administrator profile failed: %v", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to save the new profile")
+	}
 }
 
 // startUserSession issues a visitor session and writes the cookies.

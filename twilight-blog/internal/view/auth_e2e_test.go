@@ -577,13 +577,21 @@ func TestCookieSessionEndToEnd(t *testing.T) {
 	t.Run("spa is served with a history fallback", func(t *testing.T) {
 		// The front end is embedded in the binary, so a stale or missing asset
 		// directory would only show up here: the index must be the built one.
+		// 外壳由 Go 模板渲染（见 index.go）：入口 chunk 与 CSS 从 Vite manifest
+		// 解析出来，文件名带内容哈希，但**不再**以 "index-" 开头——所以这里
+		// 只能断言「引用了带哈希的 /assets/ 产物」，不能断言具体前缀。
 		index := anon.call(http.MethodGet, "/", nil, nil)
 		expectStatus(t, index, http.StatusOK, "GET /")
 		if !strings.Contains(string(index.body), "<div id=\"root\">") {
 			t.Fatalf("GET / did not return the SPA shell: %s", truncate(index.body))
 		}
-		if !strings.Contains(string(index.body), "/assets/index-") {
-			t.Fatalf("the embedded index.html references no hashed bundle; rebuild the front end")
+		if !strings.Contains(string(index.body), `src="/assets/main-`) {
+			t.Fatalf("the rendered shell references no hashed entry bundle; check the manifest resolution")
+		}
+
+		// 模板注入的站点描述：爬虫不执行 JS，读到的必须是真实文案而不是空标签。
+		if !strings.Contains(string(index.body), `<meta name="description" content="`) {
+			t.Fatalf("the rendered shell carries no description meta tag")
 		}
 
 		// Client-side routes fall back to the shell...

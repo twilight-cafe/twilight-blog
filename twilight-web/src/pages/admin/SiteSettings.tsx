@@ -25,6 +25,7 @@ import {
 } from '../../lib/site'
 import { useToast } from '../../lib/toast'
 import { Loading } from '../../components/common'
+import AuthorAvatar from '../../components/AuthorAvatar'
 
 /**
  * 与后端 normalizeSiteDescription 镜像：换行/制表符折成空格，再压缩连续空白。
@@ -162,11 +163,12 @@ export default function SiteSettings() {
             <div className="set-preview-block">
               <span className="kicker">侧栏作者卡</span>
               {/* 与 PublicSidebar 的作者卡同款标记：预览要是另一套排版，
-                  它就只是在描述一个不会发生的事情。 */}
+                  它就只是在描述一个不会发生的事情。头像也是真的那一张
+                  （在「账号」页设置），这里只预览描述，不预览头像。 */}
               <div className="public-sidebar set-sidebar">
                 <div className="box">
                   <div className="author">
-                    <span className="avatar">T</span>
+                    <AuthorAvatar />
                     <div>
                       <b>Twilight</b>
                       <p>{normalized || FALLBACK_DESCRIPTION}</p>

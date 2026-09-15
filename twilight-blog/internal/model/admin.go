@@ -33,6 +33,9 @@ type AdminRepository interface {
 	// UpdateIdentity 改管理员的登录名与展示名。用户名撞上任何账号
 	// （访客或别的管理员）时返回 ErrUsernameTaken。
 	UpdateIdentity(ctx context.Context, id int64, username, nickname string, updatedAt int64) error
+	// UpdateAvatar 换掉（或摘除）管理员的头像。mediaID 为 nil 表示摘除。
+	// 头像「必须是图片、必须存在」由服务层校验，这里只负责写。
+	UpdateAvatar(ctx context.Context, id int64, mediaID *int64, updatedAt int64) error
 }
 
 // SQLiteAdminRepository 是 AdminRepository 的 SQLite 实现。
@@ -124,6 +127,27 @@ WHERE id = ? AND is_admin = 1
 			return uniqueTargetError(target)
 		}
 		return fmt.Errorf("update administrator identity: %w", err)
+	}
+	return requireAffected(res, ErrUserNotFound)
+}
+
+// UpdateAvatar 换掉（或摘除）管理员的头像。
+//
+// mediaID 为 nil 时写 NULL 而不是跳过这一列——「摘掉头像」是一个与「换成另一张」
+// 平行的意图，两者都必须能表达。用 COALESCE(?, avatar_media_id) 之类的写法会把
+// 「摘除」静默变成「不动」，用户就再也删不掉头像了（articles.cover_media_id 上
+// 踩过同一个坑）。
+//
+// `AND is_admin = 1` 与其余管理员写入一致：访客行不该被这条路径碰到。
+// 目标行不存在返回 ErrUserNotFound（而不是静默成功）。
+func (r *SQLiteAdminRepository) UpdateAvatar(ctx context.Context, id int64, mediaID *int64, updatedAt int64) error {
+	res, err := r.users.db.ExecContext(ctx, `
+UPDATE users
+SET avatar_media_id = ?, updated_at = ?
+WHERE id = ? AND is_admin = 1
+`, mediaID, updatedAt, id)
+	if err != nil {
+		return fmt.Errorf("update administrator avatar: %w", err)
 	}
 	return requireAffected(res, ErrUserNotFound)
 }

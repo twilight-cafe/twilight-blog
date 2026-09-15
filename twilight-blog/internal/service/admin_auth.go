@@ -13,6 +13,15 @@ import (
 	"blog-engine/internal/model"
 )
 
+// AdminAvatarStore 是站长头像对媒体的**最小**依赖，实现是 *MediaService。
+//
+// 只需要「按 id 查一条媒体」：头像的校验规则与文章头图完全相同（存在，且
+// media_type 是 image），不需要删除、不需要转码、不需要列表。接口留窄是有意的
+// ——站长资料不该因为「媒体还能做别的」而多出依赖。
+type AdminAvatarStore interface {
+	Get(ctx context.Context, id int64) (*model.Media, error)
+}
+
 // AdminAuth 是管理员凭据的读写入口。
 //
 // 它取代了以前散在 config 包里的那一套（IsInstalled / VerifyPassword /
@@ -25,10 +34,15 @@ import (
 // 演化出不同的下限。
 type AdminAuth struct {
 	admins model.AdminRepository
+	// media 是头像校验用的媒体查询。**允许为 nil**：CLI 的 admin 子命令只做
+	// 「建账号 / 改密码」，不涉及头像，让它去构造一个媒体目录没有意义。
+	// 真的走到头像写入路径而 media 为 nil 时，usableAvatarID 会给出明确的
+	// 校验错误，而不是空指针 panic。
+	media AdminAvatarStore
 }
 
-func NewAdminAuth(admins model.AdminRepository) *AdminAuth {
-	return &AdminAuth{admins: admins}
+func NewAdminAuth(admins model.AdminRepository, media AdminAvatarStore) *AdminAuth {
+	return &AdminAuth{admins: admins, media: media}
 }
 
 // Exists 报告博客是否已经装好，即 users 表里有没有管理员行。
@@ -76,6 +90,94 @@ func (a *AdminAuth) DisplayName(ctx context.Context) string {
 		return ""
 	}
 	return nickname
+}
+
+// AvatarMediaID 返回站长头像那张媒体的 id；没设头像（或读不到管理员行）时
+// 第二个返回值为 false。
+//
+// 用 (int64, bool) 而不是返回 nil 指针：调用方（公开的 GET /api/site）只关心
+// 「有没有」，而一个 nil 指针会诱使调用方去解引用它。
+func (a *AdminAuth) AvatarMediaID(ctx context.Context) (int64, bool) {
+	admin, err := a.admins.Get(ctx)
+	if err != nil {
+		// 未安装不算异常：那时的站点本来就没有管理员行、也就没有头像。
+		if !errors.Is(err, model.ErrUserNotFound) {
+			logging.Warnf("[admin-auth] reading the administrator avatar failed: %v", err)
+		}
+		return 0, false
+	}
+	if admin.AvatarMediaID == nil || *admin.AvatarMediaID <= 0 {
+		return 0, false
+	}
+	return *admin.AvatarMediaID, true
+}
+
+// ValidateAvatar 校验「这张媒体能不能当站长的头像」，规则与文章头图完全一致
+// （必须存在，且 media_type 是 image）。mediaID 为 nil 表示「摘除头像」，
+// 永远合法。校验失败返回 *ValidationError，由 handler 映射成 400。
+//
+// 它被单独导出，是为了让 handler 能在**任何写入之前**先跑一遍：
+// 见 handler.UpdateAdminProfile 里关于写入顺序的说明。
+func (a *AdminAuth) ValidateAvatar(ctx context.Context, mediaID *int64) error {
+	_, err := a.usableAvatarID(ctx, mediaID)
+	return err
+}
+
+// usableAvatarID 把「三态头像字段」翻译成可以直接落库的值。
+//
+// 三态由调用方（viewmodel.OptionalID）解析，这里收到的指针已经只有两态：
+// nil = 摘除，非 nil = 换成这张。因此「字段缺失」不会走到这里，
+// 也就不可能被误当成「摘除」。
+func (a *AdminAuth) usableAvatarID(ctx context.Context, mediaID *int64) (*int64, error) {
+	if mediaID == nil {
+		return nil, nil
+	}
+	if *mediaID <= 0 {
+		return nil, invalidf("avatar_media_id must be a positive integer")
+	}
+	if a.media == nil {
+		// 只有 CLI 那种不接媒体的组装才会走到这里。给校验错误而不是 panic：
+		// 这是一个「该配置不支持这个功能」的结果，不是一个程序缺陷。
+		return nil, invalidf("avatar media is not available in this configuration")
+	}
+	media, err := a.media.Get(ctx, *mediaID)
+	if err != nil {
+		if errors.Is(err, model.ErrMediaNotFound) {
+			return nil, invalidf("avatar media %d does not exist", *mediaID)
+		}
+		return nil, err
+	}
+	if media.MediaType != model.MediaTypeImage {
+		return nil, invalidf("avatar media %d is %s, but an avatar must be an image", *mediaID, media.MediaType)
+	}
+	return mediaID, nil
+}
+
+// UpdateAvatar 换掉（或摘除）站长的头像，返回更新后的管理员行。
+//
+// 与 articles.cover_media_id 一样，**引用不是所有权**：换图/摘除都只改这一列，
+// 绝不删媒体文件。媒体是硬删、无回收站，唯一会删文件的地方是媒体库里的删除操作。
+//
+// 它内部会再跑一遍 usableAvatarID：handler 为了写入顺序已经先校验过一次，
+// 但把校验留在这里，任何新调用点都不可能写进一个不存在或非图片的 id。
+// 两次校验共用同一个函数，因此不存在「两套规则各自演化」的问题。
+func (a *AdminAuth) UpdateAvatar(ctx context.Context, mediaID *int64) (*model.User, error) {
+	usable, err := a.usableAvatarID(ctx, mediaID)
+	if err != nil {
+		return nil, err
+	}
+
+	admin, err := a.admins.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.admins.UpdateAvatar(ctx, admin.ID, usable, time.Now().Unix()); err != nil {
+		return nil, err
+	}
+
+	admin.AvatarMediaID = usable
+	logging.Infof("[admin-auth] administrator avatar updated user_id=%d cleared=%t", admin.ID, usable == nil)
+	return admin, nil
 }
 
 // Verify 用 bcrypt 比对管理员密码。
@@ -240,7 +342,7 @@ func (a *AdminAuth) ChangePassword(ctx context.Context, currentPassword, newPass
 
 // AdminCredentialsStore 是 AdminAuth 面向 handler 的窄接口。
 //
-// handler 只需要这四种能力，接口写窄一点让路由层的装配更明确，也让 handler 的单测
+// handler 只需要这几种能力，接口写窄一点让路由层的装配更明确，也让 handler 的单测
 // 不必构造一整个 service。AdminAuth 直接满足它。
 type AdminCredentialsStore interface {
 	Exists(ctx context.Context) (bool, error)
@@ -251,6 +353,10 @@ type AdminCredentialsStore interface {
 	SetPassword(ctx context.Context, password string) error
 	UpdateIdentity(ctx context.Context, username, nickname string) (*model.User, error)
 	ChangePassword(ctx context.Context, currentPassword, newPassword string) (*model.User, error)
+	// 头像三件套：读（公开的站点信息用）、校验（写入前预检）、写。
+	AvatarMediaID(ctx context.Context) (int64, bool)
+	ValidateAvatar(ctx context.Context, mediaID *int64) error
+	UpdateAvatar(ctx context.Context, mediaID *int64) (*model.User, error)
 }
 
 // 编译期断言：AdminAuth 必须始终满足窄接口，否则路由装配会在运行期才炸。

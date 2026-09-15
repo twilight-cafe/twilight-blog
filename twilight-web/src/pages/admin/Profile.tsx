@@ -2,20 +2,39 @@
 // 按角色分流，但两种身份都遵循同一条铁律：**登录名与显示名是两个独立字段**，
 // 界面上必须分成两个输入框，不得互相回填——历史版本曾把它们合成一个字段，
 // 导致「改个显示名」连带改掉了登录方式。
-//   - 管理员：登录名 + 显示名可改；改密码走**与访客同一条** PUT /api/me/password
+//   - 管理员：登录名 + 显示名可改，还可以设置自己的头像（复用媒体库，见
+//     media/AvatarPicker）；改密码走**与访客同一条** PUT /api/me/password
 //     （两个角色共用下面的 PasswordCard）。这条路径曾经对管理员返回 403，
 //     于是这个卡片永远显示「修改失败」——那是后端的 bug，不是本页的问题。
 //   - 访客：用户名 + 昵称可改，邮箱只读（已验证的联系方式，仅管理员可改派）。
+//     头像只有站长有：它是侧栏作者卡上的那一张，而作者卡属于「站长」这个身份，
+//     不属于某个访客账号。
 // 每次保存后 refreshAuth() 重新拉取身份：昵称被评论表单与侧栏引用，
 // 改用户名/密码会让服务端轮换会话，本地缓存必须及时刷新。
 
 import { useState, type FormEvent } from 'react'
 import { Button, Input } from 'ink-design'
-import type { MeResponse, UserResponse } from 'twilight-blog-api'
+import { mediaUrl, type MeResponse, type UserResponse } from 'twilight-blog-api'
 import { blog, getErrorMessage, refreshAuth, setCurrentUser, useCurrentUser } from '../../lib/client'
 import { PASSWORD_RULE_TEXT, validatePassword } from '../../lib/password'
+import { refreshSiteMeta, useSiteAvatar } from '../../lib/site'
 import { NICKNAME_MAX, USERNAME_MAX, nicknameError, usernameError } from '../../lib/validate'
 import { useToast } from '../../lib/toast'
+import AvatarPicker from '../../components/media/AvatarPicker'
+
+/**
+ * 头像字段的三种状态。与 viewmodel.OptionalID 一一对应，但这里必须自己表达：
+ *   - keep   —— 没碰。字段**不进请求体**，服务端才知道「这次不动头像」；
+ *   - set    —— 换了新图，提交它的媒体 id；
+ *   - remove —— 明确要摘掉，提交显式的 null。
+ *
+ * 塌缩成 `number | null` 会同时丢掉「没碰」与「摘掉」的区别——那意味着一次
+ * 只改显示名的保存会静默删掉头像，或者用户永远摘不掉头像。
+ */
+type AvatarEdit =
+  | { kind: 'keep' }
+  | { kind: 'set'; id: number }
+  | { kind: 'remove' }
 
 /**
  * The one page every signed-in identity can open. Both roles get the same
@@ -44,7 +63,21 @@ function AdminProfile({ name, username }: { name: string; username: string }) {
   const toast = useToast()
   const [displayName, setDisplayName] = useState(name)
   const [loginName, setLoginName] = useState(username)
+  const [avatar, setAvatar] = useState<AvatarEdit>({ kind: 'keep' })
   const [busy, setBusy] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  // 已保存的那张头像来自站点设置（公开的 GET /api/site），面向前台里所有读者；
+  // 它与当前正在编辑的草稿是两回事，所以分开存。
+  const savedAvatarUrl = useSiteAvatar()
+
+  // 预览显示哪一个：优先看待保存的改动，没动过才显示服务端上那一张。
+  // mediaUrl 与头像在其他地方的地址来自同一个函数，因此这里预演的就是保存后
+  // 侧栏会显示的那张图，不会出现「预览里是这张、存下去变成另一张」。
+  const displayedAvatarUrl = avatar.kind === 'set'
+    ? mediaUrl(avatar.id)
+    : avatar.kind === 'remove' ? '' : savedAvatarUrl
+
+  const avatarChanged = avatar.kind !== 'keep'
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -70,9 +103,20 @@ function AdminProfile({ name, username }: { name: string; username: string }) {
       const me = await blog.updateAdminProfile({
         name: trimmedName,
         ...(changingLogin ? { username: trimmedLogin } : {}),
+        // 只有真的动了头像才带上这个键：它的缺席就是「不改」的意思。
+        ...(avatar.kind === 'keep' ? {} : { avatarMediaId: avatar.kind === 'set' ? avatar.id : null }),
       })
       setCurrentUser(me)
-      toast(changingLogin ? '已更新，下次登录请使用新的登录名' : '显示名称已更新')
+      setAvatar({ kind: 'keep' })
+      if (avatarChanged) {
+        // 侧栏作者卡（以及站点设置页的预览）订阅的是站点信息那份缓存，
+        // 而这条接口回的是会话身份——不主动刷新的话，用户会看到
+        // 「保存成功但头像没变」，直到下一次整页刷新。
+        await refreshSiteMeta()
+      }
+      toast(changingLogin
+        ? '已更新，下次登录请使用新的登录名'
+        : avatarChanged ? '头像已更新' : '显示名称已更新')
     } catch (error) {
       toast(getErrorMessage(error, '保存失败'))
     } finally {
@@ -89,6 +133,21 @@ function AdminProfile({ name, username }: { name: string; username: string }) {
             显示名称用于前台署名与后台侧栏；登录名只用于登录。两者互相独立，改一个不会影响另一个。
           </p>
           <div className="fld">
+            {/* 头像与显示名/登录名在业务上是三件独立的事，但它们在同一个表单里、
+                共用同一个「保存」——分开保存会让「我只想换张图」变成两次请求，
+                而其中一次的结果无法回滚另一次。 */}
+            <label>头像 Avatar</label>
+            <AvatarPicker
+              url={displayedAvatarUrl}
+              onChange={(id) => setAvatar(id === null ? { kind: 'remove' } : { kind: 'set', id })}
+              onBusyChange={setUploading}
+              disabled={busy}
+            />
+            <p className="hint" style={{ marginTop: 8 }}>
+              显示在前台侧栏的作者卡上。未设置时用首字母占位；换图或移除都只是解除引用，图片仍留在媒体库。
+            </p>
+          </div>
+          <div className="fld" style={{ marginTop: 12 }}>
             <label>显示名称 Display name</label>
             <Input variant="login" maxLength={NICKNAME_MAX} value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
           </div>
@@ -105,9 +164,12 @@ function AdminProfile({ name, username }: { name: string; username: string }) {
           <div className="act-row">
             <span className="sp" />
             <span className="set-state">
-              {changingLoginHint(displayName, name, loginName, username)}
+              {changingLoginHint(displayName, name, loginName, username, avatarChanged)}
             </span>
-            <Button primary small type="submit" disabled={busy}>{busy ? '保存中…' : '保存'}</Button>
+            {/* 上传没结束就提交会存下一张还没拿到 id 的图，所以两个状态都要挡住。 */}
+            <Button primary small type="submit" disabled={busy || uploading}>
+              {busy ? '保存中…' : '保存'}
+            </Button>
           </div>
         </div>
       </form>
@@ -126,13 +188,21 @@ function AdminProfile({ name, username }: { name: string; username: string }) {
 
 /**
  * 保存按钮左侧的状态提示。改登录名是一件「下次登录会不一样」的事，值得在按钮
- * 旁边先说清楚，而不是等按下去才从 toast 里知道。
+ * 旁边先说清楚，而不是等按下去才从 toast 里知道。头像改动同样列在这里——它是三
+ * 个字段里唯一「改了但不改就看不出来」的那个：新图要等到保存后才会上屏。
  */
-function changingLoginHint(displayName: string, currentName: string, loginName: string, currentLogin: string): string {
+function changingLoginHint(
+  displayName: string,
+  currentName: string,
+  loginName: string,
+  currentLogin: string,
+  avatarChanged: boolean,
+): string {
   const parts: string[] = []
   if (displayName.trim() !== currentName) parts.push('显示名称有改动')
   const nextLogin = loginName.trim()
   if (nextLogin !== '' && nextLogin !== currentLogin) parts.push('登录名有改动')
+  if (avatarChanged) parts.push('头像有改动')
   return parts.length > 0 ? parts.join(' · ') : '尚未修改'
 }
 

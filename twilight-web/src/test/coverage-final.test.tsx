@@ -1032,7 +1032,8 @@ describe('Profile 补缺', () => {
     const { container } = renderPlain(<Profile />)
     await waitFor(() => expect(screen.getByText('站长资料')).toBeTruthy())
     const forms = Array.from(container.querySelectorAll('form')) as HTMLFormElement[]
-    const idInputs = Array.from(forms[0].querySelectorAll('input')) as HTMLInputElement[]
+    // 排除头像选择器藏在表单里的 file input（见 media/AvatarPicker）。
+    const idInputs = Array.from(forms[0].querySelectorAll('input:not([type="file"])')) as HTMLInputElement[]
     expect(idInputs[0].value).toBe('admin') // name 缺省 → 'admin'
 
     fireEvent.change(idInputs[0], { target: { value: '  ' } })
@@ -1057,7 +1058,8 @@ describe('Profile 补缺', () => {
     const { container } = renderPlain(<Profile />)
     await waitFor(() => expect(screen.getByText('站长资料')).toBeTruthy())
     const forms = Array.from(container.querySelectorAll('form')) as HTMLFormElement[]
-    const idInputs = Array.from(forms[0].querySelectorAll('input')) as HTMLInputElement[]
+    // 同上：排除 file input。
+    const idInputs = Array.from(forms[0].querySelectorAll('input:not([type="file"])')) as HTMLInputElement[]
     expect(idInputs[1].value).toBe('') // username || '' 兜底
 
     fireEvent.change(idInputs[1], { target: { value: '1bad name' } })

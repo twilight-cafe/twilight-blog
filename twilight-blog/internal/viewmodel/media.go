@@ -23,11 +23,20 @@ type MediaResponse struct {
 	DeletedAt    *int64 `json:"deleted_at,omitempty"`
 }
 
+// MediaURL 拼出一张媒体的站内地址。
+//
+// 抽成函数是为了让「媒体地址长什么样」只有一个定义点：站点信息（站长头像）与
+// 媒体列表都用它。前端 SDK 里有一个同名的 mediaUrl（twilight-blog-api），
+// 两处必须给出同一种形状，否则头像在服务端渲染与客户端渲染下会是两个地址。
+func MediaURL(id int64) string {
+	return fmt.Sprintf("/api/media/%d", id)
+}
+
 func NewMediaResponse(media *model.Media) MediaResponse {
 	logging.Debugf("[viewmodel] NewMediaResponse called")
 	return MediaResponse{
 		ID:           media.ID,
-		URL:          fmt.Sprintf("/api/media/%d", media.ID),
+		URL:          MediaURL(media.ID),
 		OriginalName: media.OriginalName,
 		MediaType:    media.MediaType,
 		MimeType:     media.MimeType,

@@ -50,6 +50,7 @@ ELF 的 ``\\x7fELF`` + e_machine 字段。这一步几乎零成本，却能挡�
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shlex
@@ -64,6 +65,12 @@ ROOT = Path(__file__).resolve().parent
 GO_PROJECT = ROOT / "twilight-blog"
 GO_WEB_EMBED_DIR = GO_PROJECT / "internal" / "view" / "web"
 DIST_DIR = GO_PROJECT / "dist"
+
+# 前端构建的产物。**不再是 index.html**：HTML 外壳已挪到 Go 后端
+# （twilight-blog/internal/view/template/index.html），前端只产出带内容指纹的
+# JS/CSS 与这份资源清单——Go 靠清单才知道入口文件叫什么名字。
+# 详见 twilight-web/vite.config.ts 与 twilight-blog/internal/view/index.go。
+FRONTEND_MANIFEST = Path(".vite") / "manifest.json"
 
 # 旧版脚本把二进制写在 Go 项目根目录下的这个名字，仓库里多份文档
 # （HANDOFF.md、ADMIN-CREDENTIALS-HANDOFF.md）都按 `main.exe admin set-password`
@@ -268,10 +275,15 @@ def build_frontend(frontend_dir: Path) -> Path:
     build_node_project(
         frontend_dir,
         "front-end",
-        prebuilt_output=dist_dir / "index.html",
+        prebuilt_output=dist_dir / FRONTEND_MANIFEST,
     )
-    if not (dist_dir / "index.html").is_file():
-        fail(f"front-end build output not found: {dist_dir / 'index.html'}")
+    manifest = dist_dir / FRONTEND_MANIFEST
+    if not manifest.is_file():
+        fail(
+            f"front-end build output not found: {manifest}. "
+            "The Go backend reads the Vite manifest to find the hashed entry chunk; "
+            "check that build.manifest is still enabled in twilight-web/vite.config.ts."
+        )
     return dist_dir
 
 
@@ -383,10 +395,68 @@ def verify_embedded_assets(embed_dir: Path) -> None:
         )
 
 
+def verify_manifest_assets(embed_dir: Path) -> None:
+    """核对 Vite 资源清单里声明的每个产物都真的躺在嵌入目录里。
+
+    这份清单是**服务端唯一知道入口文件叫什么**的地方（外壳模板里的路径就是照它
+    拼的），所以它同时是一条比「扫描 HTML 里的引用」更硬的守卫：
+
+      - 清单本身必须存在，且必须恰好指向一个构建入口。缺入口的后果是 Go 起不来
+        （``resolveIndexAssets`` 返回错误），在构建期发现比在运行时便宜得多；
+      - 清单里每一项的 ``file`` 与 ``css`` 都必须真实存在。改动前这些引用写在
+        index.html 里，由 verify_embedded_assets 扫描；现在它们只在这里。
+
+    与 verify_embedded_assets 是**互补**的两条：那条管 CSS/JS 内部互相引用的资源
+    （字体、动态分片），这条管「入口本身在不在」。
+    """
+    manifest = embed_dir / FRONTEND_MANIFEST
+    if not manifest.is_file():
+        fail(
+            f"the embedded front-end has no {FRONTEND_MANIFEST.as_posix()} in {embed_dir}. "
+            "The Go backend cannot resolve the entry chunk without it."
+        )
+
+    try:
+        entries = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot read {manifest}: {exc}")
+    if not isinstance(entries, dict) or not entries:
+        fail(f"{manifest} is empty; the front-end build produced no assets")
+
+    missing: list[tuple[str, str]] = []
+    entry_count = 0
+    for key, entry in sorted(entries.items()):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("isEntry"):
+            entry_count += 1
+        # file 是入口 chunk，css 是它依赖的样式表（Vite 会把 CSS 抽出来单独登记）。
+        refs = [entry.get("file"), *(entry.get("css") or [])]
+        for ref in refs:
+            if not ref:
+                continue
+            if not (embed_dir / ref).is_file():
+                missing.append((key, ref))
+
+    if entry_count == 0:
+        fail(
+            f"{manifest} declares no entry chunk. The Go backend would render a page "
+            "with no script tag; check build.rollupOptions.input in twilight-web/vite.config.ts."
+        )
+    if missing:
+        detail = "\n".join(f"  - {src} -> {ref}" for src, ref in missing)
+        fail(
+            f"embedded front-end is incomplete: {len(missing)} asset(s) declared by "
+            f"{FRONTEND_MANIFEST.as_posix()} are missing from {embed_dir}:\n{detail}\n"
+            "Re-install the front-end dependencies, rebuild, and re-run this script "
+            "without --skip-frontend."
+        )
+
+
 def embed_frontend_dist(frontend_dir: Path) -> None:
     dist_dir = frontend_dir / "dist"
-    if not (dist_dir / "index.html").is_file():
-        fail(f"front-end build output not found: {dist_dir / 'index.html'}")
+    if not (dist_dir / FRONTEND_MANIFEST).is_file():
+        fail(f"front-end build output not found: {dist_dir / FRONTEND_MANIFEST}")
 
     # Copy into a temporary sibling and swap it in at the end. Removing the live
     # embed directory first means a failure mid-copy leaves the Go sources without
@@ -634,14 +704,16 @@ def main() -> None:
     else:
         # 跳过前端时仍然要确认嵌入目录非空，否则 //go:embed 会让编译直接失败，
         # 而那时的报错和「你跳过了前端」之间没有任何线索。
-        if not (GO_WEB_EMBED_DIR / "index.html").is_file():
+        if not (GO_WEB_EMBED_DIR / FRONTEND_MANIFEST).is_file():
             fail(
-                "cannot skip the front-end: the embed directory has no index.html. "
+                "cannot skip the front-end: the embed directory has no "
+                f"{FRONTEND_MANIFEST.as_posix()}. "
                 "Run without --skip-frontend at least once."
             )
         # 这条路径跳过了一切前端构建，因此也正是「资源不完整」最容易溜过去的地方：
         # 编译照样成功，坏掉的资源却进了二进制。这里必须再验一次完整性。
         verify_embedded_assets(GO_WEB_EMBED_DIR)
+        verify_manifest_assets(GO_WEB_EMBED_DIR)
         print("[build] skipping front-end build; using the existing embedded assets")
 
     base_env = os.environ.copy()

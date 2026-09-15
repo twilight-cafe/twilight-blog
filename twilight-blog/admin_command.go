@@ -139,7 +139,10 @@ func runAdminSetPassword(args []string) int {
 		return exitFailure
 	}
 
-	auth := service.NewAdminAuth(model.NewSQLiteAdminRepository(db))
+	// 第二个参数是头像校验用的媒体查询，这里传 nil：admin 子命令只做
+	// 「建账号 / 改密码」，不碰头像，去为它构造一个媒体目录没有意义
+	// （真的走到头像路径时会得到一条明确的校验错误，而不是 panic）。
+	auth := service.NewAdminAuth(model.NewSQLiteAdminRepository(db), nil)
 	ctx := context.Background()
 
 	exists, err := auth.Exists(ctx)

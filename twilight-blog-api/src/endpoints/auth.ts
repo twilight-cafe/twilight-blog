@@ -42,7 +42,7 @@ export interface AuthApi {
   updateProfile(input: UpdateProfileInput): Promise<UserResponse>;
   /** 改当前登录访客的密码，并轮换会话（旧 session 失效）。 */
   changePassword(input: ChangePasswordInput): Promise<void>;
-  /** 改站长的展示名与（可选的）登录名。仅站长。 */
+  /** 改站长的展示名、登录名与头像。仅站长。 */
   updateAdminProfile(input: UpdateAdminProfileInput): Promise<MeResponse>;
 }
 
@@ -129,8 +129,14 @@ export function createAuthApi(http: HttpClient): AuthApi {
     updateAdminProfile(input: UpdateAdminProfileInput) {
       // username 不传即保持不变：改登录名是影响下次登录方式的操作，
       // 不能被「碰巧没带这个键」误触发。
-      const json: Record<string, string> = { name: input.name };
+      //
+      // avatarMediaId 同理，但它是三态而非两态：显式 null 表示「摘掉头像」，
+      // 服务端靠「键是否存在」区分它与「这次不改」。所以这里必须用
+      // `!== undefined` 判断，而不是 truthy 判断——后者会把 null 一起吞掉，
+      // 让头像永远摘不下来。
+      const json: Record<string, unknown> = { name: input.name };
       if (input.username !== undefined) json.username = input.username;
+      if (input.avatarMediaId !== undefined) json.avatar_media_id = input.avatarMediaId;
       return http.request<MeResponse>({
         method: 'PUT',
         path: '/api/admin/profile',

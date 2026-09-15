@@ -270,8 +270,10 @@ describe('Profile', () => {
     client.setCurrentUser(adminMe)
     const { container } = renderPlain(<Profile />)
     await waitFor(() => expect(screen.getByText('管理员账号')).toBeTruthy())
-    const inputs = Array.from(container.querySelectorAll('form input')) as HTMLInputElement[]
-    expect(inputs.length).toBe(2)
+    // 头像选择器在表单里藏了一个 file input（见 media/AvatarPicker），
+    // 这里只关心文本框，用 :not 排除——按类型过滤而不是按位置，未来加控件也不会脆。
+    const inputs = Array.from(container.querySelectorAll('form input:not([type="file"])')) as HTMLInputElement[]
+    expect(inputs.length).toBe(2) // 站长资料卡：显示名 + 登录名（file input 已被排除）
     expect(inputs[0].value).toBe('站长') // 显示名
     expect(inputs[1].value).toBe('admin') // 登录名
 

@@ -53,14 +53,18 @@ func NewSQLiteUserRepository(db *sql.DB) *SQLiteUserRepository {
 //
 // is_admin 用 COALESCE 兜底，与 username / nickname / password_hash 一致：老库在
 // 补列之前根本没有这一列，兜底让「列还没补上」也不至于整条查询失败。
-const userColumns = `id, email, COALESCE(username, ''), COALESCE(nickname, ''), COALESCE(password_hash, ''), COALESCE(is_admin, 0), created_at, updated_at`
+//
+// avatar_media_id 刻意**不**用 COALESCE：它是可空的引用，NULL 是有意义的取值
+// （「没有头像」），而 COALESCE(x, ...) 会把它压成一个数字。这里的兜底由
+// addedColumns 的补列负责——迁移之后这一列一定存在。
+const userColumns = `id, email, COALESCE(username, ''), COALESCE(nickname, ''), COALESCE(password_hash, ''), COALESCE(is_admin, 0), avatar_media_id, created_at, updated_at`
 
 func scanUser(row scanner) (*User, error) {
 	var user User
 	// is_admin 扫进 int64 再转换，而不是直接扫 *bool：SQLite 的 INTEGER 到 Go 的
 	// bool 依赖驱动实现，赌错的话错误只会在运行期出现。一次显式转换换掉这个不确定性。
 	var isAdmin int64
-	if err := row.Scan(&user.ID, &user.Email, &user.Username, &user.Nickname, &user.PasswordHash, &isAdmin, &user.CreatedAt, &user.UpdatedAt); err != nil {
+	if err := row.Scan(&user.ID, &user.Email, &user.Username, &user.Nickname, &user.PasswordHash, &isAdmin, &user.AvatarMediaID, &user.CreatedAt, &user.UpdatedAt); err != nil {
 		return nil, err
 	}
 	user.IsAdmin = isAdmin != 0

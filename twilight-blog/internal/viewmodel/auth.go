@@ -99,7 +99,22 @@ type AdminProfileRequest struct {
 	// Username 是**登录名**。指针为 nil 表示不改动——改登录名是一件会影响
 	// 下次登录方式的事，不该由「碰巧没传这个键」来触发。
 	Username *string `json:"username"`
+	// AvatarMediaID 是站长头像那张媒体的 id，**三态**：字段缺失 = 不动，
+	// 显式 null = 摘掉头像，数字 = 换成这张。与文章的 CoverMediaID 同一条规则，
+	// 理由也一样——*int64 表达不了三态，而塌缩总会朝某个方向损坏数据
+	// （要么用户摘不掉头像，要么一次只改显示名的保存静默删掉头像）。
+	//
+	// 它与 articles.cover_media_id 同为**引用**：换图/摘除都不删媒体文件。
+	AvatarMediaID OptionalID `json:"avatar_media_id"`
 }
+
+// SetUsername 报告请求里是否出现了 username 字段。
+// 放在这里而不是让 handler 直接判 nil，是为了让「哪些字段是可选且三态/两态的」
+// 这件事留在请求类型自己身上，handler 只表达意图。
+func (r *AdminProfileRequest) SetUsername() bool { return r.Username != nil }
+
+// SetAvatarMediaID 报告请求里是否出现了 avatar_media_id 字段（哪怕是 null）。
+func (r *AdminProfileRequest) SetAvatarMediaID() bool { return r.AvatarMediaID.Set }
 
 // AdminUpdateUserRequest 供管理员订正他人账号的三项资料。
 // username 是登录标识，nickname 是展示名，email 是联系方式；

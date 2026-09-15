@@ -377,6 +377,17 @@ export interface ChangePasswordInput {
 export interface UpdateAdminProfileInput {
   name: string;
   username?: string;
+  /**
+   * 头像那张媒体图的 id，**三态**：
+   *   - 省略（undefined）= 这次不动头像；
+   *   - null = 摘掉头像；
+   *   - 数字 = 换成这张。
+   *
+   * 与文章的 coverMediaId 同一条规则。塌缩成 `number | undefined` 会朝某个
+   * 方向损坏数据——要么用户永远摘不掉头像，要么一次「只改显示名」的保存
+   * 静默把头像删了。
+   */
+  avatarMediaId?: number | null;
 }
 
 /** 站长修改其他访客账号。username 是登录标识，email 是联系方式，两者分别受唯一约束。 */
@@ -393,6 +404,15 @@ export interface UpdateUserInput {
 /** 站点设置的公开视图：任何人可读（内容本来就是展示给所有读者的）。 */
 export interface SiteSettingsResponse {
   description: string;
+  /**
+   * 站长头像的站内地址（形如 `/api/media/3`）；空串表示站长没设头像，
+   * 前端回退到首字母占位块。
+   *
+   * 它和 description 同属「作者卡里已经展示给所有读者的东西」，所以一起
+   * 从公开端点下发——为头像再发一次请求只会把一块本来要一起渲染的内容
+   * 拆成两次往返。
+   */
+  avatar_url: string;
 }
 
 /** 修改站点描述。允许空串（清空是合法意图，前台回退内置文案）；上限 200 字符。 */

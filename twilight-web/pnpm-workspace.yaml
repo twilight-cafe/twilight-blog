@@ -1,3 +1,11 @@
+# pnpm 11 起不再从 .npmrc 读取 pnpm 专属设置（`pnpm config get` 返回 undefined），
+# nodeLinker / packageImportMethod 必须写在这里（.npmrc 里那份同名配置是死信）。
+# 本机的 isolated 布局（junction/symlink）会静默产生空目录（症状：node_modules 下
+# 包目录为空、tsc 报 TS2688），hardlink 导入会随机冻结在 added 10~23 之间。
+# hoisted + copy 用真实文件复制，安装稍慢但确定可用；正常环境下可删除这些设置。
+nodeLinker: hoisted
+packageImportMethod: copy
+
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:

@@ -1,0 +1,37 @@
+<!doctype html>
+<!--
+  公开站点的 HTML 外壳。**它由 Go 后端渲染**，不在前端工程里（twilight-web 只留
+  src/main.tsx 作为构建入口，vite 配置成 manifest 模式产出资源清单）。
+
+  为什么外壳要搬到服务端：`<meta name="description">` 与 `<title>` 是**站点级文案**，
+  它们的正确值只有后端知道（存在 settings.json 里，见 GET /api/site）。留在
+  前端工程里的话，它们在 SPA 启动之前只能是写死的默认值——用户会先看到「默认描述」
+  再被 JS 改成「真实描述」，而这个窗口对不执行 JS 的抓取器则是**永久的**。
+
+  三个占位符由 view/index.go 填充（dev 服务器由 vite.config.ts 的同名占位符填充）：
+    .Description  站点描述（未设置时为内置默认值，与服务端同一份常量）
+    .Stylesheets  入口 chunk 依赖的样式表（来自 .vite/manifest.json）
+    .Scripts      入口 chunk（同上；带内容指纹的文件名只有构建后才知道）
+
+  改动这里的资源引用方式时，记得 build.py 的 verify_manifest_assets 也依赖
+  manifest.json —— 它才是「资源引用与产物是否对得上」的权威来源。
+-->
+<html lang="zh-CN" data-mode="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="{{.Description}}" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+{{range .Stylesheets}}    <link rel="stylesheet" href="{{.}}" />
+{{end}}{{range .Scripts}}    <script type="module" src="{{.}}"></script>
+{{end}}    <title>{{.Title}}</title>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

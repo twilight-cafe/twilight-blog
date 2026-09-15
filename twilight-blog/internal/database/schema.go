@@ -32,6 +32,9 @@ package database
 //     站长（管理员）也住在这张表里，是 is_admin = 1 的那一行——于是「用户名
 //     全站唯一」由 idx_users_username 一个索引统一负责，不再需要「预留用户名」
 //     那套跨命名空间的推理。管理员行的 email 恒为空串（见 addedIndexes 的说明）。
+//     avatar_media_id 是指向 media 的可空引用（ON DELETE SET NULL），只有
+//     管理员那一行会用到：站长的头像是他唯一可配置的对外形象，因此它由
+//     PUT /api/admin/profile 写入、由公开的 GET /api/site 下发。
 //   - comments：author_type 区分管理员与访客，user_id 可空（管理员没有账号行）；
 //     idx_comments_roots 是给「根评论分页」用的覆盖索引。
 //   - sessions：统一存放两种角色的会话，存的是 session token 的 SHA-256 与
@@ -130,6 +133,13 @@ CREATE TABLE IF NOT EXISTS users (
     nickname      TEXT    NOT NULL DEFAULT '',
     password_hash TEXT    NOT NULL DEFAULT '',
     is_admin      INTEGER NOT NULL DEFAULT 0,
+    -- 站长的头像。只有 is_admin = 1 的那一行会用到它（访客头像没有需求），
+    -- 但列开在这里而不是另起一张表：它就是「这一行账号的一个可空引用」。
+    -- ON DELETE SET NULL 与 articles.cover_media_id 同理——媒体库允许硬删任意
+    -- 一条媒体，删掉正被当作头像的那张时这一列自动变回 NULL，而不是留下一个
+    -- 指向不存在行的 id。avatar_media_id 的补列见 addedColumns（带 REFERENCES
+    -- 的补列不能写 DEFAULT）。
+    avatar_media_id INTEGER REFERENCES media(id) ON DELETE SET NULL,
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL
 );
@@ -287,6 +297,7 @@ var addedColumns = []columnAddition{
 	{"users", "is_admin", "INTEGER NOT NULL DEFAULT 0"},
 	{"email_verification_codes", "attempts", "INTEGER NOT NULL DEFAULT 0"},
 	{"articles", "cover_media_id", "INTEGER REFERENCES media(id) ON DELETE SET NULL"},
+	{"users", "avatar_media_id", "INTEGER REFERENCES media(id) ON DELETE SET NULL"},
 }
 
 // addedIndexes 是**必须在补列之后**才能执行的索引语句。

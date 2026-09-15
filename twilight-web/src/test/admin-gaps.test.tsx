@@ -186,7 +186,8 @@ describe('Profile 分支', () => {
     client.setCurrentUser(adminMe)
     const { container } = renderPlain(<Profile />)
     await waitFor(() => expect(screen.getByText('管理员账号')).toBeTruthy())
-    const inputs = Array.from(container.querySelectorAll('form input')) as HTMLInputElement[]
+    // 排除头像选择器藏在表单里的 file input（见 media/AvatarPicker）。
+    const inputs = Array.from(container.querySelectorAll('form input:not([type="file"])')) as HTMLInputElement[]
 
     fireEvent.change(inputs[0], { target: { value: '新站名' } })
     fireEvent.change(inputs[1], { target: { value: 'newadmin' } })

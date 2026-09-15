@@ -49,9 +49,20 @@ type User struct {
 	// 管理员住在同一张表里，因此「用户名全站唯一」只需一个索引就能保证——
 	// 这正是把凭据并进来（而不是让它留在 settings.json）的全部理由。
 	// 它的 email 恒为空串哨兵：那是一个任何注册路径都无法产生的地址。
-	IsAdmin   bool
-	CreatedAt int64
-	UpdatedAt int64
+	IsAdmin bool
+	// AvatarMediaID 是站长的头像那张媒体的 id；nil 表示没设头像。
+	//
+	// 只有 is_admin = 1 的那一行会用到它——当前没有「访客头像」这个需求，
+	// 列开在 users 上是因为它就是「这一行账号的一个可空引用」，另起一张表
+	// 只会多一层连接。
+	//
+	// 与 articles.cover_media_id 完全同构：**引用不是所有权**，换图/摘除都不删
+	// 媒体文件（媒体是硬删、无回收站），只解除引用；真正会删文件的只有
+	// 「在媒体库里删除那张图」这一个动作，届时靠 ON DELETE SET NULL 把这一列
+	// 自动置空。
+	AvatarMediaID *int64
+	CreatedAt     int64
+	UpdatedAt     int64
 }
 
 // HasPassword 报告该账号能否用密码登录。

@@ -5,6 +5,12 @@
 
 :root {
   --page-width: 1360px;
+  /* 顶栏与下方内容之间的呼吸间距。
+     文章头图（.post-cover）与公开侧栏（.public-sidebar）共用这一个值：
+     两者在视觉上是同一行上的两个起点，间距不一致就会看起来一边贴着顶栏。
+     它曾被写成两处各自硬编码的 26px / 0，于是侧栏紧贴顶栏下边框、
+     头图却离着 26px——同一个屏幕上「间距」有两个答案。 */
+  --top-gap: 26px;
 }
 
 * {
@@ -63,6 +69,9 @@ svg {
 .public-sidebar {
   position: sticky;
   top: 24px;
+  /* 与文章头图（.post-cover）共用同一个顶栏间距：侧边栏不能贴着顶栏，
+     距离必须等于头图与顶栏的间距——两处都用变量，改就一起改。 */
+  margin-top: var(--top-gap);
   max-height: calc(100vh - 48px);
   overflow-y: auto;
 }
@@ -475,8 +484,14 @@ footer.site h6 {
   margin-bottom: 14px;
 }
 
+/* 页脚链接：仍然是「一个一行」，但盒子只占文字宽度。
+   inkui 的全局 `a` 用 background-image 做了一条 0% → 100% 的悬停下划线，
+   而 100% 是**元素盒子**的宽——块级元素横贯整列，于是「导航」「更多」两栏的
+   下划线长得能跑出文字好几个字。width: fit-content 让盒子收缩到文字宽，
+   动画原样保留（改的是盒子的宽，不是那两条 background-* 规则）。 */
 footer.site a {
   display: block;
+  width: fit-content;
   padding: 4px 0;
   color: var(--mut);
 }
@@ -743,9 +758,11 @@ footer.site .bar {
 /* 文章详情页头图：位于顶栏之下、标签之上，宽度与正文栏相同（= public-main
    里那一栏），因此侧边栏仍在它右侧而不是被挤到下面。
    高度用 max-height + object-fit: cover 夹住：竖版长图不会把标题推到屏幕外，
-   也不会被拉变形——裁掉的是图片边缘，不是信息。 */
+   也不会被拉变形——裁掉的是图片边缘，不是信息。
+   这个 margin-top 是「头图与顶栏的间距」的定义处，侧栏复用同一个变量
+   （--top-gap）以保证两个起点对齐。 */
 .post-cover {
-  margin-top: 26px;
+  margin-top: var(--top-gap);
   border-radius: var(--radius);
   overflow: hidden;
   background: var(--softer);
@@ -1277,6 +1294,14 @@ footer.site .bar {
   height: 54px;
   font-size: 23px;
   font-weight: 900;
+}
+
+/* 站长设过头像时，同一个 .avatar 位置放的是 <img>（见 AuthorAvatar）：
+   占位块那层渐变背景留着无妨——图片盖住它，加载失败时露出来的正好是那块底。
+   object-fit 让非正方形的图被裁而不是被拉扁，圆才还是个圆。 */
+img.avatar {
+  object-fit: cover;
+  border: 1px solid var(--line);
 }
 
 .cav {
@@ -1970,6 +1995,60 @@ footer.site .bar {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Avatar picker（站长头像，最多一张）。与 .cover-picker 同一套交互，但预览是
+   圆而不是横幅——头像在作者卡里就是个圆，用 148×84 的框去预览它，用户看到的
+   会是一个自己永远不会得到的结果。空态同样是虚线占位。 */
+.avatar-picker {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.avatar-picker-empty {
+  width: 72px;
+  height: 72px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1.5px dashed var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--faint);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+}
+
+.avatar-picker-empty:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--fg) 48%, var(--bg));
+  color: var(--fg);
+  background: var(--softer);
+}
+
+.avatar-picker-empty:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.avatar-picker-preview {
+  width: 72px;
+  height: 72px;
+  flex: none;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--softer);
+}
+
+.avatar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .ed-hint {

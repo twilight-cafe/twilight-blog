@@ -149,8 +149,11 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 	//
 	// 注意它必须晚于 MigrateAdminCredentials —— 那个迁移由 main 完成，
 	// 在 view.Register 之前（见 main.go 里的顺序注释）。
+	//
+	// 它还要一份媒体查询：站长头像（users.avatar_media_id）必须是图片，而
+	// 「是不是图片」只有媒体服务答得出来。与文章头图共用同一条规则。
 	adminRepo := model.NewSQLiteAdminRepository(db)
-	adminAuth := service.NewAdminAuth(adminRepo)
+	adminAuth := service.NewAdminAuth(adminRepo, mediaService)
 
 	// 评论目标必须真实存在（且未被软删），否则评论可以挂到任意 id 上——
 	// 既能让内容下架后的评论继续被读出来，也能用不存在的 id 无限灌垃圾。
@@ -173,7 +176,7 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 	mediaHandler := handler.NewMediaHandler(mediaService)
 	emailHandler := handler.NewEmailHandler(emailService)
 	installHandler := handler.NewInstallHandler(adminAuth, cfg)
-	siteHandler := handler.NewSiteHandler(cfg, settingsPath)
+	siteHandler := handler.NewSiteHandler(cfg, settingsPath, adminAuth)
 
 	limits := cfg.EffectiveRateLimit()
 	limiters := middleware.NewRateLimiters(middleware.RateLimitOptions{
@@ -323,7 +326,7 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 	admin.POST("/comments/:id/restore", commentHandler.Restore)
 	admin.DELETE("/comments/:id/permanent", commentHandler.PermanentDelete)
 
-	if err := registerWeb(e); err != nil {
+	if err := registerWeb(e, cfg); err != nil {
 		return fmt.Errorf("register web routes: %w", err)
 	}
 
