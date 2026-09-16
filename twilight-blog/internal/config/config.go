@@ -42,7 +42,38 @@ const (
 	DefaultLogLevel      = "normal"
 	DefaultMaxUploadSize = 50
 	DefaultPort          = 8080
+	// DefaultCodeBlockMaxLines 是「代码块最大显示行数」未设置时的默认值：
+	// 正文里最常见的代码块在 20 行以内，把它作为起点既不打断阅读，
+	// 又能在遇到超长代码时给出明显的「往下还有」的信号。
+	DefaultCodeBlockMaxLines = 20
 )
+
+// CodeBlockMaxLinesBounds 是 code_block_max_lines 的合法区间（含端点）。
+//
+// 下界 3：再小的「代码框」已经放不下一行像样的代码加行号，设置成 1/2 只会
+// 让滚动条抖得没法用；上界 500：一个 500 行的块已经接近整屏文章的长度，
+// 再大的值等于没有限制，不如让站长干脆理解成「这项设置管不了这么长的块」。
+const (
+	MinCodeBlockMaxLines = 3
+	MaxCodeBlockMaxLines = 500
+)
+
+// validateCodeBlockMaxLines 校验 code_block_max_lines 的取值。
+// 0 表示「未设置」，由 ApplyDefaults 兜底成默认值；其余越界值直接报错，
+// 让启动失败——一个静默回退的数字会让「我明明设了 800」变成无从排查的观感问题。
+func validateCodeBlockMaxLines(value int) error {
+	if value < 0 {
+		return fmt.Errorf("invalid code_block_max_lines %d: cannot be negative", value)
+	}
+	if value == 0 {
+		return nil
+	}
+	if value < MinCodeBlockMaxLines || value > MaxCodeBlockMaxLines {
+		return fmt.Errorf("invalid code_block_max_lines %d: must be between %d and %d (0 means the default %d)",
+			value, MinCodeBlockMaxLines, MaxCodeBlockMaxLines, DefaultCodeBlockMaxLines)
+	}
+	return nil
+}
 
 // 密码策略。
 //
@@ -288,6 +319,29 @@ type Config struct {
 	// （为空时前台回退到内置文案，而不是显示一片空白）。
 	SiteDescription string `json:"site_description"`
 
+	// CodeBlockMaxLines 限制 Markdown 围栏代码块（``` 块）在页面上最多显示的行数，
+	// 超出部分在块内上下滚动。0 表示「未设置」，由 ApplyDefaults 兜底成
+	// DefaultCodeBlockMaxLines；显式配置的值必须落在
+	// [MinCodeBlockMaxLines, MaxCodeBlockMaxLines] 内，越界让启动失败。
+	//
+	// 它通过公开的 GET /api/site 下发（读者看到的排版参数，本就是公开信息），
+	// 前端把它折算成容器上的 CSS 变量，真正的「限高 + 滚动」由样式层完成。
+	CodeBlockMaxLines int `json:"code_block_max_lines"`
+
+	// SearchEnabled 控制**内嵌 Meilisearch 与搜索功能**是否启用。
+	//
+	// 用指针是为了让「键缺失」表示「开启」：这个选项出现之前写下的
+	// settings.json 里没有这个键，若把缺失当成 false，那些旧配置升级后会
+	// 无声地失去搜索能力。要关闭搜索必须显式写 false。
+	//
+	// 关闭时的行为（三处必须一致，改任何一处先读完另外两处）：
+	//   - main.go 不再启动 Meilisearch 子进程（搜索彻底不占资源）；
+	//   - router.go 不再注册 /api/search（后端不开放搜索 API，
+	//     未知的 /api 路径维持 web.go 的 404 语义）；
+	//   - view 层向 index.html 注入 searchEnabled 标志，
+	//     前端据此隐藏全部搜索入口（导航、页脚与搜索页）。
+	SearchEnabled *bool `json:"search_enabled"`
+
 	// CookieSecure 控制会话 cookie 的 Secure 属性：
 	// "auto"（默认，按请求是否走 HTTPS 判断）/ "always" / "never"。
 	// "never" 只适用于本地明文 HTTP 开发。
@@ -387,6 +441,9 @@ func Load(path string) (*Config, error) {
 	cfg.AllowedOrigins = normalizeStringList(cfg.AllowedOrigins)
 
 	if err := validateCookieSecure(cfg.CookieSecure); err != nil {
+		return nil, err
+	}
+	if err := validateCodeBlockMaxLines(cfg.CodeBlockMaxLines); err != nil {
 		return nil, err
 	}
 
@@ -580,6 +637,46 @@ func (c *Config) SetSiteDescription(description string) {
 	c.SiteDescription = strings.TrimSpace(description)
 }
 
+// SearchEnabledValue 报告搜索（内嵌 Meilisearch）是否启用。
+//
+// 键缺失（nil）视为启用：老版本 settings.json 里没有这个键，升级后必须
+// 保持既有行为——静默关闭已上线的搜索功能属于破坏性变更。
+// 只有显式写 false 才是关闭。
+func (c *Config) SearchEnabledValue() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.SearchEnabled == nil || *c.SearchEnabled
+}
+
+// CodeBlockMaxLinesValue 返回代码块最大显示行数的当前值。
+// 未设置（0，即 ApplyDefaults 之前读到的旧文件）时返回默认值，
+// 保证调用方拿到的永远是一个可直接使用的正数。
+func (c *Config) CodeBlockMaxLinesValue() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.CodeBlockMaxLines == 0 {
+		return DefaultCodeBlockMaxLines
+	}
+	return c.CodeBlockMaxLines
+}
+
+// SetCodeBlockMaxLines 只在内存里更新代码块行数上限，**不负责落盘**。
+// 与 Load 时的校验不同，这里连 0 也拒绝：Load 面对的是老文件（键缺失=未设置，
+// 必须放行交给 ApplyDefaults 兜底），而 Set 面对的是**显式输入**——
+// 0 没有合理含义，悄悄改写默认值会让保存结果与输入框显示不一致。
+func (c *Config) SetCodeBlockMaxLines(lines int) error {
+	if lines == 0 {
+		return fmt.Errorf("code_block_max_lines cannot be empty: specify a value between %d and %d", MinCodeBlockMaxLines, MaxCodeBlockMaxLines)
+	}
+	if err := validateCodeBlockMaxLines(lines); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.CodeBlockMaxLines = lines
+	return nil
+}
+
 // ApplyDefaults 为习惯上会被省略的键补上默认值，绝不覆盖已设置的值。
 // Save() 也会调用它，因此写出的文件总是「完整」的。
 //
@@ -617,6 +714,9 @@ func (c *Config) ApplyDefaults() {
 		c.RateLimit = &RateLimitConfig{}
 	}
 	c.RateLimit.applyDefaults()
+	if c.CodeBlockMaxLines == 0 {
+		c.CodeBlockMaxLines = DefaultCodeBlockMaxLines
+	}
 	if c.Mail == nil {
 		c.Mail = &MailConfig{}
 	}

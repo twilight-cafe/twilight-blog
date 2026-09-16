@@ -27,15 +27,20 @@ const FALLBACK_DESCRIPTION = '以代码为笔，以时间为墨。'
 /** 与后端 viewmodel.MaxSiteDescriptionLength 镜像；改一处必须改另一处。 */
 const DESCRIPTION_MAX = 200
 
+/** 与后端 config.DefaultCodeBlockMaxLines 镜像；改一处必须改另一处。 */
+const DEFAULT_CODE_LINES = 20
+
 /** 站点公开信息的一份快照。两个字段都可能为空串（未设置 / 后端只回了其中一项）。 */
 export interface SiteMeta {
   description: string
   /** 站长头像的站内地址；空串表示没设，调用方回退到首字母占位块。 */
   avatarUrl: string
+  /** 代码块最大显示行数；决定块级代码框的限高（超出部分块内滚动）。 */
+  codeBlockMaxLines: number
 }
 
 /** 请求失败时的快照。刻意不进缓存（见 loadMeta），只是给调用方一个可用的值。 */
-const EMPTY_META: SiteMeta = { description: '', avatarUrl: '' }
+const EMPTY_META: SiteMeta = { description: '', avatarUrl: '', codeBlockMaxLines: DEFAULT_CODE_LINES }
 
 let cache: SiteMeta | null = null
 let inFlight: Promise<SiteMeta> | null = null
@@ -50,10 +55,13 @@ const listeners = new Set<(value: SiteMeta) => void>()
  * 这里不需要再判 settings 本身是空——真出现 null 响应时，本函数会在 then 里抛，
  * 而紧随其后的 catch 会把它收敛成 EMPTY_META，与「请求失败」同一条出路。
  */
-function toMeta(settings: { description?: string; avatar_url?: string }): SiteMeta {
+function toMeta(settings: { description?: string; avatar_url?: string; code_block_max_lines?: number }): SiteMeta {
   return {
     description: settings.description ?? '',
     avatarUrl: settings.avatar_url ?? '',
+    // 后端该字段恒输出；?? 兜底的是「更旧的服务端」——此时与失败同路，
+    // 回退到与服务端默认值一致的行数，保证两侧渲染口径一致。
+    codeBlockMaxLines: settings.code_block_max_lines ?? DEFAULT_CODE_LINES,
   }
 }
 
@@ -103,6 +111,11 @@ export function loadSiteDescription(): Promise<string> {
   return loadMeta().then((meta) => meta.description)
 }
 
+/** 拉取完整的站点公开快照（设置页用它同时初始化描述与代码块行数）。 */
+export function loadSiteMeta(): Promise<SiteMeta> {
+  return loadMeta()
+}
+
 /**
  * 丢弃缓存并重新拉取。站长刚改完头像时调用——头像不是这次请求的返回值
  * （PUT /api/admin/profile 回的是会话身份），而侧栏作者卡正订阅着这份缓存，
@@ -114,12 +127,51 @@ export function refreshSiteMeta(): Promise<SiteMeta> {
   return loadMeta()
 }
 
-/** 保存新描述并同步所有订阅者（站点设置页调用）。 */
-export async function saveSiteDescription(description: string): Promise<string> {
-  const saved = await blog.updateSite({ description })
+/**
+ * 保存站点设置并同步所有订阅者（站点设置页调用）。
+ *
+ * 入参用 camelCase 的显式字段而不是透传 SDK 输入：codeBlockMaxLines 省略时
+ * 不带进请求体（SDK 层 JSON.stringify 丢弃 undefined），服务端保持现值。
+ * 行数与描述合并为一次保存——它们落在同一个设置卡里，分成两次提交会让
+ * 「看起来是一个表单」的界面产生两个互相覆盖的时刻。
+ */
+export async function saveSiteSettings(input: {
+  description: string
+  codeBlockMaxLines?: number
+}): Promise<SiteMeta> {
+  const saved = await blog.updateSite({
+    description: input.description,
+    code_block_max_lines: input.codeBlockMaxLines,
+  })
   // 用服务端返回的整份快照覆盖：它同时带着头像，因此改描述不会把头像从缓存里抹掉。
-  publish(toMeta(saved))
-  return saved.description ?? ''
+  const meta = toMeta(saved)
+  publish(meta)
+  return meta
+}
+
+/** 保存新描述并同步所有订阅者。语义与 saveSiteSettings 相同，只写描述一项。 */
+export async function saveSiteDescription(description: string): Promise<string> {
+  const meta = await saveSiteSettings({ description })
+  return meta.description
+}
+
+/**
+ * 订阅代码块行数上限的 hook。行数是渲染参数：任何渲染 Markdown 正文的地方
+ * （文章、页面、微语、编辑器预览）都可以拿它设置限高 CSS 变量。
+ */
+export function useSiteCodeLines(): number {
+  const [value, setValue] = useState(() => cache?.codeBlockMaxLines ?? DEFAULT_CODE_LINES)
+
+  useEffect(() => {
+    const listener = (next: SiteMeta) => setValue(next.codeBlockMaxLines)
+    listeners.add(listener)
+    void loadMeta().then((meta) => setValue(meta.codeBlockMaxLines))
+    return () => {
+      listeners.delete(listener)
+    }
+  }, [])
+
+  return value
 }
 
 /**
@@ -184,7 +236,7 @@ export function useHomeDocumentTitle() {
   }, [description])
 }
 
-export { DESCRIPTION_MAX, FALLBACK_DESCRIPTION }
+export { DESCRIPTION_MAX, DEFAULT_CODE_LINES, FALLBACK_DESCRIPTION }
 
 /**
  * 仅供测试：清空模块级缓存。vitest 里模块单例会跨用例存活，

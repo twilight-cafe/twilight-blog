@@ -109,12 +109,12 @@ export default function PagesAdmin() {
             {tab === 'active' ? (
               <>
                 <Link className="miniact" to={`/admin/pages/${page.id}`}>编辑</Link>
-                <Button ghost small onClick={() => void remove(page)}>删除</Button>
+                <button className="miniact danger" type="button" onClick={() => void remove(page)}>删除</button>
               </>
             ) : (
               <>
-                <Button ghost small onClick={() => void restore(page)}>恢复</Button>
-                <Button ghost small onClick={() => void permanent(page)}>彻底删除</Button>
+                <button className="miniact" type="button" onClick={() => void restore(page)}>恢复</button>
+                <button className="miniact danger" type="button" onClick={() => void permanent(page)}>彻底删除</button>
               </>
             )}
           </div>

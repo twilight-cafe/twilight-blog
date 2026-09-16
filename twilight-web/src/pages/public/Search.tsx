@@ -9,6 +9,7 @@ import { Button, Input, Pagination } from 'ink-design'
 import { blog, getErrorMessage } from '../../lib/client'
 import { excerpt, fmtDate } from '../../lib/format'
 import type { SearchResult } from 'twilight-blog-api'
+import { isSearchEnabled } from '../../lib/flags'
 import { useDocumentTitle } from '../../lib/site'
 import { Empty, Loading, PageHero, Reveal } from '../../components/common'
 
@@ -21,6 +22,7 @@ export default function Search() {
   const [totalPages, setTotalPages] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const searchEnabled = isSearchEnabled()
 
   // 标题刻意**不包含关键词**。
   //
@@ -44,6 +46,15 @@ export default function Search() {
   }, [query])
 
   useEffect(() => {
+    // 禁用时 effects 仍会被 React 提交执行（提前返回只影响 JSX），
+    // 所以这里必须再挡一次：后端路由已不注册，请求只会得到 404。
+    if (!searchEnabled) {
+      setResults([])
+      setTotalPages(1)
+      setError('')
+      setLoading(false)
+      return
+    }
     const keyword = query.trim()
     if (!keyword) {
       setResults([])
@@ -75,7 +86,7 @@ export default function Search() {
     return () => {
       alive = false
     }
-  }, [query, page])
+  }, [query, page, searchEnabled])
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
@@ -86,6 +97,19 @@ export default function Search() {
       return
     }
     setParams({ q: keyword })
+  }
+
+  // 搜索关闭时的兜底页：正常导航根本不会到这（导航与页脚都隐藏了入口），
+  // 能到达的只剩手输 URL 与收藏夹。页面保留但明确说「未启用」，并且
+  // 不发起任何搜索请求——后端的路由已经不注册，请求只会得到 404。
+  // 提前返回放在全部 hooks 之后：组件的 hook 顺序不能因 flag 而分支。
+  if (!searchEnabled) {
+    return (
+      <main className="wrap" style={{ maxWidth: 880 }}>
+        <PageHero kicker="SEARCH" title={<>搜索<small>全文检索</small></>} subtitle="搜索本站的文章与页面。" />
+        <Empty text="本站未启用搜索功能" />
+      </main>
+    )
   }
 
   return (

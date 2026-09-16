@@ -118,6 +118,8 @@ beforeEach(() => {
   client.setCurrentUser(null)
   client.blog.getSite.mockResolvedValue({ description: '测试站' })
   client.blog.getInstallStatus.mockResolvedValue({ installed: true })
+  // 功能开关由外壳注入；各用例显式设置，缺省时拆掉避免泄漏。
+  delete (window as { __SITE__?: unknown }).__SITE__
   emptyLists()
 })
 
@@ -417,6 +419,33 @@ describe('AdminLayout 访客侧显示补缺', () => {
   })
 })
 
+describe('AdminLayout 侧栏头像', () => {
+  it('站长设了头像：渲染 <img>，而不是永远的首字母占位块', async () => {
+    client.setCurrentUser(adminMe)
+    client.blog.getSite.mockResolvedValue({ description: 'd', avatar_url: '/api/media/7', code_block_max_lines: 20 })
+    const { container } = renderRouted(<AdminLayout />, '/admin/posts', '/admin/posts')
+
+    const img = await waitFor(() => {
+      const found = container.querySelector('.a-user img.avatar') as HTMLImageElement | null
+      if (!found) throw new Error('avatar image not rendered yet')
+      return found
+    })
+    expect(img.getAttribute('src')).toBe('/api/media/7')
+    // alt 用显示名（adminMe.name='站长'），空占位块被替换掉。
+    expect(img.getAttribute('alt')).toBe('站长')
+    expect(container.querySelector('.a-user .cav')).toBeNull()
+  })
+
+  it('没设头像：回退首字母占位块', async () => {
+    client.setCurrentUser(adminMe)
+    client.blog.getSite.mockResolvedValue({ description: 'd', avatar_url: '', code_block_max_lines: 20 })
+    const { container } = renderRouted(<AdminLayout />, '/admin/posts', '/admin/posts')
+    await waitFor(() => expect(container.querySelector('.a-user .info b')).toBeTruthy())
+    expect(container.querySelector('.a-user .cav')).toBeTruthy()
+    expect(container.querySelector('.a-user img.avatar')).toBeNull()
+  })
+})
+
 /* ------------------------------- PublicShell ------------------------------- */
 
 describe('PublicShell 独立页面导航', () => {
@@ -428,6 +457,24 @@ describe('PublicShell 独立页面导航', () => {
     await act(async () => {
       gate.resolve(paged([makePage()]))
     })
+  })
+
+  it('页脚搜索链接跟随开关：关闭时连页脚也不给出死链接', async () => {
+    ;(window as { __SITE__?: unknown }).__SITE__ = { searchEnabled: false }
+    const { container } = renderWithRouter(<PublicShell />)
+    await waitFor(() => expect(container.querySelector('footer')).toBeTruthy())
+    const footer = Array.from(container.querySelectorAll('footer a')).map((a) => a.getAttribute('href'))
+    expect(footer).not.toContain('/search')
+    expect(footer).toContain('/archive')
+
+    // 开启（与外壳缺省）时页脚恢复搜索链接。
+    ;(window as { __SITE__?: unknown }).__SITE__ = { searchEnabled: true }
+    cleanup()
+    const second = renderWithRouter(<PublicShell />)
+    await waitFor(() => expect(second.container.querySelector('footer')).toBeTruthy())
+    expect(
+      Array.from(second.container.querySelectorAll('footer a')).map((a) => a.getAttribute('href')),
+    ).toContain('/search')
   })
 })
 

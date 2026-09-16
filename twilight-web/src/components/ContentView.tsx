@@ -14,8 +14,9 @@
 // 注意：复制成功的提示用 setTimeout 还原，所有 timer 收进 ref 集合，卸载时统一
 // clearTimeout，避免组件已卸载还去改按钮文字（内存/警告泄漏）。
 
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, type CSSProperties } from 'react'
 import { renderCommentMarkdown, renderMarkdown } from '../lib/markdown'
+import { useSiteCodeLines } from '../lib/site'
 
 interface ContentViewProps {
   text: string
@@ -107,6 +108,10 @@ export function enhanceCodeBlocks(root: HTMLElement | null, timers: Set<number>)
 export default function ContentView({ text, className = '', trusted = false }: ContentViewProps) {
   const ref = useRef<HTMLDivElement>(null)
   const timers = useRef<Set<number>>(new Set())
+  // 代码块行数上限来自站点设置（GET /api/site 公开下发）。通过 CSS 变量传给
+  // 样式表而不是内联 max-height：具体怎么限（行高、内边距的合成）是 CSS 的
+  // 事，这里只负责「多少行」这一个数字。
+  const codeLines = useSiteCodeLines()
   const html = useMemo(
     // 注意极性与 prop 名一致：trusted 才走文章管线，默认走白名单管线。
     () => (trusted ? renderMarkdown(text || '') : renderCommentMarkdown(text || '')),
@@ -126,6 +131,7 @@ export default function ContentView({ text, className = '', trusted = false }: C
     <div
       ref={ref}
       className={`plain-body ${className}`.trim()}
+      style={{ '--code-max-lines': codeLines } as CSSProperties}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   )

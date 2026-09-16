@@ -50,9 +50,10 @@ func registerWeb(e *echo.Echo, cfg *config.Config) error {
 	}
 
 	serveIndex := func(c echo.Context) error {
-		// 每次都读一遍当前配置：站点描述可以在运行期被改（PUT /api/admin/site），
-		// 值班到启动时渲染的副本上就会得到「改完刷新还是旧的」。
-		body, err := renderIndex(indexTmpl, newIndexData(cfg.SiteDescriptionValue(), stylesheets, scripts))
+		// 每次都读一遍当前配置：站点描述与搜索开关都可以在运行期被改
+		// （PUT /api/admin/site / settings.json），值班到启动时渲染的副本上
+		// 就会得到「改完刷新还是旧的」。
+		body, err := renderIndex(indexTmpl, newIndexData(cfg.SiteDescriptionValue(), cfg.SearchEnabledValue(), stylesheets, scripts))
 		if err != nil {
 			return err
 		}

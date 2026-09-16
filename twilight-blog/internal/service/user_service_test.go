@@ -6,6 +6,8 @@ import (
 	"errors"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,8 +21,9 @@ import (
 // captureSender records the codes that would have been emailed so the test can
 // complete the flow without a mail provider.
 type captureSender struct {
-	to    string
-	codes []string
+	to     string
+	codes  []string
+	bodies []string
 }
 
 // codePattern 从假发信器拿到的正文里取出验证码。
@@ -46,6 +49,7 @@ func (s *captureSender) SendVerification(to, _, body, _ string) error {
 
 func (s *captureSender) capture(to, body string) {
 	s.to = to
+	s.bodies = append(s.bodies, body)
 	if match := codePattern.FindStringSubmatch(body); match != nil {
 		s.codes = append(s.codes, match[1])
 	}
@@ -56,6 +60,15 @@ func (s *captureSender) latest() string {
 		return ""
 	}
 	return s.codes[len(s.codes)-1]
+}
+
+// lastBody 返回最近一次发信的**完整正文**。latest() 只存验证码本身
+// （注册流程只需要它），断言文案的测试（验证码邮件中文化）才需要正文。
+func (s *captureSender) lastBody() string {
+	if len(s.bodies) == 0 {
+		return ""
+	}
+	return s.bodies[len(s.bodies)-1]
 }
 
 // newTestUserService 构造一个只依赖访客账号体系的服务。
@@ -1088,5 +1101,39 @@ func TestListUsers(t *testing.T) {
 	}
 	if len(users) != 2 {
 		t.Fatalf("page returned %d users, want 2", len(users))
+	}
+}
+
+// TestVerificationEmailIsWrittenInChinese 钉住验证码邮件的中文文案。
+//
+// 站点的读者与收件人都是中文用户，邮件曾经是英文的（"Your verification code
+// is ..."），与站点语言不一致。这条测试同时守住三件事：主题与正文是中文、
+// 正文里仍然带着验证码本身（SendVerification 依赖它从留痕表里抹掉敏感内容，
+// redactSecret 曾因此被破坏过）、有效期分钟数与 verificationCodeTTL 一致。
+// 反证方式：把 user_service.go 的邮件文案改回英文，本条立即失败。
+func TestVerificationEmailIsWrittenInChinese(t *testing.T) {
+	svc, sender, _ := newTestUserService(t)
+
+	if err := svc.RequestEmailCode(context.Background(), "reader@example.com"); err != nil {
+		t.Fatalf("RequestEmailCode() error = %v", err)
+	}
+
+	body := sender.lastBody()
+	if !strings.Contains(body, "您的验证码是") {
+		t.Fatalf("the verification email body is not the Chinese copy: %q", body)
+	}
+	if !strings.Contains(body, "分钟内有效") {
+		t.Fatalf("the verification email body does not state the TTL: %q", body)
+	}
+
+	match := codePattern.FindStringSubmatch(body)
+	if match == nil {
+		t.Fatalf("the Chinese body no longer carries the code itself: %q", body)
+	}
+
+	// 正文声明的时间窗必须与服务端的 TTL 同源，而不是一句写死的孤立文案。
+	want := int(verificationCodeTTL.Minutes())
+	if !strings.Contains(body, strconv.Itoa(want)+" 分钟内有效") {
+		t.Fatalf("the body does not state the %d-minute TTL: %q", want, body)
 	}
 }

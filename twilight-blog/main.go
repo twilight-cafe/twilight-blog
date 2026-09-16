@@ -173,15 +173,24 @@ func main() {
 		logging.Infof("not installed yet; open /install to set the admin password")
 	}
 
-	logging.Debugf("[main] starting embedded meilisearch")
-	meili, err := startWithRetries(searchStartAttempts, searchStartBackoff, func() (*search.Manager, error) {
-		return search.Start(context.Background(), "")
-	})
-	if err != nil {
-		logging.Fatalf("start meilisearch: %v", err)
+	// 内嵌 Meilisearch 只在开关打开时启动。关闭时不只是不启动子进程：
+	// searchClient 保持 nil 会让 router 跳过 /api/search 的注册与索引同步，
+	// 三处（子进程 / 路由 / 前端入口）一起消失才算「关闭搜索」。
+	var meili *search.Manager
+	if cfg.SearchEnabledValue() {
+		logging.Debugf("[main] starting embedded meilisearch")
+		var err error
+		meili, err = startWithRetries(searchStartAttempts, searchStartBackoff, func() (*search.Manager, error) {
+			return search.Start(context.Background(), "")
+		})
+		if err != nil {
+			logging.Fatalf("start meilisearch: %v", err)
+		}
+		defer meili.Stop()
+		logging.Debugf("[main] embedded meilisearch started")
+	} else {
+		logging.Infof("[main] embedded meilisearch disabled by configuration (search_enabled=false)")
 	}
-	defer meili.Stop()
-	logging.Debugf("[main] embedded meilisearch started")
 
 	// 优雅退出：捕获 SIGINT/SIGTERM 后显式停掉 Meilisearch 子进程再退出，
 	// 避免留下孤儿进程。
@@ -194,7 +203,9 @@ func main() {
 	go func() {
 		<-sigCh
 		logging.Infof("received shutdown signal, stopping meilisearch")
-		meili.Stop()
+		if meili != nil {
+			meili.Stop()
+		}
 		_ = db.Close()
 		os.Exit(0)
 	}()
@@ -244,8 +255,16 @@ func main() {
 	logging.Debugf("[main] upload body limit set to %dM", maxUploadSize)
 	logging.Debugf("[main] echo server initialized")
 
-	if err := view.Register(e, cfg, db, settingsPath, meili.Client()); err != nil {
-		meili.Stop()
+	// 搜索关闭时 meili 为 nil：不能对 nil 解引用 Client()，只能传 nil client，
+	// router 的既有分支（跳过同步 / 不注册路由）正是为它准备的。
+	var searchClient *search.Client
+	if meili != nil {
+		searchClient = meili.Client()
+	}
+	if err := view.Register(e, cfg, db, settingsPath, searchClient); err != nil {
+		if meili != nil {
+			meili.Stop()
+		}
 		logging.Fatalf("register routes: %v", err)
 	}
 	logging.Debugf("[main] HTTP routes registered")

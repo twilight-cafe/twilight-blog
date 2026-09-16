@@ -306,7 +306,7 @@ describe('SiteSettings 分支', () => {
     // 合法长度但接口失败
     fireEvent.change(textarea(), { target: { value: '合法描述' } })
     fireEvent.submit(textarea().closest('form') as HTMLFormElement)
-    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({ description: '合法描述' }))
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({ description: '合法描述', code_block_max_lines: 20 }))
     await waitFor(() => expect(screen.getAllByText('保存失败').length).toBeGreaterThan(0))
   })
 })

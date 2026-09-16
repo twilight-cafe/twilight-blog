@@ -13,6 +13,7 @@ import { NavRow } from 'ink-design'
 import type { Page } from 'twilight-blog-api'
 import type { TocItem } from '../lib/markdown'
 import { buildNav, isNavActive, loadPagesForNav } from '../lib/nav'
+import { isSearchEnabled } from '../lib/flags'
 import { useCurrentUser } from '../lib/client'
 import { useSiteDescription } from '../lib/site'
 import PublicSidebar from './PublicSidebar'
@@ -131,7 +132,9 @@ function Footer({ pages }: { pages: Page[] }) {
             <h6>导航</h6>
             <Link to="/archive">归档</Link>
             <Link to="/tags">标签</Link>
-            <Link to="/search">搜索</Link>
+            {/* 搜索关闭时页脚也不再给出入口：导航、页脚、搜索页三处一致，
+                否则「关了搜索」的站点还剩一条死链接。 */}
+            {isSearchEnabled() && <Link to="/search">搜索</Link>}
             <Link to="/moments">微语</Link>
             {pages.map((page) => (
               <Link key={page.id} to={`/pages/${page.id}`}>{page.title}</Link>

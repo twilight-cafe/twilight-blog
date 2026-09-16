@@ -121,8 +121,12 @@ func (s *UserService) RequestEmailCode(ctx context.Context, email string) error 
 	// 走 SendVerification 而不是 Send：正文里的验证码不会进入邮件留痕表。
 	// 用 Send 的话，任何能读到 /api/admin/emails/:id 的人（或任何拿到
 	// 数据库/备份的人）都能取走这枚码去重置别人的密码。
-	body := fmt.Sprintf("Your verification code is %s", code)
-	if err := s.sender.SendVerification(email, "Your verification code", body, code); err != nil {
+	//
+	// 正文是中文：站点的读者与收件人都是中文用户。验证码仍然原样出现在
+	// 正文中——SendVerification 靠它从留痕表里抹掉敏感内容（redactSecret），
+	// 正文不含验证码会让留痕失效。
+	body := fmt.Sprintf("您的验证码是 %s，%d 分钟内有效。若非您本人操作，请忽略本邮件。", code, int(verificationCodeTTL.Minutes()))
+	if err := s.sender.SendVerification(email, "您的验证码", body, code); err != nil {
 		// 发送失败就必须让这枚码**当场失效**，不能留在库里等它自己过期。
 		//
 		// 否则会出现一种状态不一致：库里有一枚仍然有效（TTL 10 分钟）的验证码，

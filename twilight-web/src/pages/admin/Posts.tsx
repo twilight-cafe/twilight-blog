@@ -215,12 +215,12 @@ export default function Posts() {
                     {tab === 'active' ? (
                       <>
                         <Link className="miniact" to={`/admin/editor/${item.id}`}>编辑</Link>
-                        <Button ghost small onClick={() => void trash(item)}>删除</Button>
+                        <button className="miniact danger" type="button" onClick={() => void trash(item)}>删除</button>
                       </>
                     ) : (
                       <>
-                        <Button ghost small onClick={() => void restore(item)}>恢复</Button>
-                        <Button ghost small onClick={() => void permanent(item)}>彻底删除</Button>
+                        <button className="miniact" type="button" onClick={() => void restore(item)}>恢复</button>
+                        <button className="miniact danger" type="button" onClick={() => void permanent(item)}>彻底删除</button>
                       </>
                     )}
                   </td>

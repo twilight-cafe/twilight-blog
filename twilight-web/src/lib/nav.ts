@@ -5,6 +5,7 @@
 
 import type { Page } from 'twilight-blog-api'
 import { blog } from './client'
+import { isSearchEnabled } from './flags'
 
 export interface NavItem {
   to: string
@@ -20,8 +21,9 @@ const BASE_NAV: NavItem[] = [
 ]
 
 export function buildNav(pages: Page[]): NavItem[] {
+  const nav = BASE_NAV.filter((item) => item.to !== '/search' || isSearchEnabled())
   return [
-    ...BASE_NAV,
+    ...nav,
     ...pages.map((page) => ({
       to: `/pages/${page.id}`,
       label: page.title,

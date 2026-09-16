@@ -434,3 +434,103 @@ func TestSaveLeavesNoTemporaryFilesBehind(t *testing.T) {
 		t.Fatal("settings.json is not valid JSON after repeated saves")
 	}
 }
+
+/* -------------------------------------------------------------------------- */
+/* 搜索开关与代码块行数上限                                                    */
+/* -------------------------------------------------------------------------- */
+
+// TestSearchEnabledDefaultsToOn 钉住 nil=启用的兼容语义：老 settings.json 里没有
+// search_enabled 键，升级后必须保持搜索开着——静默关掉已上线的功能是破坏性变更。
+func TestSearchEnabledDefaultsToOn(t *testing.T) {
+	cfg := &Config{}
+	if !cfg.SearchEnabledValue() {
+		t.Fatal("a missing search_enabled key must default to enabled")
+	}
+
+	on := true
+	cfg.SearchEnabled = &on
+	if !cfg.SearchEnabledValue() {
+		t.Fatal("an explicit true must stay enabled")
+	}
+
+	off := false
+	cfg.SearchEnabled = &off
+	if cfg.SearchEnabledValue() {
+		t.Fatal("an explicit false must disable search")
+	}
+}
+
+// TestCodeBlockMaxLinesAccessorCoversUnset 钉住三个访问器的行为：
+// 未设置（0）时读出默认值；合法值原样往返；区间外的值被拒绝而不是夹取。
+func TestCodeBlockMaxLinesAccessorCoversUnset(t *testing.T) {
+	cfg := &Config{}
+	if got := cfg.CodeBlockMaxLinesValue(); got != DefaultCodeBlockMaxLines {
+		t.Fatalf("CodeBlockMaxLinesValue() = %d on an unset config, want %d", got, DefaultCodeBlockMaxLines)
+	}
+
+	if err := cfg.SetCodeBlockMaxLines(42); err != nil {
+		t.Fatalf("SetCodeBlockMaxLines(42) error = %v", err)
+	}
+	if got := cfg.CodeBlockMaxLinesValue(); got != 42 {
+		t.Fatalf("CodeBlockMaxLinesValue() = %d, want 42", got)
+	}
+
+	// 边界值必须都收：区间的意义就靠它们定义。
+	for _, edge := range []int{MinCodeBlockMaxLines, MaxCodeBlockMaxLines} {
+		if err := cfg.SetCodeBlockMaxLines(edge); err != nil {
+			t.Fatalf("SetCodeBlockMaxLines(%d) error = %v", edge, err)
+		}
+	}
+
+	// 拒绝而不是夹取：0 在这里与「未设置」同形，但调用方显式提交 0 是输入错误，
+	// 悄悄改成默认值会让保存结果与输入框显示不一致。
+	for _, bad := range []int{-1, 0, 1, 2, MaxCodeBlockMaxLines + 1} {
+		if err := cfg.SetCodeBlockMaxLines(bad); err == nil {
+			t.Fatalf("SetCodeBlockMaxLines(%d) was accepted", bad)
+		}
+	}
+}
+
+// TestCodeBlockMaxLinesRoundTripsAndValidatesOnLoad 覆盖持久化路径：
+// 合法值随 Save/Load 往返；Load 遇到非法值必须启动即失败，
+// 而不是带着一个渲染时才暴露的坏参数继续跑。
+func TestCodeBlockMaxLinesRoundTripsAndValidatesOnLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+
+	cfg := &Config{PasswordHash: testPasswordHash, settingsPath: path}
+	cfg.ApplyDefaults()
+	if err := cfg.SetCodeBlockMaxLines(35); err != nil {
+		t.Fatalf("SetCodeBlockMaxLines(35) error = %v", err)
+	}
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if got := readSettings(t, path)["code_block_max_lines"]; got != float64(35) {
+		t.Fatalf("code_block_max_lines = %v in the file, want 35", got)
+	}
+
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := reloaded.CodeBlockMaxLinesValue(); got != 35 {
+		t.Fatalf("CodeBlockMaxLinesValue() = %d after a reload, want 35", got)
+	}
+
+	// 缺失键 → ApplyDefaults 补默认值：ApplyDefaults 在 Load 之后仍可能被调用
+	// （Save 前），兜底必须补上而不是留 0。
+	empty := &Config{}
+	empty.ApplyDefaults()
+	if empty.CodeBlockMaxLines != DefaultCodeBlockMaxLines {
+		t.Fatalf("ApplyDefaults left CodeBlockMaxLines at %d, want %d", empty.CodeBlockMaxLines, DefaultCodeBlockMaxLines)
+	}
+
+	// 非法值 → Load 报错（写一个越界文件直接喂给 Load）。
+	badPath := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(badPath, []byte(`{"code_block_max_lines": 501}`), 0o600); err != nil {
+		t.Fatalf("write bad fixture: %v", err)
+	}
+	if _, err := Load(badPath); err == nil {
+		t.Fatal("Load accepted an out-of-range code_block_max_lines")
+	}
+}

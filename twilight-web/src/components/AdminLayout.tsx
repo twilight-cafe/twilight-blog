@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { AdminNav, IconButton } from 'ink-design'
 import { blog, logout, useCurrentUser } from '../lib/client'
-import { useDocumentTitle } from '../lib/site'
+import { useDocumentTitle, useSiteAvatar } from '../lib/site'
 import { useToast } from '../lib/toast'
 import Icon from '../lib/icons'
 import ModeToggle from './ModeToggle'
@@ -146,6 +146,11 @@ export default function AdminLayout() {
   const current = menu.find((item) => item.to === location.pathname)?.label
     || (location.pathname === '/admin' ? '概览' : (isAdmin ? '管理' : '账号'))
   useDocumentTitle(current)
+  // 站长头像走 /api/site 的公开快照（useSiteAvatar），与前台侧栏作者卡同源；
+  // 换头像后 refreshSiteMeta 会更新这份缓存，后台侧栏因此无需再单独拉取。
+  // hook 必须在下面的早退之前调用：身份从有到无的重渲染会少执行 hook，
+  // React 直接报「Rendered fewer hooks than expected」。
+  const avatarUrl = useSiteAvatar()
 
   // App resolves the session before rendering any route, so a missing identity
   // here means "signed out", not "still loading".
@@ -177,8 +182,12 @@ export default function AdminLayout() {
           ))}
         </AdminNav>
         <div className="a-user">
-          {/* displayName 恒非空（后备「管理员」/「用户」兜底），无需再留空串守卫 */}
-          <span className="cav">{displayName.slice(0, 1).toUpperCase()}</span>
+          {/* displayName 恒非空（后备「管理员」/「用户」兜底），无需再留空串守卫。
+              有头像就显示头像，没有才回退首字母占位——之前这里永远只渲染占位块，
+              站长换了头像后台也看不到（本次修复的缺陷）。 */}
+          {avatarUrl
+            ? <img className="avatar" src={avatarUrl} alt={displayName} />
+            : <span className="cav">{displayName.slice(0, 1).toUpperCase()}</span>}
           <div className="info"><b>{displayName}</b><span>{roleLabel}</span></div>
           <IconButton size="sm" title="退出登录" disabled={loggingOut} onClick={() => void signOut()}>
             <Icon name="out" size={14} />

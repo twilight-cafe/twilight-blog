@@ -257,9 +257,13 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 	e.GET("/api/pages/:id", pageHandler.Get)
 	// 搜索是公开只读的，但它每处理一个请求就要外呼一次 Meilisearch：
 	// 不限量等于把后端处理能力按请求数免费送出去，所以它和评论一样挂限流器。
-	e.GET("/api/search", searchHandler.Search, limiter(limiters.Search))
-	e.GET("/api/media/:id", mediaHandler.Get)
-	// 站点文案（网站描述）读取公开：它就是要展示给所有读者的那段话。
+	// 搜索关闭（search_enabled=false）时路由本身不注册：「后端也不开放搜索 API」
+	// 要求的是 404 而不是 503——关掉的端点应该让探测者以为它从来不存在，
+	// 且 404 兜底还能统一回复本站不存在此资源，不必为它单独维护错误分支。
+	if searchClient != nil {
+		e.GET("/api/search", searchHandler.Search, limiter(limiters.Search))
+	}
+	e.GET("/api/media/:id", mediaHandler.Get) // 站点文案（网站描述）读取公开：它就是要展示给所有读者的那段话。
 	// 写入在下面的 admin 分组里。
 	e.GET("/api/site", siteHandler.Get)
 

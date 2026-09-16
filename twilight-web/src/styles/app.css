@@ -1023,6 +1023,36 @@ footer.site .bar {
   margin: 0;
   overflow-x: auto;
   background: transparent;
+  /* 行数上限（站点设置「代码块最大显示行数」下发，ContentView 注入 CSS 变量）：
+     超过 N 行的块级代码框在块内上下滚动，而不是把整页撑长。
+     max-height 必须加在内层 pre 上而不是 .code-block 上——后者 overflow:hidden
+     负责圆角裁切，限高放它上面会直接剪掉内容而不是给出滚动条。
+     合成式：N × 1.8em（行高，基于 pre 的 13px 字号）+ 4.3rem（code 的
+     顶 2.9rem + 底 1.4rem 内边距；滚动高度包含子元素 padding，必须计入）。 */
+  max-height: calc(var(--code-max-lines, 20) * 1.8em + 4.3rem);
+  overflow-y: auto;
+  /* 暗色底上的滚动条弱化到「看得见但不抢戏」；Firefox 用 scrollbar-*，
+     Chromium 走下面的 ::-webkit-scrollbar。 */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+
+.plain-body .code-block pre::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.plain-body .code-block pre::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.plain-body .code-block pre::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.plain-body .code-block pre::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .plain-body .code-block pre code.hljs,
@@ -1550,6 +1580,16 @@ img.avatar {
   font-size: 13px;
 }
 
+/* 站长头像（有头像时的形态）。与 .cav 同尺寸同圆角，两者切换时
+   侧栏底部的占位不会跳一下。 */
+.a-user .avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
 .a-user .info {
   min-width: 0;
   display: flex;
@@ -1588,6 +1628,29 @@ img.avatar {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--faint);
+}
+
+/* 顶栏「查看网页」：带图标的幽灵 pill，视觉重量与旁边的 ModeToggle 对齐。
+   之前没有任何样式——它是一行裸链接，混在控件之间显得像漏渲染。 */
+.sbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  color: var(--mut);
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: 7px 13px;
+  transition: color 0.15s var(--ease), background 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+
+.sbtn:hover {
+  color: var(--fg);
+  background: var(--hover);
+  border-color: var(--line-strong);
 }
 
 .panel {
@@ -1651,6 +1714,40 @@ img.avatar {
 
 .tb tr:hover td {
   background: var(--softer);
+}
+
+/* 行内轻操作（文章/页面列表的编辑、删除、恢复）。刻意不用 ink-design 的
+   Button：完整按钮在表格行里高度太重，还把行撑高；这里用 mono 小字 + 细边框
+   的轻量 pill，与表格的 mono 表头同一视觉语言。 */
+.miniact {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  line-height: 1;
+  color: var(--mut);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: color 0.15s var(--ease), background 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+
+.miniact:hover {
+  color: var(--fg);
+  background: var(--hover);
+  border-color: var(--line-strong);
+}
+
+.miniact + .miniact {
+  margin-left: 6px;
+}
+
+/* 危险操作沿用设计系统的 danger 签名（单色系没有红色：删除=删除线），
+   hover 时文字划掉，比变色更明确地表达「这一步是不可逆的」。 */
+.miniact.danger:hover {
+  text-decoration: line-through;
 }
 
 .bulkbar {

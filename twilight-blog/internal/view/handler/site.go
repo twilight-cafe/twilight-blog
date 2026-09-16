@@ -51,8 +51,9 @@ func (h *SiteHandler) Get(c echo.Context) error {
 	// 头像读不到（未安装、或那一列是 NULL）时给空串而不是省略字段：
 	// 前端需要能区分「没有头像」（回退占位块）与「这个字段不存在」。
 	return c.JSON(http.StatusOK, viewmodel.SiteSettingsResponse{
-		Description: h.config.SiteDescriptionValue(),
-		AvatarURL:   h.currentAvatarURL(c),
+		Description:       h.config.SiteDescriptionValue(),
+		AvatarURL:         h.currentAvatarURL(c),
+		CodeBlockMaxLines: h.config.CodeBlockMaxLinesValue(),
 	})
 }
 
@@ -62,9 +63,10 @@ func (h *SiteHandler) Get(c echo.Context) error {
 // 重启之后「刚才明明保存成功了」会变成一句无法复现的抱怨。
 // 这与 install handler 处理密码哈希的方式一致。
 //
-// 注意这个端点**只写描述**。站长头像虽然在同一条公开读路径上下发，但它属于
-// 账号资料（users.avatar_media_id），写入在 PUT /api/admin/profile 上——
-// 让「站点文案」与「账号资料」各自只有一个写入口，读者不必猜哪个才是权威。
+// 注意这个端点只写「站点文案级」的设置（描述、代码块行数）。站长头像虽然在
+// 同一条公开读路径上下发，但它属于账号资料（users.avatar_media_id），
+// 写入在 PUT /api/admin/profile 上——让「站点文案」与「账号资料」各自
+// 只有一个写入口，读者不必猜哪个才是权威。
 func (h *SiteHandler) Update(c echo.Context) error {
 	logging.Debugf("[handler:site] Update called path=%s", c.Request().URL.Path)
 
@@ -76,21 +78,36 @@ func (h *SiteHandler) Update(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	previous := h.config.SiteDescriptionValue()
+	previousDescription := h.config.SiteDescriptionValue()
+	previousLines := h.config.CodeBlockMaxLinesValue()
 	h.config.SetSiteDescription(req.Description)
+	// 行数是三态（nil=保持现值），所以这里不是无条件调用。
+	// 先暂存合法化后的值：SetCodeBlockMaxLines 可能存的是请求里的指针值，
+	// 回滚时必须写回**进入 handler 时的值**而不是指针指向的内容。
+	newLines := previousLines
+	if req.CodeBlockMaxLines != nil {
+		if err := h.config.SetCodeBlockMaxLines(*req.CodeBlockMaxLines); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
+		newLines = *req.CodeBlockMaxLines
+	}
 
 	if err := h.config.Save(h.settingsPath); err != nil {
-		h.config.SetSiteDescription(previous)
+		h.config.SetSiteDescription(previousDescription)
+		if newLines != previousLines {
+			_ = h.config.SetCodeBlockMaxLines(previousLines)
+		}
 		logging.Errorf("[site] persist settings failed: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to save site settings")
 	}
 
-	logging.Infof("[site] site description updated")
+	logging.Infof("[site] site settings updated")
 	return c.JSON(http.StatusOK, viewmodel.SiteSettingsResponse{
 		Description: h.config.SiteDescriptionValue(),
 		// 与 Get 保持同一形状：写描述不会动头像，但响应若少一个字段，
 		// 前端「拿响应替换本地缓存」的写法就会把头像抹掉。
-		AvatarURL: h.currentAvatarURL(c),
+		AvatarURL:         h.currentAvatarURL(c),
+		CodeBlockMaxLines: newLines,
 	})
 }
 

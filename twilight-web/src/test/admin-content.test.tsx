@@ -332,7 +332,8 @@ describe('SiteSettings', () => {
     expect(document.body.textContent).toContain('有未保存的修改')
 
     fireEvent.submit(textarea.closest('form') as HTMLFormElement)
-    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({ description: '多 段空白 描述' }))
+    // code_block_max_lines 一并提交：同一张设置卡、同一次保存（行数来自 getSite 回的缺省 20）。
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({ description: '多 段空白 描述', code_block_max_lines: 20 }))
     await waitFor(() => expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('保存后的描述'))
     await waitFor(() => expect(screen.getAllByText('已保存').length).toBeGreaterThan(0))
   })
@@ -342,10 +343,39 @@ describe('SiteSettings', () => {
     const { container } = renderPlain(<SiteSettings />)
     await waitFor(() => expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('测试站'))
 
-    fireEvent.click(screen.getByRole('button', { name: '清空' }))
+    fireEvent.click(screen.getByRole('button', { name: '清空描述' }))
     expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('')
     fireEvent.submit(container.querySelector('form') as HTMLFormElement)
-    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({ description: '' }))
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({ description: '', code_block_max_lines: 20 }))
     await waitFor(() => expect(screen.getAllByText('已清空网站描述，前台将使用内置文案').length).toBeGreaterThan(0))
+  })
+
+  it('代码块行数：加载回填、修改后随描述一并保存、越界拦截', async () => {
+    client.blog.getSite.mockResolvedValue({ description: '测试站', code_block_max_lines: 35 })
+    client.blog.updateSite.mockResolvedValue({ description: '测试站', code_block_max_lines: 35 })
+    const { container } = renderPlain(<SiteSettings />)
+    const linesInput = () => container.querySelector('input[type=number]') as HTMLInputElement
+    await waitFor(() => expect(linesInput().value).toBe('35'))
+
+    // 保存按钮被「描述未修改」挡住 → 改行数后应放行（行数也计入 dirty）。
+    fireEvent.change(linesInput(), { target: { value: '60' } })
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({ description: '测试站', code_block_max_lines: 60 }))
+    // 服务端返回的最终值回填输入框（mock 返回 35）。
+    await waitFor(() => expect(linesInput().value).toBe('35'))
+
+    // 越界（500 之外）→ 保存按钮禁用 + 直接提交被拦截
+    fireEvent.change(linesInput(), { target: { value: '501' } })
+    expect(container.querySelector('.act-row button[type=submit]')?.hasAttribute('disabled')).toBe(true)
+    expect(client.blog.updateSite).toHaveBeenCalledTimes(1)
+
+    // 按钮 disabled 挡不住 form 的 submit 事件：防御分支用 toast 拦截、不发请求。
+    // 覆盖两条非法路径：越界整数（501）与非整数（空串 parse 出 NaN）。
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+    await waitFor(() => expect(screen.getAllByText('代码块行数必须是 3 到 500 之间的整数').length).toBeGreaterThan(0))
+    fireEvent.change(linesInput(), { target: { value: '' } })
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+    await waitFor(() => expect(screen.getAllByText('代码块行数必须是 3 到 500 之间的整数').length).toBeGreaterThan(0))
+    expect(client.blog.updateSite).toHaveBeenCalledTimes(1)
   })
 })

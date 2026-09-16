@@ -413,11 +413,18 @@ export interface SiteSettingsResponse {
    * 拆成两次往返。
    */
   avatar_url: string;
+  /**
+   * 代码块最大显示行数。前台用它设置限高 CSS 变量——块级代码框超过该行数后
+   * 在块内上下滚动，而不是把整页撑长。恒输出（服务端不带 omitempty）。
+   */
+  code_block_max_lines: number;
 }
 
-/** 修改站点描述。允许空串（清空是合法意图，前台回退内置文案）；上限 200 字符。 */
+/** 修改站点设置。description 必填；code_block_max_lines 省略表示保持现值。 */
 export interface SiteSettingsInput {
   description: string;
+  /** 代码块最大显示行数（3..500）；省略 = 不修改。 */
+  code_block_max_lines?: number;
 }
 
 // 媒体源：浏览器里传 Blob/ArrayBuffer/Uint8Array，Node 里也可传文件路径字符串（由 media.ts 读盘）。

@@ -51,6 +51,8 @@ beforeEach(() => {
   client.setCurrentUser(null)
   client.blog.getSite.mockResolvedValue({ description: '测试站' })
   client.blog.listComments.mockResolvedValue({ items: [], page: 1, page_size: 12, total: 0, total_pages: 1 })
+  // 功能开关由外壳注入；各用例显式设置，缺省时拆掉避免泄漏。
+  delete (window as { __SITE__?: unknown }).__SITE__
 })
 
 describe('Post', () => {
@@ -202,5 +204,16 @@ describe('Search', () => {
     fireEvent.change(input, { target: { value: '  新词  ' } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
     await waitFor(() => expect(client.blog.search).toHaveBeenLastCalledWith({ q: '新词', page: 1, pageSize: 12 }))
+  })
+
+  it('搜索关闭：渲染禁用提示页，且 URL 带 q 也不发起任何搜索请求', () => {
+    // 能到达这一页的只剩手输 URL 与收藏夹（导航与页脚的入口都摘掉了），
+    // 但页面仍然不能对已关闭的后端发起注定 404 的请求。
+    ;(window as { __SITE__?: unknown }).__SITE__ = { searchEnabled: false }
+    renderAt(<Search />, '/search?q=anything', '/search')
+
+    expect(screen.getByText('本站未启用搜索功能')).toBeTruthy()
+    expect(screen.queryByPlaceholderText('输入关键词搜索…')).toBeNull()
+    expect(client.blog.search).not.toHaveBeenCalled()
   })
 })

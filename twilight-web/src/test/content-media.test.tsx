@@ -6,6 +6,7 @@ import MediaThumb from '../components/media/MediaThumb'
 import MediaLightbox from '../components/media/MediaLightbox'
 import MediaPicker from '../components/media/MediaPicker'
 import { ToastProvider } from '../lib/toast'
+import { refreshSiteMeta, resetSiteCacheForTests } from '../lib/site'
 import { getSharedClientMock, makeMedia } from './helpers'
 
 vi.mock('../lib/client', async () => {
@@ -16,6 +17,17 @@ vi.mock('../lib/client', async () => {
 const client = getSharedClientMock()
 
 describe('ContentView', () => {
+  // ContentView 订阅站点快照（代码块行数上限）：不给 getSite 一个实现的话，
+  // 懒建的 vi.fn() 返回 undefined，loadMeta 的 .then 会直接崩掉整个用例。
+  beforeEach(() => {
+    resetSiteCacheForTests()
+    client.blog.getSite.mockReset()
+    client.blog.getSite.mockResolvedValue({ description: '', avatar_url: '', code_block_max_lines: 20 })
+  })
+  afterEach(() => {
+    resetSiteCacheForTests()
+  })
+
   it('默认走评论白名单管线；trusted 走文章管线', () => {
     const { container, rerender } = render(<ContentView text="**粗体**" />)
     expect(container.querySelector('.plain-body')?.innerHTML).toContain('<strong>粗体</strong>')
@@ -85,6 +97,20 @@ describe('ContentView', () => {
     const { container, unmount } = render(<ContentView text="普通**文本**" trusted />)
     expect(container.querySelector('.code-block')).toBeNull()
     expect(() => unmount()).not.toThrow()
+  })
+
+  it('限高行数经 --code-max-lines 注入容器；站点设置更新后跟随', async () => {
+    const { container } = render(<ContentView text="文本" trusted />)
+    const el = container.querySelector('.plain-body') as HTMLElement
+    // getSite 回的是 beforeEach 里的 20。
+    await waitFor(() => expect(el.style.getPropertyValue('--code-max-lines')).toBe('20'))
+
+    // 站长改完设置的回传路径：refreshSiteMeta 丢缓存重拉 → publish → 订阅者更新。
+    client.blog.getSite.mockResolvedValue({ description: '', avatar_url: '', code_block_max_lines: 42 })
+    await act(async () => {
+      await refreshSiteMeta()
+    })
+    await waitFor(() => expect(el.style.getPropertyValue('--code-max-lines')).toBe('42'))
   })
 })
 

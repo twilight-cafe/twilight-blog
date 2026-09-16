@@ -28,7 +28,9 @@ export function createSiteApi(http: HttpClient): SiteApi {
       return http.request<SiteSettingsResponse>({
         method: 'PUT',
         path: '/api/admin/site',
-        json: { description: input.description },
+        // code_block_max_lines 是可选三态：省略 = 服务端保持现值。
+        // undefined 字段被 JSON.stringify 自动丢弃，恰好就是「省略」。
+        json: { description: input.description, code_block_max_lines: input.code_block_max_lines },
       });
     },
   };

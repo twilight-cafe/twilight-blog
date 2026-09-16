@@ -29,7 +29,11 @@
     />
 {{range .Stylesheets}}    <link rel="stylesheet" href="{{.}}" />
 {{end}}{{range .Scripts}}    <script type="module" src="{{.}}"></script>
-{{end}}    <title>{{.Title}}</title>
+{{end}}    <!-- 站点功能开关：SPA 在首个渲染前读它决定是否挂载搜索入口。
+         这里必须是同步的内联脚本——放进入口 chunk 的话，入口会在
+         「已渲染但不知情」的状态下先画出搜索框，再被 flag 撤掉。 -->
+    <script>window.__SITE__ = { searchEnabled: {{.SearchEnabled}} };</script>
+    <title>{{.Title}}</title>
   </head>
   <body>
     <div id="root"></div>

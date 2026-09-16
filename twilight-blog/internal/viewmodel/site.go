@@ -24,6 +24,14 @@ const MaxSiteDescriptionLength = 200
 // 而不是一个空标签。
 const DefaultSiteDescription = "以代码为笔，以时间为墨。"
 
+// 代码块行数上限的合法区间。与 internal/config 的 Min/MaxCodeBlockMaxLines
+// 语义一致；刻意不 import config——viewmodel 的校验是 HTTP 边界的第一道关，
+// 而 config 的常量服务于持久化层，两个包不该因此建立依赖。
+const (
+	MinCodeBlockLines = 3
+	MaxCodeBlockLines = 500
+)
+
 // SiteDescription 返回可以直接上屏的站点描述：站长设置过就用它，
 // 否则回退到 DefaultSiteDescription。
 //
@@ -36,12 +44,15 @@ func SiteDescription(configured string) string {
 	return configured
 }
 
-// SiteSettingsRequest 修改站点级文案设置。目前只有「网站描述」一项。
+// SiteSettingsRequest 修改站点级文案设置。
 //
-// 它刻意是独立于 admin_profile 的一条路由：站长资料（登录名 / 展示名）与
-// 站点文案是两件事，更新频率与出错后的影响面都不一样。
+// Description 必填；CodeBlockMaxLines 是可选的三态字段：省略（nil）=保持现值，
+// 数字=更新为该值。用指针而不是 int，是为了兼容只发 description 的旧客户端
+// （SDK 与前端都有按字段省略的调用方），与 OptionalID 的设计动机一致。
 type SiteSettingsRequest struct {
 	Description string `json:"description"`
+	// CodeBlockMaxLines 是代码块最大显示行数；nil 表示本次请求不修改它。
+	CodeBlockMaxLines *int `json:"code_block_max_lines,omitempty"`
 }
 
 // SiteSettingsResponse 是站点设置的**公开**视图：任何人都能看到，
@@ -63,14 +74,26 @@ type SiteSettingsResponse struct {
 	// 恒输出（不带 omitempty）：空串是有意义的取值，而字段缺席会让前端
 	// 分不清「没有头像」与「服务端还没升级」。
 	AvatarURL string `json:"avatar_url"`
+	// CodeBlockMaxLines 是代码块最大显示行数，前台用它设置限高 CSS 变量。
+	// 恒输出（不带 omitempty）：它是渲染参数而不是状态位，缺席会让前端
+	// 分不清「服务端没下发」与「前端该用默认值」。
+	CodeBlockMaxLines int `json:"code_block_max_lines"`
 }
 
 // Validate 清洗描述：折叠换行与连续空白，使它在页脚这种单行场景里不会撑破布局。
 // 允许为空（清空描述是合法意图，前台会回退到内置文案）。
+// CodeBlockMaxLines 为 nil（字段省略）时跳过校验——那是「保持现值」；
+// 显式给出的值必须在合法区间内，负数或 0 一律拒绝而不是夹取到边界。
 func (r *SiteSettingsRequest) Validate() error {
 	r.Description = normalizeSiteDescription(r.Description)
 	if utf8.RuneCountInString(r.Description) > MaxSiteDescriptionLength {
 		return fmt.Errorf("description must be at most %d characters", MaxSiteDescriptionLength)
+	}
+	if r.CodeBlockMaxLines != nil {
+		lines := *r.CodeBlockMaxLines
+		if lines < MinCodeBlockLines || lines > MaxCodeBlockLines {
+			return fmt.Errorf("code_block_max_lines must be between %d and %d", MinCodeBlockLines, MaxCodeBlockLines)
+		}
 	}
 	return nil
 }

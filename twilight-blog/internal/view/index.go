@@ -63,6 +63,9 @@ type indexData struct {
 	Description string
 	// Title 是 <title> 的完整内容（含品牌前缀）。
 	Title string
+	// SearchEnabled 决定外壳注入的站点功能开关：SPA 在首渲染前读它决定
+	// 是否挂载搜索入口。它与模板里的 window.__SITE__ 是同一条通道。
+	SearchEnabled bool
 	// Stylesheets / Scripts 是站内绝对路径（以 / 开头）。
 	Stylesheets []string
 	Scripts     []string
@@ -150,12 +153,13 @@ func resolveIndexAssets(webFS fs.FS) (stylesheets []string, scripts []string, er
 // 描述为空（站长没设置过）时用 viewmodel.DefaultSiteDescription，与前端
 // lib/site.ts 的 FALLBACK_DESCRIPTION 是同一句话——两处不一致会让页面在
 // SPA 启动的瞬间把描述换掉，正是这次要修的观感问题。
-func newIndexData(description string, stylesheets, scripts []string) indexData {
+func newIndexData(description string, searchEnabled bool, stylesheets, scripts []string) indexData {
 	description = viewmodel.SiteDescription(description)
 	return indexData{
-		Description: description,
-		Title:       indexTitleBrand + " · " + description,
-		Stylesheets: stylesheets,
-		Scripts:     scripts,
+		Description:   description,
+		Title:         indexTitleBrand + " · " + description,
+		SearchEnabled: searchEnabled,
+		Stylesheets:   stylesheets,
+		Scripts:       scripts,
 	}
 }

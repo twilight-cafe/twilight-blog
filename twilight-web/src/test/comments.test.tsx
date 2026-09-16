@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import Comments from '../components/Comments'
 import { ToastProvider } from '../lib/toast'
+import { resetSiteCacheForTests } from '../lib/site'
 import { getSharedClientMock, adminMe, visitorMe, makeComment } from './helpers'
 
 vi.mock('../lib/client', async () => {
@@ -36,6 +37,10 @@ function headingText(): string {
 beforeEach(() => {
   vi.clearAllMocks()
   client.setCurrentUser(null)
+  // 评论区里的 ContentView（渲染评论文本）现在订阅站点快照（代码块行数）；
+  // 不给 getSite 实现的话懒建的 vi.fn() 返回 undefined，loadMeta 直接崩。
+  resetSiteCacheForTests()
+  client.blog.getSite.mockResolvedValue({ description: '', avatar_url: '', code_block_max_lines: 20 })
 })
 
 describe('加载与展示', () => {

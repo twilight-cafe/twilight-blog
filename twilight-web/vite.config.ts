@@ -51,6 +51,9 @@ function indexShellPlugin(): Plugin {
           )
           .replace(/\{\{\.Description\}\}/g, '')
           .replace(/\{\{\.Title\}\}/g, 'Twilight')
+          // 开发期功能开关全开：dev server 够不到 settings.json，而开发时
+          // 总是需要看到全部功能（要调试搜索禁用态，改测试里的 mock 即可）。
+          .replace(/\{\{\.SearchEnabled\}\}/g, 'true')
         server
           .transformIndexHtml(pathname, html)
           .then((transformed) => {
