@@ -8,6 +8,8 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import App from '../App'
 import Editor from '../pages/admin/Editor'
 import MediaAdmin from '../pages/admin/MediaAdmin'
@@ -212,6 +214,72 @@ describe('ContentView enhanceCodeBlocks 探针', () => {
     const copy = root.querySelector('.code-copy') as HTMLButtonElement
     fireEvent.click(copy)
     await waitFor(() => expect(copy.textContent).toBe('已复制'))
+  })
+
+  // React 19 会用相同内容重设 dangerouslySetInnerHTML（真机实测），把包好的
+  // 壳冲掉；修复靠「每次提交后重跑增强」。这个用例模拟的正是那个循环：
+  // 壳被外部重置（innerHTML 覆写）后，重跑 enhanceCodeBlocks 必须能恢复壳，
+  // 而不是留下裸 pre——限行 CSS 选择器 .plain-body .code-block pre 只认包壳后的结构。
+  it('壳被外部重置后重跑增强能完整恢复（React 19 重设 innerHTML 场景）', () => {
+    const raw = '<pre><code class="language-py">x = 1</code></pre>'
+    const root = document.createElement('div')
+    root.innerHTML = raw
+    enhanceCodeBlocks(root, new Set())
+    expect(root.querySelector('.code-block')).not.toBeNull()
+
+    // 模拟 React 19 的重设：同内容覆写 innerHTML，壳消失、pre 裸奔。
+    root.innerHTML = raw
+    expect(root.querySelector('.code-block')).toBeNull()
+
+    enhanceCodeBlocks(root, new Set())
+    const restored = root.querySelector('.code-block')
+    expect(restored).not.toBeNull()
+    expect(restored?.querySelector('pre')).not.toBeNull()
+    expect(root.querySelectorAll('.code-block').length).toBe(1) // 无嵌套双包
+    expect(restored?.querySelector('.code-copy')).not.toBeNull()
+  })
+})
+
+// jsdom 不做布局，也复现不了 React 19 真机路径上「同内容重设 innerHTML」的
+// 行为（并发提交在 act 环境里不会发生），所以这个 bug 在组件测试里天然不可见。
+// 能钉住它的只有源码形态本身：增强 effect 必须是无依赖的 layout effect——
+// 一旦有人改回 useEffect(..., [html])，真机上壳丢失的缺陷就悄悄回来了。
+describe('ContentView 增强 effect 源码形态（React 19 重设 innerHTML 的守护）', () => {
+  const source = readFileSync(resolve(process.cwd(), 'src/components/ContentView.tsx'), 'utf8')
+
+  it('增强走无依赖的 useLayoutEffect', () => {
+    expect(source).toContain('useLayoutEffect(() => {')
+    expect(source).toContain('enhanceCodeBlocks(ref.current, pending)')
+  })
+
+  it('增强 effect 不得依赖 [html]（真机壳丢失的根源）', () => {
+    expect(source).not.toMatch(/\},\s*\[html\]\)/)
+    expect(source).not.toContain('}, [html])')
+  })
+})
+
+// JetBrains Mono 已本地打包（取代 Google Fonts 外链）：app.css 的 @font-face
+// 必须指向 vite 打包的本地产物，Go 模板不得再出现任何字体 CDN 链接。
+describe('字体本地化（零外链守护）', () => {
+  const appCss = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+  const goTemplate = readFileSync(
+    resolve(process.cwd(), '../twilight-blog/internal/view/template/index.html'),
+    'utf8',
+  )
+
+  it('三个字重都有本地 @font-face', () => {
+    for (const weight of [400, 500, 600]) {
+      expect(appCss).toContain(`font-weight: ${weight}`)
+      expect(appCss).toContain(`jetbrains-mono-latin-${weight}-normal.woff2`)
+    }
+  })
+
+  it('app.css 与 Go 模板都没有 fonts.googleapis / fonts.gstatic', () => {
+    expect(appCss).not.toContain('fonts.googleapis.com')
+    expect(appCss).not.toContain('fonts.gstatic.com')
+    expect(goTemplate).not.toContain('fonts.googleapis.com')
+    expect(goTemplate).not.toContain('fonts.gstatic.com')
+    expect(goTemplate).not.toContain('rel="preconnect"')
   })
 })
 

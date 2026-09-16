@@ -14,7 +14,7 @@
 // 注意：复制成功的提示用 setTimeout 还原，所有 timer 收进 ref 集合，卸载时统一
 // clearTimeout，避免组件已卸载还去改按钮文字（内存/警告泄漏）。
 
-import { useEffect, useMemo, useRef, type CSSProperties } from 'react'
+import { useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react'
 import { renderCommentMarkdown, renderMarkdown } from '../lib/markdown'
 import { useSiteCodeLines } from '../lib/site'
 
@@ -118,14 +118,22 @@ export default function ContentView({ text, className = '', trusted = false }: C
     [trusted, text],
   )
 
-  useEffect(() => {
+  // 为什么是「无依赖的 layout effect」而不是 useEffect(..., [html])：
+  // React 19 在父级提交（如 TOC 注入引发的整页重渲染）会用**完全相同的内容**
+  // 重新设置 dangerouslySetInnerHTML（真机实测：同一元素、同 len/同 hash 的
+  // innerHTML 被连续设置两次），把 DOM 后处理包好的壳冲掉；而依赖 [html] 的
+  // effect 不会在第二次提交后重跑——壳就永久丢失，代码块限行随之失效。
+  // 所以必须在**每次**提交后重新检查一遍。enhanceCodeBlocks 幂等（已包壳的
+  // pre 直接跳过），重复执行没有副作用；layout effect 保证重包发生在 paint
+  // 之前，不会闪一下裸代码。
+  useLayoutEffect(() => {
     const pending = timers.current
     enhanceCodeBlocks(ref.current, pending)
     return () => {
       for (const timer of pending) window.clearTimeout(timer)
       pending.clear()
     }
-  }, [html])
+  })
 
   return (
     <div

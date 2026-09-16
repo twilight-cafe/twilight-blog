@@ -3,6 +3,36 @@
    Built on top of InkUI design tokens/components.
    ============================================================ */
 
+/* JetBrains Mono 本地打包（取代 Google Fonts 外链）：
+   latin 子集三个字重共 ~65KB，vite 按相对 url 打进带指纹的 assets，
+   Go embed 后完全自包含——没有第三方请求，也永远不会被墙或不在线拖慢。
+   不写 unicode-range：JetBrains Mono 无中文字形，font-family 栈里的
+   'Noto Sans SC'/系统字体会自然接管（fontsource v5 同款做法）。
+   字体文件来自 @fontsource/jetbrains-mono@5.3.0（OFL 许可）。 */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('../assets/fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url('../assets/fonts/jetbrains-mono-latin-500-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url('../assets/fonts/jetbrains-mono-latin-600-normal.woff2') format('woff2');
+}
+
 :root {
   --page-width: 1360px;
   /* 顶栏与下方内容之间的呼吸间距。
