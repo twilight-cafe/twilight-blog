@@ -211,7 +211,7 @@ pwsh -File deploy\harden-windows-acl.ps1 -Revert
 
 ---
 
-## 四、备份
+## 四、备份与还原
 
 凭据现在**只住在数据库里**（`settings.json` 不再含任何密码哈希）。
 备份清单因此变成：
@@ -223,6 +223,93 @@ pwsh -File deploy\harden-windows-acl.ps1 -Revert
 | `settings.json`（站点描述等；**不含密钥**） | |
 
 发信密钥在 `/etc/twilight-blog.env` 里，单独备份（或存进密钥管理器）。
+
+上面这张表由 `backup` 子命令直接实现，不必手工拷文件：
+
+```bash
+cd /var/lib/twilight-blog && sudo -u twilight-blog /usr/local/bin/twilight-blog backup
+# → twilight-backup-20260918-120000.tar.gz（+ 同名 .sha256 旁文件）
+```
+
+### 4.1 `backup`
+
+```
+twilight-blog backup [-o <file>|-] [--with-index] [--with-logs] [--force] [--quiet]
+```
+
+- `-o -` 把归档写到 stdout，于是 `ssh host 'twilight-blog backup -o -' > local.tar.gz`
+  可以直接把它拉下来；此时内容清单改走 stderr，避免混进归档。
+- **默认不打包 `meilisearch-data/`**：索引每次启动都会从数据库全量重建，打包只是
+  让归档更大；`--with-index` 会把它和主密钥（`meilisearch-data.master.key`）**一起**
+  带上——两者必须成对，换了钥匙的旧索引读不出来。
+- `--with-logs` 会带上 `log.txt` 与全部轮转代（`log.txt.1`…）。
+- 目标已存在时默认拒绝覆盖，`--force` 才允许。
+- **可以在服务运行中执行**：数据库走 `VACUUM INTO`，拿的是一致快照，不阻塞写入。
+  这也是「不要直接 `cp blog.db`」的原因——WAL 模式下最近提交的事务还在
+  `blog.db-wal` 里，只拷主文件会**静默丢掉最近几条写入**。
+
+### 4.2 `restore`
+
+```
+twilight-blog restore <archive|-> [--yes] [--keep-settings] [--keep-sessions]
+                              [--no-safety-backup] [--dry-run] [--force]
+```
+
+```bash
+sudo systemctl stop twilight-blog
+cd /var/lib/twilight-blog
+sudo -u twilight-blog /usr/local/bin/twilight-blog restore --dry-run /root/backup.tar.gz
+sudo -u twilight-blog /usr/local/bin/twilight-blog restore --yes /root/backup.tar.gz
+sudo systemctl start twilight-blog
+```
+
+**必须先停服务**。还原会替换 `blog.db`、删掉它的 `-wal`/`-shm`、把整个 `media/`
+换掉，而正在运行的进程持有旧文件的句柄——它随后写下的东西会落到已经被替换掉的
+inode 上，**不报错**，只是数据慢慢对不上。服务在跑时命令会拒绝执行；判据是工作
+目录里的 `blog.pid`（服务启动时写、退出时删）加上「那个进程是否真的还活着」，
+所以崩溃后留下的陈旧锁只会得到一条提示，不会把人永久挡在门外。`--force` 可以越过。
+
+其余选项与安全性质：
+
+- **动数据之前先自动打一份「还原前安全备份」**（`twilight-backup-pre-restore-*.tar.gz`），
+  它就是回滚点。`--no-safety-backup` 跳过它——此时旧数据会被改名保留而不是删除，
+  因为删掉等于把退路堵死。
+- 归档先**完整解包并逐项校验**（路径守卫、类型白名单、体积封顶、sha256 对账），
+  全部通过之后才问用户，所以「解包成功」这件事本身是有信息量的。
+- **默认吊销全部会话**。还原会把 `sessions` 表回滚到备份那一刻，于是备份之后被
+  踢下线的设备会重新拿到有效凭证。`--keep-sessions` 才保留归档里的那份。
+- `--keep-settings` 保留本机 `settings.json`（端口、代理、媒体目录布局），只换内容
+  ——把 A 站的归档还原到 B 站时用。注意媒体会按**本机**的 `media_dir` 落位。
+- 非终端（systemd、cron、管道）不会把「没人能回答」当成同意，必须显式 `--yes`。
+- 还原后**索引会在下次启动时从数据库重新同步**，`--with-index` 带回来的索引只是
+  省一次全量重建。
+
+### 4.3 归档是敏感文件
+
+归档里有全部账号的 bcrypt 哈希、会话 token 摘要、回收站原文与每张图片的**唯一副本**
+（媒体是硬删、没有回收站）。应用写出的一切都是 0600，但传输与存放要自己负责：
+
+```bash
+# 传输后核对旁文件（一份没校验过的备份只能算「很可能完整」）
+sha256sum -c twilight-backup-20260918-120000.tar.gz.sha256
+```
+
+定时备份交给 cron 或 systemd timer，注意**用服务自己的账号**跑，否则归档的属主
+会变成 root 且权限取决于 umask。`-o` 是普通路径、不做时间格式化，要按日期归档
+就包一层 shell：
+
+```ini
+# /etc/systemd/system/twilight-backup.service
+[Service]
+Type=oneshot
+User=twilight-blog
+WorkingDirectory=/var/lib/twilight-blog
+ExecStart=/bin/sh -c 'exec /usr/local/bin/twilight-blog backup --quiet \
+  -o /var/backups/twilight/backup-$(date -u +%%Y%%m%%dT%%H%%M%%S).tar.gz'
+```
+
+（保留份额、异地存放、定期**真的还原一次**——这些都在这个命令之外，但它们才是
+备份有没有用的决定性因素。）
 
 ---
 

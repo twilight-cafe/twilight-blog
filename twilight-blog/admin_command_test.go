@@ -12,6 +12,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"blog-engine/internal/database"
+	"blog-engine/internal/logging"
 	"blog-engine/internal/model"
 	"blog-engine/internal/session"
 )
@@ -34,11 +35,33 @@ func TestMain(m *testing.M) {
 	}
 	cliTestRoot = root
 
+	// 把日志文件钉在测试根目录里，而不是让第一次写日志的那个用例决定它去哪。
+	// log.txt 一旦打开就跟着进程走到结束（logging 包的设计），所以谁先写谁决定
+	// 位置——那意味着一个随机用例的目录里会多出一个谁也删不掉的 log.txt。
+	// 在这里先打开，位置就固定了，与用例的执行顺序无关。
+	pinLogFile(root)
+
 	code := m.Run()
 
 	// 日志句柄此时仍被持有，删除可能失败；失败不是错误，临时目录会被系统回收。
 	_ = os.RemoveAll(root)
 	os.Exit(code)
+}
+
+// pinLogFile 以 root 为工作目录打开一次日志文件，之后所有日志都写到那里。
+func pinLogFile(root string) {
+	previousWD, err := os.Getwd()
+	if err != nil {
+		panic("getwd: " + err.Error())
+	}
+	if err := os.Chdir(root); err != nil {
+		panic("chdir to the CLI test root: " + err.Error())
+	}
+	defer func() { _ = os.Chdir(previousWD) }()
+
+	if err := logging.Configure(""); err != nil {
+		panic("configure logging: " + err.Error())
+	}
 }
 
 // cliTestRoot 见 TestMain。

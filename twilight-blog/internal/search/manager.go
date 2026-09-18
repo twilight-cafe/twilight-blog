@@ -45,6 +45,15 @@ func masterKeyPath(dataDir string) string {
 	return filepath.Join(filepath.Dir(dataDir), filepath.Base(dataDir)+masterKeySuffix)
 }
 
+// MasterKeyPath 是对外的主密钥位置查询，供备份与还原使用。
+//
+// 为什么需要它：索引可以整个丢掉（每次启动都会重建），但**密钥与索引库必须成对
+// 搬运**——密钥被记进 Meilisearch 自己的鉴权库，换一把钥匙的旧库对不上。
+// 所以备份要么两个都带、要么两个都不带，路径规则不能在两处各写一份。
+func MasterKeyPath(dataDir string) string {
+	return masterKeyPath(dataDir)
+}
+
 // resolveMasterKey 取本地 Meilisearch 的主密钥：首次随机生成，之后落盘复用。
 //
 // 此前的实现是一句写死的常量 `"meili-local"`，理由写在注释里——「只监听回环，

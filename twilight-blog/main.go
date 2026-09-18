@@ -22,6 +22,7 @@ import (
 	"blog-engine/internal/logging"
 	"blog-engine/internal/middleware"
 	"blog-engine/internal/model"
+	"blog-engine/internal/pidfile"
 	"blog-engine/internal/search"
 	"blog-engine/internal/session"
 	"blog-engine/internal/view"
@@ -67,8 +68,9 @@ func startWithRetries(attempts int, backoff time.Duration, start func() (*search
 	return nil, lastErr
 }
 
-// main 是进程入口：先处理 email / admin 子命令，否则走启动 HTTP 服务的主路径。
-// 启动顺序与失败策略见包注释；任何一步失败都以非零状态退出。
+// main 是进程入口：先处理 email / admin / backup / restore 子命令，
+// 否则走启动 HTTP 服务的主路径。启动顺序与失败策略见包注释；
+// 任何一步失败都以非零状态退出。
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "email" {
 		if err := runEmailCommand(os.Args[2:]); err != nil {
@@ -77,10 +79,16 @@ func main() {
 		}
 		return
 	}
-	// admin 子命令自己决定退出码（2 = 用法或校验失败，1 = 运行失败），
-	// 所以这里直接用它返回的值。
+	// admin / backup / restore 三个子命令自己决定退出码
+	// （2 = 用法或校验失败，1 = 运行失败），所以这里直接用它返回的值。
 	if len(os.Args) > 1 && os.Args[1] == "admin" {
 		os.Exit(runAdminCommand(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "backup" {
+		os.Exit(runBackupCommand(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "restore" {
+		os.Exit(runRestoreCommand(os.Args[2:]))
 	}
 
 	const settingsPath = "settings.json"
@@ -92,6 +100,23 @@ func main() {
 		logging.Fatalf("configure default logging: %v", err)
 	}
 	logging.Debugf("[main] default log file opened")
+
+	// 记下「本站正在运行」，供命令行工具判断（见 internal/pidfile）。
+	//
+	// 备份并不依赖它——VACUUM INTO 拿的是一致快照，边服务边备份是安全的。但
+	// **还原依赖它**：还原会替换 blog.db、删掉它的 -wal/-shm、把媒体目录整个
+	// 换掉，而一个还在跑的进程会继续往旧的文件句柄里写。没有这个文件，还原
+	// 就只能靠猜（比如「-wal 存在」，而它在崩溃后也会留下）。
+	//
+	// 写失败只告警、不中断启动：磁盘满或目录只读时站点仍然该能对外服务，
+	// 代价仅仅是还原命令退回到「没有锁文件」那条路（它仍会告警）。
+	lock, lockErr := pidfile.Acquire(pidfile.FileName)
+	if lockErr != nil {
+		logging.Warnf("[main] could not write %s: %v; "+
+			"`restore` will not be able to tell that this instance is running", pidfile.FileName, lockErr)
+	} else {
+		defer lock.Release()
+	}
 
 	// 是否已安装取决于 settings.json 是否存在且含非空 password_hash：
 	// 只有 settings.json 而没有密码哈希，只是一个默认模板，不算装好。

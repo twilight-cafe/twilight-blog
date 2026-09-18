@@ -55,6 +55,53 @@ func Open(path string) (*sql.DB, error) {
 	return db, nil
 }
 
+// Snapshot 把数据库压平成一份独立文件，供备份使用。
+//
+// # 为什么不能直接拷贝 blog.db
+//
+// 库运行在 WAL 模式下，「已提交」的事务可能还留在 blog.db-wal 里，只拷主文件会
+// 丢掉最近写入的数据——而丢多少取决于别人恰好写到了哪一步。这类归档最危险的地方
+// 是它**看起来是完整的**：能打开、有表、有数据，只是少了最近几条。
+//
+// VACUUM INTO 由 SQLite 自己完成这件事：它在单个读事务里读一遍库、把结果写进一个
+// 新文件，所以结果是一致快照，同时自动压掉空闲页（归档更小）。对生产库只读、
+// 不阻塞写入，因此备份可以边服务边跑。
+//
+// # 两个实现细节
+//
+//   - 用的是一个**不跑迁移**的连接：迁移会写 schema，而备份只该读。
+//     （pragma 仍走 buildDSN，为的是在 Windows 上正确地转义路径。）
+//   - 目标文件必须先不存在：VACUUM INTO 不接受已存在的目标。这不是限制而是好事，
+//     它保证了「这份快照是本次生成的」。
+func Snapshot(srcPath, dstPath string) error {
+	if _, err := os.Stat(srcPath); err != nil {
+		return fmt.Errorf("open the database: %w", err)
+	}
+	if _, err := os.Stat(dstPath); err == nil {
+		return fmt.Errorf("the snapshot target %s already exists", dstPath)
+	}
+
+	db, err := sql.Open("sqlite", buildDSN(srcPath))
+	if err != nil {
+		return fmt.Errorf("open the database: %w", err)
+	}
+	defer db.Close()
+
+	logging.Debugf("[database] snapshotting %s into %s", srcPath, dstPath)
+	if _, err := db.Exec(`VACUUM INTO ?`, dstPath); err != nil {
+		return fmt.Errorf("snapshot the database: %w", err)
+	}
+
+	// VACUUM INTO 用 SQLite 自己的默认模式（0644）创建文件，而快照里装着全部账号
+	// 的 bcrypt 哈希、会话 token 摘要与回收站内容——权限必须和源库一样紧。
+	// 失败只告警：与 restrictDatabasePermissions 同一个理由（有些文件系统根本没有
+	// POSIX 权限概念，为此让备份失败会误伤合法部署）。
+	if err := os.Chmod(dstPath, 0o600); err != nil {
+		logging.Warnf("[database] tightening permissions on the snapshot %s failed: %v", dstPath, err)
+	}
+	return nil
+}
+
 // restrictDatabasePermissions 把 SQLite 数据库文件收成 0600，目录收成 0700。
 //
 // # 为什么必须显式做
