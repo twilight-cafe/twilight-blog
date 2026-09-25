@@ -10,6 +10,7 @@ import { blog } from '../../lib/client'
 import { fmtMonthDay } from '../../lib/format'
 import type { Article } from 'twilight-blog-api'
 import { useDocumentTitle } from '../../lib/site'
+import { useCanonicalPath, usePageHead } from '../../lib/head'
 import { Loading, PageHero, Reveal } from '../../components/common'
 
 async function fetchAllArticles(): Promise<Article[]> {
@@ -25,6 +26,9 @@ async function fetchAllArticles(): Promise<Article[]> {
 
 export default function Archive() {
   useDocumentTitle('归档')
+  // 列表页不自定义描述，交给站点描述兜底（head.ts 会回落）——「归档」两个字
+  // 作为描述对搜索结果毫无信息量。
+  usePageHead({ path: useCanonicalPath(), title: '归档' })
   const [articles, setArticles] = useState<Article[]>([])
   const [loading, setLoading] = useState(true)
 

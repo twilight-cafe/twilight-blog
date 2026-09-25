@@ -50,6 +50,14 @@ func runEmailCommand(args []string) error {
 	}
 }
 
+// newMailerForCommand 是 runEmailTest 构造发信器的间接层。
+//
+// 线上默认走 newMailer；测试里替换成假实现，就能在不访问 Resend 的前提下
+// 验证「配置检查 → 组装 EmailService → 发送 → 留痕」整条命令路径。
+var newMailerForCommand = func(cfg *config.Config) (mail.Mailer, error) {
+	return newMailer(cfg)
+}
+
 // runEmailTest 解析 -target 并发送一封测试邮件。
 //
 // 发送前逐项确认 mail.from 与 mail.api_key 已配置，给出的错误比
@@ -75,7 +83,7 @@ func runEmailTest(args []string) error {
 			"(or point mail.api_key at one with \"env:NAME\")", config.MailAPIKeyEnvVar)
 	}
 
-	mailer, err := newMailer(cfg)
+	mailer, err := newMailerForCommand(cfg)
 	if err != nil {
 		return err
 	}
@@ -89,7 +97,7 @@ func runEmailTest(args []string) error {
 		return fmt.Errorf("send test email: %w", err)
 	}
 
-	fmt.Printf("Test email sent to %s\n", target)
+	fmt.Fprintf(stdout(), "Test email sent to %s\n", target)
 	return nil
 }
 

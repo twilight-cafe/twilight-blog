@@ -7,7 +7,8 @@ import SignIn from '../pages/admin/SignIn'
 import Register from '../pages/admin/Register'
 import ForgotPassword from '../pages/admin/ForgotPassword'
 import { ToastProvider } from '../lib/toast'
-import { adminMe, getSharedClientMock, resetClientMock, visitorMe } from './helpers'
+import { BlogApiError } from 'twilight-blog-api'
+import { adminMe, expireEmailCodeCooldown, getSharedClientMock, resetClientMock, visitorMe } from './helpers'
 
 vi.mock('../lib/client', async () => {
   const { getSharedClientMock } = await import('./helpers')
@@ -157,6 +158,45 @@ describe('Register', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
     await waitFor(() => expect(inputAt(container, 'input[placeholder=验证码]')).toBeTruthy())
     expect(client.blog.requestEmailCode).toHaveBeenCalledWith({ email: 'a@example.com' })
+  })
+
+  it('服务端 429 时按钮也进入冷却（前端节奏与服务端记录重新对齐）', async () => {
+    const { container } = renderAuth(<Register />, '/admin/register', '/admin/register')
+    fillForm(container, { email: 'a@example.com' })
+    // 必须等 email 提交进 state 后再点：否则 requestCode 读到的是空邮箱，
+    // 会在本地校验就拦下来（收不到 429 分支）。
+    await waitFor(() => expect(inputAt(container, 'input[type=email]').value).toBe('a@example.com'))
+
+    // 服务端说「太频繁」——此时**不能**把按钮留在可点状态，否则用户会继续点、
+    // 继续被拒。前端必须自己数一个周期，与后端的判定对齐。
+    // 必须是真正的 BlogApiError 实例：isRateLimited 用 instanceof 收窄，
+    // 一个恰好带 status 的普通对象会被判成 false（这正是那个类型守卫的价值）。
+    const tooFrequent = new BlogApiError('验证码发送过于频繁，请 60 秒后再试。', {
+      status: 429, method: 'POST', path: '/api/auth/email-code',
+    })
+    client.blog.requestEmailCode.mockRejectedValueOnce(tooFrequent)
+    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
+    await waitFor(() => {
+      const button = screen.getByRole('button', { name: /秒后可重发/ })
+      expect(button.hasAttribute('disabled')).toBe(true)
+    })
+    // 429 不改变 codeSent：验证码输入框不该因为一次被拒就出现。
+    expect(inputAt(container, 'input[placeholder=验证码]')).toBeNull()
+
+    // 非 429 的失败（网络抖动）**不**启动冷却：宁可让用户能重试，
+    // 也不要因为一次断网把按钮锁住 60 秒却什么都没发出去。
+    await expireEmailCodeCooldown('a@example.com')
+    await waitFor(() => {
+      const button = screen.getByRole('button', { name: '发送验证码' })
+      expect(button.hasAttribute('disabled')).toBe(false)
+    })
+    client.blog.requestEmailCode.mockRejectedValueOnce(new Error('网络错误'))
+    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
+    await waitFor(() => expect(screen.getAllByText('网络错误').length).toBeGreaterThan(0))
+    await waitFor(() => {
+      const button = screen.getByRole('button', { name: '发送验证码' })
+      expect(button.hasAttribute('disabled')).toBe(false)
+    })
   })
 
   it('逐项校验 → 成功注册自动登录进资料页', async () => {

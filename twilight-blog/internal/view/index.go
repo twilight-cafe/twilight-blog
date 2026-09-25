@@ -63,9 +63,28 @@ type indexData struct {
 	Description string
 	// Title 是 <title> 的完整内容（含品牌前缀）。
 	Title string
-	// SearchEnabled 决定外壳注入的站点功能开关：SPA 在首渲染前读它决定
-	// 是否挂载搜索入口。它与模板里的 window.__SITE__ 是同一条通道。
+	// SearchEnabled 决定外壳下发的站点功能开关：SPA 在首渲染前读它决定
+	// 是否挂载搜索入口。它作为 <html data-search-enabled="..."> 输出，
+	// 而不是内联脚本——CSP 是 `script-src 'self'` 且不含
+	// 'unsafe-inline'/hash/nonce，内联脚本会被浏览器**拒绝执行**。
+	// 完整缘由见 template/index.html 的头部说明。
 	SearchEnabled bool
+	// HomePageSize 是首页每页文章数，作为 <html data-home-page-size="..."> 下发。
+	//
+	// 它必须与 SearchEnabled 走同一条属性通道而不是 GET /api/site：
+	// 首页列表在挂载后**立刻**就要发请求，若等 getSite 回来才知道 pageSize，
+	// 首次请求只能用一个写死的兜底值——要么多发一次请求，要么先按错的页数
+	// 渲染再重排。属性在入口 chunk 之前就绪，第一次请求就是对的。
+	// 属性值是数字（见前端 flags.ts 的读取方式：dataset 永远是 string）。
+	HomePageSize int
+	// BorderRadius 是站点统一圆角（px），作为 <html data-border-radius="..."> 下发。
+	//
+	// 走属性通道的理由与 HomePageSize 相同：它是首屏就要定下来的排版参数。
+	// 若等 GET /api/site 回来再改 --radius，首屏会先按默认圆角画一遍、
+	// 拿到响应后再跳变成设置值——一次可见的「圆角闪动」。
+	//
+	// 属性值是数字（dataset 永远是 string，见前端 flags.ts 的读取方式）。
+	BorderRadius int
 	// Stylesheets / Scripts 是站内绝对路径（以 / 开头）。
 	Stylesheets []string
 	Scripts     []string
@@ -153,12 +172,29 @@ func resolveIndexAssets(webFS fs.FS) (stylesheets []string, scripts []string, er
 // 描述为空（站长没设置过）时用 viewmodel.DefaultSiteDescription，与前端
 // lib/site.ts 的 FALLBACK_DESCRIPTION 是同一句话——两处不一致会让页面在
 // SPA 启动的瞬间把描述换掉，正是这次要修的观感问题。
-func newIndexData(description string, searchEnabled bool, stylesheets, scripts []string) indexData {
+//
+// homePageSize 的兜底（<=0 时用 viewmodel.DefaultHomePageSize）与服务端配置层
+// 的 ApplyDefaults 是双保险：这里面对的是「配置对象被构造得不完整」这种
+// 理论上不该发生的情况，宁可发一个能用的默认值，也不要下发
+// data-home-page-size="0"——那会让首页请求一个 page_size=0 的列表。
+//
+// borderRadius 的兜底**不能照抄上面的 `<= 0`**：圆角的下界就是 0，
+// 0 是合法的「直角」。这里只能对**越界**值兜底，否则站长设的直角
+// 会在渲染外壳时被悄悄改成默认圆角（设置页显示 0、前台却是 4）。
+func newIndexData(description string, searchEnabled bool, homePageSize, borderRadius int, stylesheets, scripts []string) indexData {
 	description = viewmodel.SiteDescription(description)
+	if homePageSize <= 0 {
+		homePageSize = viewmodel.DefaultHomePageSize
+	}
+	if borderRadius < viewmodel.MinBorderRadius || borderRadius > viewmodel.MaxBorderRadius {
+		borderRadius = viewmodel.DefaultBorderRadius
+	}
 	return indexData{
 		Description:   description,
 		Title:         indexTitleBrand + " · " + description,
 		SearchEnabled: searchEnabled,
+		HomePageSize:  homePageSize,
+		BorderRadius:  borderRadius,
 		Stylesheets:   stylesheets,
 		Scripts:       scripts,
 	}

@@ -9,14 +9,22 @@ import Comments from '../../components/Comments'
 import ContentView from '../../components/ContentView'
 import { Pagination } from 'ink-design'
 import { useDocumentTitle } from '../../lib/site'
+import { useCanonicalPath, usePageHead } from '../../lib/head'
+import { prefetchMarkdown } from '../../lib/markdown-loader'
 import { Empty, Loading, PageHero, Reveal } from '../../components/common'
 
 export default function Moments() {
   useDocumentTitle('微语')
+  usePageHead({ path: useCanonicalPath(), title: '微语' })
   const [items, setItems] = useState<Moment[]>([])
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [loading, setLoading] = useState(true)
+
+  // 与下面的列表请求并行开始下载渲染器（每条微语都由 ContentView 渲染，理由见 Post.tsx）。
+  useEffect(() => {
+    prefetchMarkdown()
+  }, [])
 
   useEffect(() => {
     let alive = true
@@ -51,7 +59,7 @@ export default function Moments() {
             <Comments targetType="moment" targetId={item.id} enabled />
           </Reveal>
         ))}
-        <Pagination current={page} total={totalPages} pageSize={1} onChange={setPage} />
+        <Pagination align="center" current={page} total={totalPages} pageSize={1} onChange={setPage} />
       </div>
     </main>
   )

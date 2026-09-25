@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -178,6 +179,21 @@ func TestOpenRejectsForeignAndNewerArchives(t *testing.T) {
 			t.Fatal("没有任何部分的归档应当被拒绝")
 		}
 	})
+
+	t.Run("重复的 settings part", func(t *testing.T) {
+		manifest := Manifest{
+			Format:        FormatName,
+			FormatVersion: FormatVersion,
+			Parts: []Part{
+				{Name: PartSettings, Path: "data/settings.json"},
+				{Name: PartSettings, Path: "data/settings2.json"},
+			},
+		}
+		raw := craftArchive(t, &manifest, nil)
+		if _, err := Open(bytes.NewReader(raw)); err == nil {
+			t.Fatal("重复 settings part 的归档应当在 Open 阶段被拒绝")
+		}
+	})
 }
 
 // TestCreateRejectsUnsafeTargets 确认写入端与解包端共用同一套路径判据。
@@ -326,5 +342,45 @@ func TestManifestJSONShape(t *testing.T) {
 	// 单文件条目不该带 files。
 	if bytes.Contains(data, []byte(`"files":0`)) {
 		t.Fatalf("为 0 的 files 不该被写出来：%s", text)
+	}
+}
+
+// TestValidateRejectsDuplicateSingletonParts 钉住重复 settings / database / media /
+// search-index / search-master-key 的归档在打开阶段就被拒绝。
+//
+// 原缺陷：stagedSettingsPath 只校验“第一个 settings part”，applyRestore 却会循环
+// 把所有同名 part 换到目标位置，于是“安全第一份 + 恶意第二份”可以绕过配置安全检查。
+// 允许日志 part 重复——with-logs 会为每个 log.txt.* 写一个同名 part。
+func TestValidateRejectsDuplicateSingletonParts(t *testing.T) {
+	for _, name := range []string{PartDatabase, PartSettings, PartMedia, PartSearch, PartSearchKey} {
+		t.Run(name, func(t *testing.T) {
+			manifest := Manifest{
+				Format:        FormatName,
+				FormatVersion: FormatVersion,
+				Parts: []Part{
+					{Name: name, Path: DataPrefix + "first"},
+					{Name: name, Path: DataPrefix + "second"},
+				},
+			}
+			err := manifest.validate()
+			if err == nil {
+				t.Fatalf("duplicate %q part should be rejected", name)
+			}
+			if !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "more than one") {
+				t.Fatalf("error should name the duplicated part and explain the limit: %v", err)
+			}
+		})
+	}
+
+	manifest := Manifest{
+		Format:        FormatName,
+		FormatVersion: FormatVersion,
+		Parts: []Part{
+			{Name: PartLogs, Path: DataPrefix + "log.txt"},
+			{Name: PartLogs, Path: DataPrefix + "log.txt.1"},
+		},
+	}
+	if err := manifest.validate(); err != nil {
+		t.Fatalf("duplicate logs parts must stay valid for --with-logs: %v", err)
 	}
 }

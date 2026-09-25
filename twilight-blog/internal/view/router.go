@@ -22,6 +22,20 @@ import (
 	"blog-engine/internal/view/handler"
 )
 
+// Hooks for deterministic failure/retry tests. Production uses the real
+// implementations by default.
+var (
+	registerWebFn     = registerWeb
+	newMailer         = mail.New
+	retrySearchSyncFn = retrySearchSync
+	sleep             = time.Sleep
+	pruneExpired      = database.PruneExpired
+	newPruneTicker    = func(d time.Duration) (<-chan time.Time, func()) {
+		ticker := time.NewTicker(d)
+		return ticker.C, ticker.Stop
+	}
+)
+
 // Register 组装全部依赖并注册路由，是后端启动的最后一环。
 //
 // 顺序上有几处不能随意调换：
@@ -35,7 +49,7 @@ import (
 // 失败即返回 error 的有两处：mailer 初始化与前端资源注册——缺少这两样
 // 服务无法正常工作，应当让进程启动失败而不是带病运行。
 // 搜索索引同步失败则相反，只降级不阻断（见下方注释）。
-func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string, searchClient *search.Client) error {
+func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string, searchClient *search.Client, mediaConv *mediaconv.Converter) error {
 	logging.Debugf("[router] registering HTTP routes")
 
 	sessionStore := session.NewStore(db)
@@ -54,16 +68,18 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 
 	// 媒体服务必须排在文章服务之前构造：文章服务依赖它来校验头图、以及在永久
 	// 删除文章时把专属头图一并删掉（见 service.ArticleMediaStore）。
-	mediaConv := mediaconv.Detect(cfg.WebPTool, cfg.WebMTool)
-	if mediaConv.WebPEnabled {
-		logging.Infof("[media] WebP conversion enabled: using %s (%s)", mediaConv.WebPTool, mediaConv.WebPKind)
-	} else {
-		logging.Warnf("[media] WebP conversion disabled: no cwebp or ffmpeg found. Images will be stored as-is.")
-	}
+	//
+	// 转码器由 main 在启动时探测好再传进来，这里不再自己探一次：WebP 编码器是硬性
+	// 依赖，缺失必须在**进程启动阶段**就变成一次退出（main 负责），而不是等到注册
+	// 路由这一步才以一个 error 冒出来——那时 Meilisearch 子进程已经拉起来了，
+	// 而错误信息还得穿过一层 "register routes: " 才看得见原因。
+	//
+	// WebM 转码**暂时关闭**（见 service.StoreFile 里那段说明）：音频与视频一律原样
+	// 落盘。这里仍然把探测结果记出来，是因为「这台机器上有没有 ffmpeg」是重新启用
+	// 该功能时第一个要问的问题，先记在日志里能省掉一轮排障。
 	if mediaConv.WebMEnabled {
-		logging.Infof("[media] WebM conversion enabled: using %s", mediaConv.WebMTool)
-	} else {
-		logging.Warnf("[media] WebM conversion disabled: no ffmpeg found. Audio will be stored as-is.")
+		logging.Infof("[media] ffmpeg detected at %s; WebM transcoding is currently disabled, "+
+			"so audio and video are stored as-is", mediaConv.WebMTool)
 	}
 
 	mediaRepo := model.NewSQLiteMediaRepository(db)
@@ -84,7 +100,7 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 			// 搜索是辅助能力，建索引失败不该阻断启动：文章与页面的写入会
 			// 单独重索引对应文档，所以这里选择降级并交给后台重试。
 			logging.Errorf("[router] initial search index sync failed; search may return incomplete results: %v", err)
-			go retrySearchSync(searchClient, articleRepo, pageRepo)
+			go retrySearchSyncFn(searchClient, articleRepo, pageRepo)
 		} else {
 			logging.Debugf("[router] initial search index sync finished")
 		}
@@ -109,7 +125,11 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 
 	articleService := service.NewArticleService(articleRepo, articleIndexer, mediaService)
 	tagService := service.NewTagService(tagRepo)
-	momentService := service.NewMomentService(momentRepo)
+	// 动态服务也拿一份媒体服务：配图必须在写入前确认「存在且是图片」，
+	// 否则一个陈旧的 media id 会以 FK 约束错误的形式冒出来并被报成 500
+	// （媒体的删除是硬删、没有回收站，这条路径真实可达）。
+	// 它只用到 Get，见 service.MomentMediaStore 的说明。
+	momentService := service.NewMomentService(momentRepo, mediaService)
 	pageService := service.NewPageService(pageRepo, pageIndexer)
 
 	userRepo := model.NewSQLiteUserRepository(db)
@@ -130,7 +150,7 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 		mailFrom = cfg.Mail.From
 		mailKeySource = keySource
 	}
-	baseMailer, err := mail.New(mailCfg)
+	baseMailer, err := newMailer(mailCfg)
 	if err != nil {
 		return fmt.Errorf("initialize mailer: %w", err)
 	}
@@ -330,7 +350,7 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 	admin.POST("/comments/:id/restore", commentHandler.Restore)
 	admin.DELETE("/comments/:id/permanent", commentHandler.PermanentDelete)
 
-	if err := registerWeb(e, cfg); err != nil {
+	if err := registerWebFn(e, cfg); err != nil {
 		return fmt.Errorf("register web routes: %w", err)
 	}
 
@@ -349,7 +369,7 @@ func retrySearchSync(client *search.Client, articleRepo model.ArticleRepository,
 	delay := 15 * time.Second
 
 	for attempt := 1; attempt <= attempts; attempt++ {
-		time.Sleep(delay)
+		sleep(delay)
 		if err := client.Sync(context.Background(), articleRepo, pageRepo); err == nil {
 			logging.Infof("[router] background search index sync succeeded on attempt %d", attempt)
 			return
@@ -368,16 +388,16 @@ func retrySearchSync(client *search.Client, articleRepo model.ArticleRepository,
 // 失败也只记 Warn（清理是尽力而为，下次 tick 会重试）。
 func startPruneJanitor(db *sql.DB) {
 	prune := func() {
-		if _, err := database.PruneExpired(context.Background(), db); err != nil {
+		if _, err := pruneExpired(context.Background(), db); err != nil {
 			logging.Warnf("[router] pruning expired rows failed: %v", err)
 		}
 	}
 
 	go func() {
 		prune()
-		ticker := time.NewTicker(time.Hour)
-		defer ticker.Stop()
-		for range ticker.C {
+		ticks, stop := newPruneTicker(time.Hour)
+		defer stop()
+		for range ticks {
 			prune()
 		}
 	}()

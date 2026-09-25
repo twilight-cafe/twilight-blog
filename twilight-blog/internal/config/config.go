@@ -28,6 +28,21 @@ import (
 	"blog-engine/internal/logging"
 )
 
+// Hooks for deterministic failure-path tests. Production uses the real
+// implementations; tests replace these to exercise filesystem/entropy errors
+// that cannot be provoked reliably on a normal local filesystem.
+var (
+	writeFileAtomicFn = writeFileAtomic
+	marshalConfig     = json.MarshalIndent
+	bcryptGenerate    = bcrypt.GenerateFromPassword
+	createTemp        = os.CreateTemp
+	chmodTemp         = func(f *os.File, mode os.FileMode) error { return f.Chmod(mode) }
+	writeTemp         = func(f *os.File, data []byte) (int, error) { return f.Write(data) }
+	syncTemp          = func(f *os.File) error { return f.Sync() }
+	closeTemp         = func(f *os.File) error { return f.Close() }
+	renameSettings    = os.Rename
+)
+
 // ErrNotInstalled 表示 settings.json 尚不存在，即博客还没完成安装。
 //
 // 它是**预期状态而非故障**：Load 此时会返回一个可用的空 Config 加上这个错误，
@@ -46,6 +61,18 @@ const (
 	// 正文里最常见的代码块在 20 行以内，把它作为起点既不打断阅读，
 	// 又能在遇到超长代码时给出明显的「往下还有」的信号。
 	DefaultCodeBlockMaxLines = 20
+	// DefaultHomePageSize 是「首页每页文章数」未设置时的默认值。
+	//
+	// 12 不是随手取的：它同时是 `internal/view/handler.maxPageSize`（所有列表
+	// 端点的分页硬上限）。默认值取在上限处，是为了让「没配置过的站点」的观感
+	// 与升级前**逐字节一致**——首页此前就是写死的 12，改配置项不应该顺带改变
+	// 任何既有站点的首屏。
+	DefaultHomePageSize = 12
+	// DefaultBorderRadius 是「圆角」未设置时的默认值，单位 px。
+	//
+	// 取 4 是为了与升级前**逐字节一致**：前端 `--radius` 历来就是 4px，
+	// 新增一个可配置项不应该顺带改变任何既有站点的观感。
+	DefaultBorderRadius = 4
 )
 
 // CodeBlockMaxLinesBounds 是 code_block_max_lines 的合法区间（含端点）。
@@ -57,6 +84,67 @@ const (
 	MinCodeBlockMaxLines = 3
 	MaxCodeBlockMaxLines = 500
 )
+
+// HomePageSizeBounds 是 home_page_size 的合法区间（含端点）。
+//
+// 下界 1：允许「一页一篇」是有意义的最小分页设置，再小就没有意义了。
+// 上界**必须**等于 handler 层的 maxPageSize（当前 12），不能只是「看起来合理」：
+// 首页发出的 `page_size` 会被列表端点按 maxPageSize 校验，一旦设置值超过它，
+// **首页的第一次请求就会 400**，整个站点白屏。这个约束由
+// internal/view/handler/site_test.go 的 TestHomePageSizeBoundsMatchHandlerLimit
+// 跨包守护——两处常量分属不同包，改一处忘另一处就是线上事故。
+const (
+	MinHomePageSize = 1
+	MaxHomePageSize = 12
+)
+
+// BorderRadiusBounds 是 border_radius 的合法区间（含端点），单位 px。
+//
+// 下界 0：直角是一种正当的极简风格，不是「没设置」，所以不能拿 0 当哨兵值——
+// 与 home_page_size 不同，这里**没有**「未设置」的中间态，缺失即默认值，
+// 显式写 0 就是真的直角。
+//
+// 上界 24：再大的圆角会让分页按钮、小标签这类 30px 见方的元素变成近似圆形，
+// 与它们「方正的排版件」身份不符；24 已经能覆盖卡片类的「大圆角」审美。
+//
+// 注意这里**没有「必须等于某处常量」的跨包约束**（不像 home_page_size 的上界
+// 被 handler.maxPageSize 钉死）：圆角越大只会更好看或更难看，不会让请求失败，
+// 所以上下界纯粹是审美判断，可以独立调整。
+const (
+	MinBorderRadius = 0
+	MaxBorderRadius = 24
+)
+
+// validateBorderRadius 校验 border_radius 的取值。
+//
+// 与 validateHomePageSize 的区别：这里不接受「0 表示未设置」的语义，
+// 所以**没有既允许 0、又把它当缺失值的歧义**。缺失（键不存在）由
+// applyDefaults 填 DefaultBorderRadius，显式写下的值一律照校验。
+func validateBorderRadius(value int) error {
+	if value < MinBorderRadius || value > MaxBorderRadius {
+		return fmt.Errorf("invalid border_radius %d: must be between %d and %d",
+			value, MinBorderRadius, MaxBorderRadius)
+	}
+	return nil
+}
+
+// validateHomePageSize 校验 home_page_size 的取值。
+// 0 表示「未设置」，由 ApplyDefaults 兜底成默认值；其余越界值直接报错，
+// 让启动失败——理由同 validateCodeBlockMaxLines：静默回退会让「我明明设了 20」
+// 变成无从排查的观感问题，而这里还多一层：越界的值会让首页直接请求失败。
+func validateHomePageSize(value int) error {
+	if value < 0 {
+		return fmt.Errorf("invalid home_page_size %d: cannot be negative", value)
+	}
+	if value == 0 {
+		return nil
+	}
+	if value < MinHomePageSize || value > MaxHomePageSize {
+		return fmt.Errorf("invalid home_page_size %d: must be between %d and %d (0 means the default %d)",
+			value, MinHomePageSize, MaxHomePageSize, DefaultHomePageSize)
+	}
+	return nil
+}
 
 // validateCodeBlockMaxLines 校验 code_block_max_lines 的取值。
 // 0 表示「未设置」，由 ApplyDefaults 兜底成默认值；其余越界值直接报错，
@@ -225,7 +313,8 @@ func (r RateLimitConfig) IsEnabled() bool {
 
 type Config struct {
 	// mu 保护那些在进程运行期间会被修改的字段（PasswordHash、AdminUsername、
-	// AdminNickname 与 SiteDescription）。不需要 `json:"-"` 标记：
+	// AdminNickname、SiteDescription、CodeBlockMaxLines 与 HomePageSize）。
+	// 不需要 `json:"-"` 标记：
 	// sync.RWMutex 没有导出字段，encoding/json 本来就会跳过它。
 	mu sync.RWMutex
 
@@ -327,6 +416,31 @@ type Config struct {
 	// 它通过公开的 GET /api/site 下发（读者看到的排版参数，本就是公开信息），
 	// 前端把它折算成容器上的 CSS 变量，真正的「限高 + 滚动」由样式层完成。
 	CodeBlockMaxLines int `json:"code_block_max_lines"`
+
+	// HomePageSize 是首页文章列表每页展示的文章数，超出部分翻页。
+	// 0 表示「未设置」，由 ApplyDefaults 兜底成 DefaultHomePageSize；
+	// 显式配置的值必须落在 [MinHomePageSize, MaxHomePageSize] 内，越界让启动失败。
+	//
+	// 它走**首屏属性**通道（index.html 的 data-home-page-size）而不是
+	// GET /api/site，原因与 SearchEnabled 不同：搜索开关是「界面要不要出现入口」
+	// 的决策，而首页每页数量决定**第一次请求怎么发**。若等 getSite 回来再设
+	// pageSize，首页会先用兜底值发一次请求、拿到数据后再用正确值发第二次
+	// （或先渲染错页数再重排）。首屏属性让第一次请求就是对的。
+	HomePageSize int `json:"home_page_size"`
+
+	// BorderRadius 是站点统一圆角，单位 px，作用于**卡片类**组件
+	// （卡片、按钮、输入框、下拉、弹窗、分页按钮等），
+	// 不作用于形状即语义的组件（头像恒 50%、胶囊标签恒 999px、
+	// 状态点、勾选框）——那些圆角一旦跟着变，就不再是「圆」和「胶囊」了。
+	//
+	// 用指针：0 是**合法值**（直角是一种正当风格），不能拿它当「未设置」的哨兵。
+	// nil 表示键缺失，由 ApplyDefaults 填 DefaultBorderRadius；
+	// 显式写下的值必须落在 [MinBorderRadius, MaxBorderRadius] 内。
+	//
+	// 它走**首屏属性**通道（index.html 的 data-border-radius），
+	// 与 HomePageSize 同理：圆角是首屏就要定下来的排版参数，
+	// 若等 GET /api/site 回来再改 CSS 变量，首屏会先按默认圆角画一遍再跳变。
+	BorderRadius *int `json:"border_radius,omitempty"`
 
 	// SearchEnabled 控制**内嵌 Meilisearch 与搜索功能**是否启用。
 	//
@@ -443,8 +557,21 @@ func Load(path string) (*Config, error) {
 	if err := validateCookieSecure(cfg.CookieSecure); err != nil {
 		return nil, err
 	}
+	if err := ValidateMediaDir(cfg.MediaDir); err != nil {
+		return nil, err
+	}
 	if err := validateCodeBlockMaxLines(cfg.CodeBlockMaxLines); err != nil {
 		return nil, err
+	}
+	if err := validateHomePageSize(cfg.HomePageSize); err != nil {
+		return nil, err
+	}
+	// 只有显式写下的值才校验：键缺失（nil）留给 ApplyDefaults 兜底，
+	// 不能因为旧配置文件里没有这个键就让升级后的站点起不来。
+	if cfg.BorderRadius != nil {
+		if err := validateBorderRadius(*cfg.BorderRadius); err != nil {
+			return nil, err
+		}
 	}
 
 	cfg.Mail = normalizeMailConfig(cfg.Mail)
@@ -677,6 +804,62 @@ func (c *Config) SetCodeBlockMaxLines(lines int) error {
 	return nil
 }
 
+// HomePageSizeValue 返回首页每页文章数的当前值。
+// 未设置（0，即 ApplyDefaults 之前读到的旧文件）时返回默认值，
+// 保证调用方拿到的永远是一个可直接使用的正数。
+func (c *Config) HomePageSizeValue() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.HomePageSize == 0 {
+		return DefaultHomePageSize
+	}
+	return c.HomePageSize
+}
+
+// SetHomePageSize 只在内存里更新首页每页文章数，**不负责落盘**。
+// 与 Load 时的校验不同，这里连 0 也拒绝，理由同 SetCodeBlockMaxLines：
+// Set 面对显式输入，0 没有合理含义。
+func (c *Config) SetHomePageSize(size int) error {
+	if size == 0 {
+		return fmt.Errorf("home_page_size cannot be empty: specify a value between %d and %d", MinHomePageSize, MaxHomePageSize)
+	}
+	if err := validateHomePageSize(size); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.HomePageSize = size
+	return nil
+}
+
+// BorderRadiusValue 返回站点统一圆角的当前值（px）。
+// 键缺失（nil，即 ApplyDefaults 之前读到的旧文件）时返回默认值，
+// 保证调用方拿到的永远是一个可直接写进 CSS 的数字。
+//
+// 注意**不能**用 0 判断「未设置」：0 是合法配置（直角）。
+func (c *Config) BorderRadiusValue() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.BorderRadius == nil {
+		return DefaultBorderRadius
+	}
+	return *c.BorderRadius
+}
+
+// SetBorderRadius 只在内存里更新圆角，**不负责落盘**。
+// 与 SetHomePageSize 不同，这里**接受 0**——0 是有意义的直角，
+// 不是「空值」；只有越界才报错。
+func (c *Config) SetBorderRadius(radius int) error {
+	if err := validateBorderRadius(radius); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	value := radius
+	c.BorderRadius = &value
+	return nil
+}
+
 // ApplyDefaults 为习惯上会被省略的键补上默认值，绝不覆盖已设置的值。
 // Save() 也会调用它，因此写出的文件总是「完整」的。
 //
@@ -717,6 +900,14 @@ func (c *Config) ApplyDefaults() {
 	if c.CodeBlockMaxLines == 0 {
 		c.CodeBlockMaxLines = DefaultCodeBlockMaxLines
 	}
+	if c.HomePageSize == 0 {
+		c.HomePageSize = DefaultHomePageSize
+	}
+	// nil 才是「键缺失」。0 是合法配置（直角），绝不能被这里覆盖掉。
+	if c.BorderRadius == nil {
+		value := DefaultBorderRadius
+		c.BorderRadius = &value
+	}
 	if c.Mail == nil {
 		c.Mail = &MailConfig{}
 	}
@@ -732,6 +923,32 @@ func validateCookieSecure(value string) error {
 	default:
 		return fmt.Errorf("invalid cookie_secure %q: must be one of auto, always, never", value)
 	}
+}
+
+// ValidateMediaDir 校验 media_dir 是不是一个可以安全使用的本地目录。
+//
+// 空值合法：ApplyDefaults 会把它补成 DefaultMediaDir，所以「键缺失」不是错误。
+// 非空时要求 filepath.IsLocal——它一次性排掉绝对路径、盘符，以及任何会走出工作
+// 目录的形态（`..`、`a/../../b`）。此外还要拒绝 Clean 之后等于 "." 的值：
+// IsLocal(".") 为真，但把整个工作目录当成媒体目录意味着「一次 restore 会把站点
+// 自己的源码连同 blog.db 一起换掉」，那不是任何正常部署会想要的。
+//
+// 为什么这件事必须由 config 来做（而不是只在 restore 里做）：media_dir 会被
+// 媒体服务、备份与还原三条路径使用，任何一条按非法值落盘都是不可逆的。第七轮
+// 渗透测试 R7-01 之后，这里多了一道「非法配置直接启动失败」的硬门槛，而不是
+// 靠「它在当前目录下相对可写」这种隐式约定。
+func ValidateMediaDir(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if !filepath.IsLocal(value) {
+		return fmt.Errorf("invalid media_dir %q: it must be a relative path inside the working directory", value)
+	}
+	if filepath.Clean(value) == "." {
+		return fmt.Errorf("invalid media_dir %q: it must name a directory of its own, not the working directory", value)
+	}
+	return nil
 }
 
 // applyDefaults 把额度为 0 或负数的项补成默认值。
@@ -802,7 +1019,7 @@ func (c *Config) SetPassword(password string) error {
 		return err
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(strings.TrimSpace(password)), bcrypt.DefaultCost)
+	hash, err := bcryptGenerate([]byte(strings.TrimSpace(password)), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
@@ -906,7 +1123,7 @@ func (c *Config) Save(path string) error {
 	}
 
 	logging.Debugf("[config] saving settings to %s", path)
-	data, err := json.MarshalIndent(c, "", "  ")
+	data, err := marshalConfig(c, "", "  ")
 	if c.Mail != nil {
 		c.Mail.APIKey = savedAPIKey
 	}
@@ -915,7 +1132,7 @@ func (c *Config) Save(path string) error {
 	}
 	data = append(data, '\n')
 
-	if err := writeFileAtomic(path, data, 0o600); err != nil {
+	if err := writeFileAtomicFn(path, data, 0o600); err != nil {
 		return fmt.Errorf("write settings file: %w", err)
 	}
 
@@ -935,34 +1152,34 @@ func (c *Config) Save(path string) error {
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	tmp, err := createTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp settings file: %w", err)
 	}
 	tmpName := tmp.Name()
 
 	cleanup := func() {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = closeTemp(tmp)
+		_ = os.Remove(tmpName)
 	}
 
-	if err := tmp.Chmod(perm); err != nil {
+	if err := chmodTemp(tmp, perm); err != nil {
 		cleanup()
 		return fmt.Errorf("set temp settings permissions: %w", err)
 	}
-	if _, err := tmp.Write(data); err != nil {
+	if _, err := writeTemp(tmp, data); err != nil {
 		cleanup()
 		return fmt.Errorf("write temp settings file: %w", err)
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := syncTemp(tmp); err != nil {
 		cleanup()
 		return fmt.Errorf("sync temp settings file: %w", err)
 	}
-	if err := tmp.Close(); err != nil {
+	if err := closeTemp(tmp); err != nil {
 		os.Remove(tmpName)
 		return fmt.Errorf("close temp settings file: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := renameSettings(tmpName, path); err != nil {
 		os.Remove(tmpName)
 		return fmt.Errorf("replace settings file: %w", err)
 	}

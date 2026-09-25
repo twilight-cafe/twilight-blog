@@ -32,6 +32,16 @@ import (
 	"time"
 )
 
+// Hooks for deterministic failure-path tests. The real implementations are the
+// default; tests replace them only to exercise branches that depend on
+// filesystem races or inode-level failures.
+var (
+	walkDir        = filepath.WalkDir
+	dirEntryInfo   = func(d fs.DirEntry) (fs.FileInfo, error) { return d.Info() }
+	hashFileFn     = hashFile
+	closeTarWriter = func(tw *tar.Writer) error { return tw.Close() }
+)
+
 // FormatName 是归档的格式标识，写在清单里。
 // 改它意味着「老版本一定读不了」，所以只在破坏性变更时动。
 const FormatName = "twilight-blog-backup"
@@ -116,6 +126,25 @@ func (m *Manifest) validate() error {
 	if len(m.Parts) == 0 {
 		return fmt.Errorf("the archive contains no data")
 	}
+
+	// 单例部分（settings / database / media / search-index / search-master-key）
+	// 在归档里必须各只有一项。原实现只让 applyRestore 按第一个同名 part 做校验，
+	// 却会循环把每个同名 part 都换到目标位置；因此“第一项安全、第二项恶意”的
+	// 重复 settings part 可以绕过配置安全检查。这里在读取清单时就拒绝重复，
+	// 使 PartPath 的“取第一个”语义不再有安全含义。
+	//
+	// logs 是刻意的例外：一次归档可以为每个 log.txt.* 生成一个同名 part。
+	seen := make(map[string]struct{}, len(m.Parts))
+	for _, part := range m.Parts {
+		switch part.Name {
+		case PartDatabase, PartSettings, PartMedia, PartSearch, PartSearchKey:
+			if _, exists := seen[part.Name]; exists {
+				return fmt.Errorf("the archive declares more than one %q part; each of database, settings, media, search-index and search-master-key may appear at most once", part.Name)
+			}
+			seen[part.Name] = struct{}{}
+		}
+	}
+
 	return nil
 }
 
@@ -187,7 +216,7 @@ func Create(w io.Writer, entries []Entry, builtBy BuiltBy, createdAt time.Time) 
 
 	// 两级收尾都要走到：tar 写它的块尾，gzip 写它的 CRC 与长度。
 	// 漏掉任一层的直接后果是归档损坏，而它看起来一切正常。
-	if err := tw.Close(); err != nil {
+	if err := closeTarWriter(tw); err != nil {
 		return nil, fmt.Errorf("finish the archive: %w", err)
 	}
 	if err := gz.Close(); err != nil {
@@ -226,7 +255,7 @@ func scanEntry(entry Entry) (Part, fs.FileInfo, error) {
 
 	part.Bytes = info.Size()
 	if entry.Hash {
-		sum, err := hashFile(entry.Source)
+		sum, err := hashFileFn(entry.Source)
 		if err != nil {
 			return Part{}, nil, err
 		}
@@ -249,21 +278,18 @@ func writeSource(tw *tar.Writer, item scanItem) error {
 // （链接可能指向这台机器之外），还原时更是一类额外的安全问题
 // （解包端只接受常规文件与目录，所以它们无论如何也回不去）。
 func writeTree(tw *tar.Writer, target, srcDir string) error {
-	return filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, walkErr error) error {
+	return walkDir(srcDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return fmt.Errorf("read %s: %w", path, walkErr)
 		}
 
-		rel, err := filepath.Rel(srcDir, path)
-		if err != nil {
-			return fmt.Errorf("locate %s: %w", path, err)
-		}
+		rel, _ := filepath.Rel(srcDir, path)
 		name := target
 		if rel != "." {
 			name = target + "/" + filepath.ToSlash(rel)
 		}
 
-		info, err := d.Info()
+		info, err := dirEntryInfo(d)
 		if err != nil {
 			return fmt.Errorf("stat %s: %w", path, err)
 		}
@@ -316,10 +342,7 @@ func writeFileEntry(tw *tar.Writer, name, src string, info fs.FileInfo) error {
 
 // writeManifestEntry 把清单写成归档的第一个条目。
 func writeManifestEntry(tw *tar.Writer, manifest *Manifest) error {
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode the manifest: %w", err)
-	}
+	data, _ := json.MarshalIndent(manifest, "", "  ")
 	data = append(data, '\n')
 
 	hdr := &tar.Header{
@@ -340,14 +363,14 @@ func writeManifestEntry(tw *tar.Writer, manifest *Manifest) error {
 
 // treeTotals 数一个目录里的常规文件数与总字节数。
 func treeTotals(root string) (files int, bytes int64, err error) {
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+	err = walkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if d.IsDir() {
 			return nil
 		}
-		info, err := d.Info()
+		info, err := dirEntryInfo(d)
 		if err != nil {
 			return err
 		}

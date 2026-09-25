@@ -33,6 +33,17 @@ type EmailVerificationRepository interface {
 	// 重新拿到一份额度，而受害者只有一个邮箱。按地址计数是唯一能把这条滥用
 	// 路径收住的维度，且不需要引入图形验证码那样的第三方依赖。
 	CountCreatedSince(ctx context.Context, email string, since int64) (int64, error)
+	// LastCreatedAt 返回该邮箱最近一次签发验证码的时刻（Unix 秒）。
+	// 该邮箱从未签发过任何验证码时，第二个返回值为 false。
+	//
+	// 与 CountCreatedSince 的区别是「最近一次」vs「有多少次」：短间隔节流要问的是
+	// 「上一封离现在够久了吗」，而不是「这段时间发了几封」。用计数去近似会很难看——
+	// 1 分钟窗口里计数 ≥1 就等价于「间隔 < 60 秒」，但那要求调用方自己凑出一个
+	// 与间隔等长的窗口，且窗口边界与真实间隔之间会差出一个取整误差。
+	//
+	// find=false 与 err 必须分开：前者是「从没发过，放行」，后者是「查不出来，
+	// 应当失败」。把「查不出来」当成「没发过」，等于一次数据库故障就让节流失效。
+	LastCreatedAt(ctx context.Context, email string) (int64, bool, error)
 	// ReserveAttempt 原子地**预留一次猜测机会**：仅当这枚码仍未被认领、
 	// 且已用次数还没到 limit 时才成功，成功返回 true。
 	//
@@ -162,6 +173,31 @@ WHERE email = ? COLLATE NOCASE AND created_at >= ?
 		return 0, fmt.Errorf("count verification codes for address: %w", err)
 	}
 	return count, nil
+}
+
+// LastCreatedAt 取该邮箱最近一次签发验证码的时刻。
+//
+// 用 MAX(created_at) 而不是 ORDER BY ... LIMIT 1：只关心时间戳，不需要把整行
+// 拉回来；MAX 在 idx_email_verification_codes_email 上走索引即可。
+//
+// 邮箱比较用 COLLATE NOCASE，与查找、作废、计数三条路径保持一致——大小写不同的
+// 同一个地址必须算作同一个收件箱，否则大小写变体就成了绕过短间隔节流的口子。
+//
+// 没有记录时返回 (0, false, nil)：sql.ErrNoRows 在这里不是错误，因为「从未签发」
+// 正是节流要放行的情况。注意返回值的语义顺序——第一个是时刻，第二个是「是否存在」。
+func (r *SQLiteEmailVerificationRepository) LastCreatedAt(ctx context.Context, email string) (int64, bool, error) {
+	logging.Debugf("[email-verification-repo] LastCreatedAt called")
+	var last sql.NullInt64
+	if err := r.db.QueryRowContext(ctx, `
+SELECT MAX(created_at) FROM email_verification_codes
+WHERE email = ? COLLATE NOCASE
+`, email).Scan(&last); err != nil {
+		return 0, false, fmt.Errorf("get last verification code time for address: %w", err)
+	}
+	if !last.Valid {
+		return 0, false, nil
+	}
+	return last.Int64, true, nil
 }
 
 // ReserveAttempt 原子地占用一次猜测机会。

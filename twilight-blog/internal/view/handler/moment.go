@@ -79,7 +79,7 @@ func (h *MomentHandler) Create(c echo.Context) error {
 
 	moment, err := h.service.Create(c.Request().Context(), req.Content, req.MediaIDs)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to create moment")
+		return mapMomentError(err, "failed to create moment")
 	}
 
 	return c.JSON(http.StatusCreated, viewmodel.NewMomentResponse(moment))
@@ -107,7 +107,7 @@ func (h *MomentHandler) Update(c echo.Context) error {
 		if errors.Is(err, model.ErrMomentNotFound) {
 			return echo.NewHTTPError(http.StatusNotFound, "moment not found")
 		}
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to update moment")
+		return mapMomentError(err, "failed to update moment")
 	}
 
 	return c.JSON(http.StatusOK, viewmodel.NewMomentResponse(moment))
@@ -228,4 +228,29 @@ func (h *MomentHandler) BatchPermanentDelete(c echo.Context) error {
 	}
 
 	return c.NoContent(http.StatusNoContent)
+}
+
+// mapMomentError 把动态写入路径上的 service 错误映射成 HTTP 响应。
+//
+// **调用方保证 err 非 nil**（两处调用都在 `if err != nil` 之后），所以这里不再
+// 有一个 `if err == nil { return nil }` 的守卫——那是不可达的代码，而不可达分支
+// 唯一的作用就是骗出一个只为凑覆盖率的假测试。与 mapArticleError 同构。
+//
+// 写入动态只有两类可预期的失败：
+//   - *ValidationError：配图不合法（不存在、不是图片、id 非正数）—— 400。
+//     它替代了此前那个裸 500：客户端给错了一个 media id 是客户端错误，
+//     报成服务端故障会让调用方以为「代码有问题」而不是「那张图没了」；
+//   - 其余一律落 default，记 Error 日志并回答 500。这条日志是必要的——
+//     Create 分支此前完全没有错误日志，于是「保存动态失败」在 log.txt 里
+//     一个字都找不到，只能靠复现。真的走到这里说明有一个没被映射的错误类型，
+//     那正是需要被看见的那种事。
+func mapMomentError(err error, fallback string) error {
+	var validationErr *service.ValidationError
+	switch {
+	case errors.As(err, &validationErr):
+		return echo.NewHTTPError(http.StatusBadRequest, validationErr.Message)
+	default:
+		logging.Errorf("[handler:moment] unhandled error: %v", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, fallback)
+	}
 }

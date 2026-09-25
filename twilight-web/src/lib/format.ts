@@ -88,3 +88,22 @@ export function excerpt(content: string, max = 140): string {
     .trim()
   return text.length > max ? `${text.slice(0, max)}…` : text
 }
+
+/**
+ * 把一段文本转成能安全放进 HTML 的字符串。
+ *
+ * 两个调用方，都是**承重**的：markdown 渲染失败时把原文包成 `<p>` 的兜底，
+ * 以及 ContentView 在懒加载块取不到时的降级显示。后者尤其关键——评论是访客
+ * 提交的内容，那条降级路径绝不能把原文当 HTML 注进去。
+ *
+ * 放在 format.ts 而不是各写一份：它是纯函数、零依赖，因此能留在首屏包里边
+ * （markdown 渲染器本身已经是懒加载的了）。
+ */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}

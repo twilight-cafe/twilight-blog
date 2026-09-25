@@ -51,8 +51,9 @@ beforeEach(() => {
   client.setCurrentUser(null)
   client.blog.getSite.mockResolvedValue({ description: '测试站' })
   client.blog.listComments.mockResolvedValue({ items: [], page: 1, page_size: 12, total: 0, total_pages: 1 })
-  // 功能开关由外壳注入；各用例显式设置，缺省时拆掉避免泄漏。
-  delete (window as { __SITE__?: unknown }).__SITE__
+  // 功能开关由外壳写在 <html> 的 data-search-enabled 上；各用例显式设置，
+  // 缺省时拆掉避免泄漏。
+  delete document.documentElement.dataset.searchEnabled
 })
 
 describe('Post', () => {
@@ -147,6 +148,33 @@ describe('Tags', () => {
     await waitFor(() => expect(screen.getAllByText('该标签下暂无文章').length).toBeGreaterThan(0))
     second.unmount()
   })
+
+  it('翻页后换标签：页码收回第 1 页，不去请求新标签的第 2 页', async () => {
+    // 回归：换标签时若不把 page 归 1，会带着上一个标签的页码去请求新标签，
+    // 静默跳过它的第 1 页。3 篇文章的标签在第 2 页是空的，用户看到的是
+    // 「该标签下暂无文章」——一个看起来正常、实际上骗人的页面。
+    client.blog.listTags.mockResolvedValue(paged([makeTag({ id: 1, name: 'Go' }), makeTag({ id: 2, name: '前端' })], 1, 1, 2))
+    client.blog.getTagArticles.mockResolvedValue(paged([makeArticle({ id: 1, title: '第 1 页' })], 1, 3, 3))
+
+    const view = renderAt(<Tags />, '/tags?id=1', '/tags')
+    await waitFor(() => expect(client.blog.getTagArticles).toHaveBeenCalledWith(1, { page: 1, pageSize: 12 }))
+
+    // 翻到第 2 页（Pagination 的按钮名是 "Page N"）。
+    client.blog.getTagArticles.mockResolvedValue(paged([makeArticle({ id: 2, title: '第 2 页' })], 2, 3, 3))
+    fireEvent.click(screen.getByRole('button', { name: 'Page 2' }))
+    await waitFor(() => expect(client.blog.getTagArticles).toHaveBeenCalledWith(1, { page: 2, pageSize: 12 }))
+
+    // 换到「前端」（id=2）：必须从第 1 页取，而不是接着第 2 页。
+    // 也不能出现「新标签 + page 2」的请求——那正是修掉的那个 bug：
+    // 它会多打一次接口，且响应后到的话会把列表盖成第 2 页（可能是空的）。
+    client.blog.getTagArticles.mockClear()
+    fireEvent.click(screen.getByRole('link', { name: /前端/ }))
+    await waitFor(() => expect(client.blog.getTagArticles).toHaveBeenCalledWith(2, { page: 1, pageSize: 12 }))
+
+    const requestedPages = client.blog.getTagArticles.mock.calls.filter(([tagId]) => tagId === 2).map(([, opts]) => opts.page)
+    expect(requestedPages).toEqual([1])
+    view.unmount()
+  })
 })
 
 describe('Search', () => {
@@ -209,7 +237,7 @@ describe('Search', () => {
   it('搜索关闭：渲染禁用提示页，且 URL 带 q 也不发起任何搜索请求', () => {
     // 能到达这一页的只剩手输 URL 与收藏夹（导航与页脚的入口都摘掉了），
     // 但页面仍然不能对已关闭的后端发起注定 404 的请求。
-    ;(window as { __SITE__?: unknown }).__SITE__ = { searchEnabled: false }
+    document.documentElement.dataset.searchEnabled = 'false'
     renderAt(<Search />, '/search?q=anything', '/search')
 
     expect(screen.getByText('本站未启用搜索功能')).toBeTruthy()

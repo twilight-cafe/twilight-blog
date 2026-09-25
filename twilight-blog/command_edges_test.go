@@ -803,7 +803,11 @@ func TestRestoreFailsWhenTheMediaCannotBePlaced(t *testing.T) {
 // 或者有人用 --force 起了第二份实例。此时必须拒绝还原：硬换过去会让那个进程继续
 // 往已经被替换掉的 inode 里写，数据看起来正常地在丢。
 //
-// 反证方式：把 swapIn 里 `os.Rename(dst, parked)` 的错误分支改成忽略 → 本条失败。
+// 反证方式：把 swapIn 里 `renamePath(dst, parked)` 的错误分支改成忽略 → 本条失败。
+//
+// 构造走 renamePath 钩子而不是「打开索引文件让它删不掉」：后者只在 Windows 上成立
+// （Go 不开 FILE_SHARE_DELETE），而 POSIX 上对目录做 rename 与打开的文件句柄无关——
+// 这条用例因此在 Linux 上长期红着，它守的「挪不开就停下来」实际从未被验证过。
 func TestRestoreRefusesToSwapAnIndexThatIsInUse(t *testing.T) {
 	inTempWorkdir(t)
 	seedSite(t, nil)
@@ -812,14 +816,18 @@ func TestRestoreRefusesToSwapAnIndexThatIsInUse(t *testing.T) {
 		t.Fatalf("备份失败: %v", err)
 	}
 
-	held, err := os.Open(filepath.Join(search.DefaultDataDir, "data.mdb"))
-	if err != nil {
-		t.Fatalf("打开索引文件失败: %v", err)
+	// 只让「把旧索引目录挪到一边」失败，其余 rename 照常。
+	previous := renamePath
+	renamePath = func(oldpath, newpath string) error {
+		if oldpath == search.DefaultDataDir {
+			return errors.New("the index directory is in use")
+		}
+		return previous(oldpath, newpath)
 	}
-	defer held.Close()
+	t.Cleanup(func() { renamePath = previous })
 
 	captureStreams(t, "")
-	err = performRestore(restoreOptions{archive: "site.tar.gz", yes: true, noSafetyBackup: true})
+	err := performRestore(restoreOptions{archive: "site.tar.gz", yes: true, noSafetyBackup: true})
 	if err == nil {
 		t.Fatal("索引目录被占着时应当拒绝还原")
 	}

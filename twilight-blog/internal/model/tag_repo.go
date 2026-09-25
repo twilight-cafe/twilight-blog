@@ -110,6 +110,12 @@ GROUP BY t.id, t.name
 // ListArticlesByTag 返回该标签下未删除的文章及其总数。
 // 开头先做一次标签存在性检查，纯粹是为了让「标签不存在」返回 ErrTagNotFound，
 // 多一次查询换取清晰的 404 语义。检查、计数与取页都在同一个读事务里完成。
+//
+// **列清单必须与 scanArticle 逐列对齐**（它按位置扫描，顺序也参与）：
+// id, title, content, created_at, updated_at, cover_media_id, deleted_at。
+// 少一列不会编译报错，只会在运行时以「expected N destination arguments in Scan」
+// 变成 500 —— 加头图那一版就漏了这一处，导致标签页的「相关文章」整块打不开
+// （见 tag_repo_test.go 的 TestListArticlesByTagReturnsCoverMediaID）。
 func (r *SQLiteTagRepository) ListArticlesByTag(ctx context.Context, tagID int64, p Pagination) ([]Article, int64, error) {
 	logging.Debugf("[tag-repo] ListArticlesByTag called")
 
@@ -131,7 +137,7 @@ WHERE at.tag_id = ?
 		}
 
 		rows, err := q.QueryContext(ctx, `
-SELECT a.id, a.title, a.content, a.created_at, a.updated_at, a.deleted_at
+SELECT a.id, a.title, a.content, a.created_at, a.updated_at, a.cover_media_id, a.deleted_at
 FROM articles a
 JOIN article_tags at ON at.article_id = a.id
 WHERE at.tag_id = ? AND a.deleted_at IS NULL

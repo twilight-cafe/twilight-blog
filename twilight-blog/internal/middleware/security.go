@@ -30,6 +30,16 @@ import (
 // 于是形如 [x](javascript:...) 的 Markdown 链接无法生效——这正是文章正文
 // 有意不做 HTML 清洗之后仍然安全的前提之一。
 //
+// ⚠️ 同样因为不含 'unsafe-inline'/hash/nonce，页面里**任何内联 <script>
+// 都不会被执行**，而这件事在服务端完全看不出来：响应照发、状态码 200、
+// e2e 测试照绿。搜索开关就栽在这里——它曾经是 template/index.html 里的一段
+// 内联脚本，于是上线后从未生效过（测试只断言「HTML 里有那个字符串」，
+// 不断言「浏览器肯执行它」）。
+//
+// 要往外壳传运行期数据，就用 HTML 属性（见 view/template/index.html 的
+// data-search-enabled），不要加内联脚本，也不要为了它放宽这一项。
+// 对此的守护是 view 包的 TestIndexShellHasNoInlineScript。
+//
 // 表中为 Google Fonts 开了两个口子（style-src 与 font-src），
 // 改动这张表时请一并确认字体仍能加载。
 func contentSecurityPolicy() string {

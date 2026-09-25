@@ -1,15 +1,27 @@
 // App.tsx —— 应用根组件：启动探测 + 路由表 + 守卫
+//
 // 启动分两步：① getInstallStatus 探测后端是否已安装（loading/installed/
-// not-installed/error 四态，API 不可达单列 error 并提供重试）；② 已安装时再
-// refreshAuth() 等 /api/me 解析出登录态（authReady）后才真正渲染路由——否则刷新
-// 页面会把已登录的管理员先弹到登录页再跳回。
+// not-installed/error 四态，API 不可达单列 error 并提供重试）；② 已安装后
+// refreshAuth() 解析登录态（authReady）。
+//
+// authReady **只门控 /admin/***，公开页不等它。以前它把公开页也拦在登录态之后，
+// 于是匿名访客看首页要等三次串行往返（install_status → /api/me → 文章接口）才见到
+// 内容，LCP 与收录双输；而 /api/me 对匿名访客毫无用处。代价是页脚账号入口会先显示
+// 「登录 / 注册」再变成「控制台」——这是有意接受的：公开页内容不因身份而变，那个入口
+// 的正确性由 useCurrentUser() 在解析完成后自行修正（见 PublicShell 的 Footer）。
+// admin 区反过来必须等：渲染早了会把已登录的管理员先弹到登录页再跳回来。
+//
 // 路由守卫：
 //   - 未安装且不在 /install → 跳 /install；已安装却访问 /install → 跳回首页。
 //   - /admin/* 全部套在 AdminLayout 下，由它在组件内做登录态/角色守卫（游客账号
 //     只放行 /admin/profile）。
 //   - 公开区 catch-all 渲染 NotFound；admin 区 catch-all 直接重定向到首页。
+//
+// 打包策略：公开区**静态**导入（首屏就要用到），admin 区全部 React.lazy。
+// 实测「仅公开区」与「全部路由」相差 81.7 KB，而匿名访客一行 admin 代码都用不到。
+// AdminLayout 保持静态——它是守门的，不能等自己的 chunk 加载完才开始守。
 
-import { useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState, type ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { Button } from 'ink-design'
 import { blog, getErrorMessage, refreshAuth } from './lib/client'
@@ -17,6 +29,7 @@ import { DialogProvider } from './lib/dialog'
 import { ToastProvider } from './lib/toast'
 import PublicShell from './components/PublicShell'
 import AdminLayout from './components/AdminLayout'
+import { Loading } from './components/common'
 import Home from './pages/public/Home'
 import Post from './pages/public/Post'
 import Archive from './pages/public/Archive'
@@ -26,32 +39,52 @@ import Moments from './pages/public/Moments'
 import PageDetail from './pages/public/PageDetail'
 import NotFound from './pages/public/NotFound'
 import Setup from './pages/Setup'
-import SignIn from './pages/admin/SignIn'
-import Register from './pages/admin/Register'
-import ForgotPassword from './pages/admin/ForgotPassword'
-import Profile from './pages/admin/Profile'
-import UsersAdmin from './pages/admin/UsersAdmin'
-import SiteSettings from './pages/admin/SiteSettings'
-import Dashboard from './pages/admin/Dashboard'
-import Posts from './pages/admin/Posts'
-import Editor from './pages/admin/Editor'
-import PagesAdmin, { NewPage, PageEdit } from './pages/admin/PagesAdmin'
-import TagsAdmin from './pages/admin/TagsAdmin'
-import MomentsAdmin from './pages/admin/MomentsAdmin'
-import CommentsAdmin from './pages/admin/CommentsAdmin'
-import MediaAdmin from './pages/admin/MediaAdmin'
+
+// 后台每一个页面各自成 chunk。PagesAdmin 另导出 NewPage / PageEdit，用 .then 取具名
+// 导出——React.lazy 只认 default，直接 lazy(() => import(...)) 会拿到 undefined。
+const SignIn = lazy(() => import('./pages/admin/SignIn'))
+const Register = lazy(() => import('./pages/admin/Register'))
+const ForgotPassword = lazy(() => import('./pages/admin/ForgotPassword'))
+const Profile = lazy(() => import('./pages/admin/Profile'))
+const UsersAdmin = lazy(() => import('./pages/admin/UsersAdmin'))
+const SiteSettings = lazy(() => import('./pages/admin/SiteSettings'))
+const Dashboard = lazy(() => import('./pages/admin/Dashboard'))
+const Posts = lazy(() => import('./pages/admin/Posts'))
+const Editor = lazy(() => import('./pages/admin/Editor'))
+const PagesAdmin = lazy(() => import('./pages/admin/PagesAdmin'))
+const NewPage = lazy(() => import('./pages/admin/PagesAdmin').then((module) => ({ default: module.NewPage })))
+const PageEdit = lazy(() => import('./pages/admin/PagesAdmin').then((module) => ({ default: module.PageEdit })))
+const TagsAdmin = lazy(() => import('./pages/admin/TagsAdmin'))
+const MomentsAdmin = lazy(() => import('./pages/admin/MomentsAdmin'))
+const CommentsAdmin = lazy(() => import('./pages/admin/CommentsAdmin'))
+const MediaAdmin = lazy(() => import('./pages/admin/MediaAdmin'))
 
 type InstallState = 'loading' | 'installed' | 'not-installed' | 'error'
+
+/**
+ * 登录 / 注册 / 找回密码不在 AdminLayout 之下，各自的 chunk 需要自己的 Suspense
+ * 边界。兜底用 Loading 而不是留白：chunk 慢的时候至少要让人看见「在加载」。
+ *
+ * 页面 chunk 加载失败（网络中断、部署换了指纹）不在这里处理：lazy 会把错误抛给
+ * 最近的错误边界，也就是 main.tsx 里那层 ErrorBoundary，用户拿到的是可读提示
+ * 而不是白屏——这是顶层边界存在的原意。
+ */
+function AuthRoute({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<Loading height={320} />}>{children}</Suspense>
+}
 
 export default function App() {
   const [state, setState] = useState<InstallState>('loading')
   const [error, setError] = useState('')
   const [probeKey, setProbeKey] = useState(0)
   // The session lives in a cookie the script cannot read, so identity is only
-  // known after `GET /api/me`. Routing waits for that answer: rendering first
-  // would bounce a signed-in operator to the sign-in page on every reload.
+  // known after `GET /api/me`. The console waits for that answer: rendering it
+  // first would bounce a signed-in operator to the sign-in page on every reload.
   const [authReady, setAuthReady] = useState(false)
   const location = useLocation()
+
+  // 只有控制台需要等登录态，公开页立刻渲染（理由见文件头）。
+  const needsAuth = location.pathname.startsWith('/admin')
 
   useEffect(() => {
     let alive = true
@@ -128,9 +161,9 @@ export default function App() {
     return <Navigate to="/" replace />
   }
 
-  // An installed blog whose session has not been resolved yet shows the same
-  // neutral loading screen rather than a sign-in form it may have to retract.
-  if (state === 'installed' && !authReady) {
+  // The console shows the same neutral loading screen while the session is still
+  // unresolved, rather than a sign-in form it may have to retract.
+  if (state === 'installed' && needsAuth && !authReady) {
     return (
       <div className="login-bg">
         <div className="kicker">TWILIGHT · LOADING</div>
@@ -155,9 +188,9 @@ export default function App() {
           </Route>
           {/* One session, two identities: the same guard routes each role to the
               console it owns. */}
-          <Route path="/admin/login" element={<SignIn />} />
-          <Route path="/admin/register" element={<Register />} />
-          <Route path="/admin/forgot" element={<ForgotPassword />} />
+          <Route path="/admin/login" element={<AuthRoute><SignIn /></AuthRoute>} />
+          <Route path="/admin/register" element={<AuthRoute><Register /></AuthRoute>} />
+          <Route path="/admin/forgot" element={<AuthRoute><ForgotPassword /></AuthRoute>} />
           <Route element={<AdminLayout />}>
             <Route path="/admin" element={<Dashboard />} />
             <Route path="/admin/posts" element={<Posts />} />

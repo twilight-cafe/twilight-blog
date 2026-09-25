@@ -23,7 +23,7 @@ import { DialogProvider, useDialog } from '../lib/dialog'
 import { ToastProvider } from '../lib/toast'
 import { extractToc } from '../lib/markdown'
 import { resetSiteCacheForTests } from '../lib/site'
-import { NOW, adminMe, getSharedClientMock, makeArticle, makeMedia, makeMoment, makePage, makeTag, makeUser, resetClientMock, visitorMe } from './helpers'
+import { NOW, adminMe, expireEmailCodeCooldown, getSharedClientMock, makeArticle, makeMedia, makeMoment, makePage, makeTag, makeUser, resetClientMock, visitorMe } from './helpers'
 
 vi.mock('../lib/client', async () => {
   const { getSharedClientMock } = await import('./helpers')
@@ -273,12 +273,28 @@ describe('Editor / PagesAdmin / Posts / Profile / Register / ForgotPassword 剩�
     await waitFor(() => expect(screen.getAllByText('用户名被占用').length).toBeGreaterThan(0))
   })
 
-  it('Register：codeSent 后点「重新发送」', async () => {
+  it('Register：codeSent 后倒计时锁住重发；冷却结束后可重发', async () => {
     client.blog.requestEmailCode.mockResolvedValue({ message: 'ok' })
     const { container } = renderRouted(<Register />, '/admin/register', '/admin/register')
     fireEvent.change(container.querySelector('input[type=email]') as HTMLInputElement, { target: { value: 'a@x.com' } })
     fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
     await waitFor(() => expect(container.querySelector('input[placeholder=验证码]')).toBeTruthy())
+
+    // 发送成功后按钮进入 60 秒倒计时并禁用——这是「前后端一起限制」的前端那一半，
+    // 目的就是不让用户反复点、反复被 429 拒。
+    await waitFor(() => {
+      const button = screen.getByRole('button', { name: /秒后可重发/ })
+      expect(button.hasAttribute('disabled')).toBe(true)
+    })
+    fireEvent.click(screen.getByRole('button', { name: /秒后可重发/ }))
+    expect(client.blog.requestEmailCode).toHaveBeenCalledTimes(1) // 禁用按钮点不动
+
+    // 等冷却结束（等价于时间前进 60 秒）→ 按钮恢复「重新发送」且可点。
+    await expireEmailCodeCooldown('a@x.com')
+    await waitFor(() => {
+      const button = screen.getByRole('button', { name: '重新发送' })
+      expect(button.hasAttribute('disabled')).toBe(false)
+    })
     fireEvent.click(screen.getByRole('button', { name: '重新发送' }))
     await waitFor(() => expect(client.blog.requestEmailCode).toHaveBeenCalledTimes(2))
   })
@@ -417,6 +433,37 @@ describe('App / AdminLayout 收尾分支', () => {
     )
     await waitFor(() => expect(screen.getByText('还没有文章')).toBeTruthy(), { timeout: 3000 })
     expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  // 上面那条覆盖 `if (alive)` 的真分支，这条覆盖假分支。以前它只能靠「某个用例恰好
+  // 在 /api/me 落定前卸载」偶然命中，于是全量跑时 Line 122 的分支覆盖率在 100 与
+  // 99.91 之间随机摆动（实测两次同码运行一次 100、一次 99.91）。挂住请求再卸载，
+  // 就把这个时序固定下来。
+  it('refreshAuth 未落定就卸载：alive 守卫挡掉卸载后的 setAuthReady', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let rejectMe: () => void = () => {}
+    client.blog.getInstallStatus.mockResolvedValue({ installed: true })
+    // 挂住 /api/me：只有它悬着，才能先卸载、再让它落定——那时 alive 已经是 false。
+    client.refreshAuth.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => {
+      rejectMe = () => reject(new Error('me down'))
+    }))
+    client.blog.listArticles.mockResolvedValue(paged([]))
+    client.blog.listTags.mockResolvedValue(paged([]))
+
+    const view = render(
+      <MemoryRouter initialEntries={['/']}>
+        <App />
+      </MemoryRouter>,
+    )
+    // 必须等到请求真的发出去：还停在 loading 分支时根本走不到这个 effect。
+    await waitFor(() => expect(client.refreshAuth).toHaveBeenCalled())
+    view.unmount()
+    rejectMe()
+    // 拒绝发生在卸载之后：catch 照旧报出来（这条断言同时证明我们确实走到了 finally），
+    // 而 alive 守卫拦下 setAuthReady——卸载后的 setState 不该再有落点。
+    await waitFor(() => expect(warn).toHaveBeenCalled())
+    await act(async () => { await Promise.resolve() })
     warn.mockRestore()
   })
 

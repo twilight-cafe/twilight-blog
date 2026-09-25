@@ -61,13 +61,13 @@ export default function Posts() {
   }, [page, reloadKey, tab, toast])
 
   // The loaded page may have changed under the selection (deletion, refresh):
-  // keep only ids that are still on screen.
+  // keep only ids that are still on screen. Dropping the old array identity when
+  // nothing was removed keeps this from re-rendering on every list refresh.
   useEffect(() => {
+    const visible = new Set(list.map((item) => item.id))
     setSelected((current) => {
-      if (current.length === 0) return current
-      const visible = new Set(list.map((item) => item.id))
-      const next = current.filter((id) => visible.has(id))
-      return next.length === current.length ? current : next
+      if (current.every((id) => visible.has(id))) return current
+      return current.filter((id) => visible.has(id))
     })
   }, [list])
 
@@ -232,7 +232,7 @@ export default function Posts() {
         </div>
       </div>
       {loading ? <Loading height={80} /> : null}
-      <Pagination current={page} total={totalPages} pageSize={1} onChange={changePage} />
+      <Pagination align="center" current={page} total={totalPages} pageSize={1} onChange={changePage} />
     </>
   )
 }

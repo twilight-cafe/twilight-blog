@@ -176,7 +176,7 @@ export class BlogClient {
     return this.usersApi.updateUser(id, input);
   }
 
-  // 站点设置（读公开；写仅站长）
+  // 站点设置（读公开；写仅站长）——整份快照进出，字段级的展开在 siteApi 里
   getSite(): Promise<SiteSettingsResponse> {
     return this.siteApi.getSite();
   }

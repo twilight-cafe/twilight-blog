@@ -65,6 +65,10 @@ func NewRateLimiters(opts RateLimitOptions) *RateLimiters {
 //
 // 超限时返回 429 并带上 Retry-After；给出的值是整个窗口长度，
 // 属于「至少等这么久」的上界估计。
+var rateLimitIdentifierExtractor = func(c echo.Context) (string, error) {
+	return c.RealIP(), nil
+}
+
 func perIPRateLimiter(label string, allowance int, window time.Duration) echo.MiddlewareFunc {
 	if allowance <= 0 {
 		allowance = 1
@@ -77,10 +81,8 @@ func perIPRateLimiter(label string, allowance int, window time.Duration) echo.Mi
 	})
 
 	return echomw.RateLimiterWithConfig(echomw.RateLimiterConfig{
-		Store: store,
-		IdentifierExtractor: func(c echo.Context) (string, error) {
-			return c.RealIP(), nil
-		},
+		Store:               store,
+		IdentifierExtractor: rateLimitIdentifierExtractor,
 		ErrorHandler: func(c echo.Context, err error) error {
 			logging.Errorf("[ratelimit] cannot identify client for %s: %v", label, err)
 			return echo.NewHTTPError(http.StatusInternalServerError, "rate limiter unavailable")

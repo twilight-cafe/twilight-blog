@@ -562,7 +562,7 @@ func TestExtractHonoursResourceLimitsOnDirectoriesOnly(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		name := DataPrefix + "dir" + strconv.Itoa(i)
 		entries = append(entries, craftEntry{name: name + "/", typeflag: tar.TypeDir})
-		parts = append(parts, Part{Name: PartMedia, Path: name})
+		parts = append(parts, Part{Name: PartLogs, Path: name})
 	}
 	raw := craftArchive(t, &Manifest{
 		Format:        FormatName,

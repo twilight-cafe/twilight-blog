@@ -43,6 +43,17 @@ Options:
                        terminal: the command never treats "nobody could answer"
                        as consent.
   --keep-settings      Keep this host's settings.json instead of the archived one.
+  --media-dir <dir>    Restore the media into <dir> (a path inside the working
+                       directory) instead of this host's settings.json media_dir.
+                       Only valid when the archive's settings.json is restored;
+                       the restored file's media_dir is rewritten to match, so the
+                       two never disagree.
+  --accept-archive-settings
+                       Restore the archived settings.json even when it weakens
+                       this host's security (disables rate limiting, widens
+                       trusted_proxies, sets cookie_secure=never, points a
+                       transcoding tool at another executable). Without this flag
+                       such an archive is refused.
   --keep-sessions      Keep the session rows from the archive. By default every
                        session is revoked: a restore rolls the sessions table back
                        to the moment of the backup, which would bring back tokens
@@ -55,6 +66,9 @@ Options:
 
 The archive may be given as "-" to read it from stdin, so a backup can be piped
 straight from another machine.
+
+The media directory is always chosen by THIS host: the archive's media_dir is
+never used as a destination path (it could point anywhere on the filesystem).
 `
 
 // restoreOptions 是 restore 子命令解析出来的参数。
@@ -66,6 +80,11 @@ type restoreOptions struct {
 	noSafetyBackup bool
 	dryRun         bool
 	force          bool
+	// mediaDir 是显式的媒体落点；为空表示用本机 settings.json 的 media_dir。
+	mediaDir string
+	// acceptArchiveSettings 允许采用一份会削弱本机防护的归档配置（见
+	// restore_settings.go 的 validateArchiveSettings）。
+	acceptArchiveSettings bool
 }
 
 // runRestoreCommand 执行 restore 子命令，返回进程退出码。
@@ -111,6 +130,20 @@ func parseRestoreArgs(args []string) (restoreOptions, error) {
 			opts.dryRun = true
 		case arg == "--force":
 			opts.force = true
+		case arg == "--accept-archive-settings":
+			opts.acceptArchiveSettings = true
+		case arg == "--media-dir":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("missing value for --media-dir\n\n%s", restoreCommandUsage)
+			}
+			i++
+			if err := setRestoreMediaDir(&opts, args[i]); err != nil {
+				return opts, err
+			}
+		case strings.HasPrefix(arg, "--media-dir="):
+			if err := setRestoreMediaDir(&opts, strings.TrimPrefix(arg, "--media-dir=")); err != nil {
+				return opts, err
+			}
 		case strings.HasPrefix(arg, "-") && arg != "-":
 			// `-` 单独出现是合法输入（从 stdin 读归档），其余以 - 开头的都当参数。
 			return opts, fmt.Errorf("unknown argument %q\n\n%s", arg, restoreCommandUsage)
@@ -126,6 +159,22 @@ func parseRestoreArgs(args []string) (restoreOptions, error) {
 		return opts, fmt.Errorf("missing the archive to restore\n\n%s", restoreCommandUsage)
 	}
 	return opts, nil
+}
+
+// setRestoreMediaDir 记下 --media-dir 的值，拒绝空值与重复指定。
+//
+// 只做「是不是一个可用的本地相对路径」这一层校验；与工作目录相关的完整校验在
+// restoreMediaDir 里（那需要知道 settingsPath，属于运行期知识）。
+func setRestoreMediaDir(opts *restoreOptions, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("the --media-dir path must not be empty\n\n%s", restoreCommandUsage)
+	}
+	if opts.mediaDir != "" {
+		return fmt.Errorf("--media-dir specified more than once")
+	}
+	opts.mediaDir = value
+	return nil
 }
 
 // performRestore 跑完整个还原流程。
@@ -151,6 +200,12 @@ func performRestore(opts restoreOptions) error {
 	}
 	manifest := reader.Manifest()
 	reportManifest(stdout(), manifest)
+
+	// 选项之间的自相矛盾要在解包、问询、打安全备份**之前**挡下：否则用户答完
+	// 「yes」、白等一份安全备份，才被告知这个组合本来就不成立。
+	if err := checkRestoreOptions(manifest, opts); err != nil {
+		return err
+	}
 
 	if opts.dryRun {
 		if info, running := pidfile.Holder(pidfile.FileName); running {
@@ -356,28 +411,46 @@ func revokeRestoredSessions() error {
 //
 // 顺序不是随意的：settings.json 先落地决定媒体目录去哪，数据库换位之前必须先
 // 删掉 -wal/-shm（理由见 removeSQLiteSidecars）。
+//
+// 两条与「归档不可信」直接相关的规则：
+//
+//   - 媒体目录的落点**由本机决定**（本机 settings.json 的 media_dir，或显式的
+//     --media-dir），归档里的 media_dir 只用于打印一句提示。此前它被直接当成目标
+//     路径，于是一份格式合法的归档就能删除/替换工作目录之外的任意目录（R7-01）；
+//   - 归档的 settings.json 在落地**之前**要过一遍安全字段比对，会削弱本机防护的
+//     配置默认拒绝（R7-03）。改 media_dir 也在这里完成，保证文件与落点一致。
 func applyRestore(staging string, manifest backup.Manifest, opts restoreOptions) error {
-	// 媒体目录的目标位置要两边对照着看：
-	//   - 默认（连 settings.json 一起还原）→ 采用归档里那台机器的布局；
-	//   - --keep-settings（保留本机配置）→ 保持本机布局。
-	// 两者不一致时必须说出来：静默地把媒体放进一个 settings.json 并不指向的目录，
-	// 结果是「文章都在、图全挂了」，而且几乎无从排查。
-	localMedia := readMediaDir(settingsPath)
-	archiveMedia := localMedia
-	if archived := manifest.PartPath(backup.PartSettings); archived != "" {
-		rel, err := backup.RelativePath(archived)
+	mediaDir, err := restoreMediaDir(opts)
+	if err != nil {
+		return err
+	}
+
+	stagedSettings, err := stagedSettingsPath(staging, manifest)
+	if err != nil {
+		return err
+	}
+	restoresSettings := stagedSettings != "" && !opts.keepSettings
+	if restoresSettings {
+		local, err := readSettingsMap(settingsPath)
 		if err != nil {
 			return err
 		}
-		archiveMedia = readMediaDir(filepath.Join(staging, rel))
-	}
-	mediaDir := archiveMedia
-	if opts.keepSettings {
-		mediaDir = localMedia
-	}
-	if localMedia != archiveMedia {
-		fmt.Fprintf(stdout(), "Note: media_dir differs (this host %q, archive %q); using %q.\n",
-			localMedia, archiveMedia, mediaDir)
+		archive, err := readSettingsMap(stagedSettings)
+		if err != nil {
+			return err
+		}
+		if err := validateArchiveSettings(archive, local, opts.acceptArchiveSettings); err != nil {
+			return err
+		}
+		// 只在值确实不同时改写：归档与本机布局一致的常见情形下，归档里的字节
+		// 原样落地，不做一次无谓的重新编码。
+		if archived := stringAt(archive, "media_dir"); archived != mediaDir {
+			fmt.Fprintf(stdout(), "Note: the archive's media_dir is %q; media is restored into this host's %q.\n",
+				archived, mediaDir)
+			if err := setSettingsMediaDir(stagedSettings, mediaDir); err != nil {
+				return err
+			}
+		}
 	}
 
 	// 没有安全备份兜底时保留旧数据（重命名而非删除）：删掉它等于把回滚的路堵死。

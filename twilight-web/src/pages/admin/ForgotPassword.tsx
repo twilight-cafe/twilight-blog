@@ -1,6 +1,8 @@
 // ForgotPassword.tsx —— 重置密码（邮箱 + 验证码）
 // 流程与注册类似：发码 → 带 code 调 resetPassword。后端会吊销该账号全部会话、
 // 清掉 cookie，所以前端在成功后 setCurrentUser(null) 并跳回登录页，强制重新登录。
+// 验证码按钮受 60 秒冷却约束（见 lib/email-code-cooldown），与 Register 共用同一条
+// 时间线——用户在注册页发过码再过来，倒计时是接着走的，与服务端判定一致。
 
 import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
@@ -8,6 +10,7 @@ import { Button, Input } from 'ink-design'
 import { blog, getErrorMessage, setCurrentUser } from '../../lib/client'
 import { PASSWORD_RULE_TEXT, validatePassword } from '../../lib/password'
 import { emailError } from '../../lib/validate'
+import { isRateLimited, startEmailCodeCooldown, useEmailCodeCooldown } from '../../lib/email-code-cooldown'
 import { useToast } from '../../lib/toast'
 
 export default function ForgotPassword() {
@@ -19,6 +22,7 @@ export default function ForgotPassword() {
   const [codeSent, setCodeSent] = useState(false)
   const [sending, setSending] = useState(false)
   const [busy, setBusy] = useState(false)
+  const cooldown = useEmailCodeCooldown(email)
 
   const requestCode = async () => {
     const emailErr = emailError(email)
@@ -30,8 +34,12 @@ export default function ForgotPassword() {
     try {
       await blog.requestEmailCode({ email: email.trim() })
       setCodeSent(true)
+      startEmailCodeCooldown(email)
       toast('验证码已发送，请查收邮箱')
     } catch (error) {
+      // 被限流（429）时锁住按钮：让前端的节奏与服务端的记录重新对齐，
+      // 否则用户会继续点、继续被拒。
+      if (isRateLimited(error)) startEmailCodeCooldown(email)
       toast(getErrorMessage(error, '发送验证码失败'))
     } finally {
       setSending(false)
@@ -99,13 +107,24 @@ export default function ForgotPassword() {
           {codeSent ? (
             <>
               <Input variant="login" placeholder="验证码" value={code} onChange={(event) => setCode(event.target.value)} />
-              <Button small ghost type="button" disabled={sending} onClick={() => void requestCode()}>
-                重新发送
+              <Button
+                small
+                ghost
+                type="button"
+                disabled={sending || cooldown > 0}
+                onClick={() => void requestCode()}
+              >
+                {cooldown > 0 ? `${cooldown} 秒后可重发` : '重新发送'}
               </Button>
             </>
           ) : (
-            <Button small type="button" disabled={sending} onClick={() => void requestCode()}>
-              {sending ? '发送中…' : '发送验证码'}
+            <Button
+              small
+              type="button"
+              disabled={sending || cooldown > 0}
+              onClick={() => void requestCode()}
+            >
+              {sending ? '发送中…' : cooldown > 0 ? `${cooldown} 秒后可重发` : '发送验证码'}
             </Button>
           )}
         </div>

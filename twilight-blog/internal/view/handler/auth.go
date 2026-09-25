@@ -550,6 +550,12 @@ func mapUserAuthError(err error) error {
 		return echo.NewHTTPError(http.StatusTooManyRequests, strings.TrimSpace(err.Error()))
 	case errors.Is(err, service.ErrEmailCodeAddressLimit):
 		return echo.NewHTTPError(http.StatusTooManyRequests, strings.TrimSpace(err.Error()))
+	// 与上面那条同样是 429，但语义不同：那条是「今天要得太多了」，这条是
+	// 「离上一封不到 60 秒」。两者都是**限流**而不是**非法请求**，所以都不是 400
+	// ——用 400 会让前端把它当成表单填写错误，弹出与输入框相关的提示。
+	// 前端还会读这个 429 来决定是否启动倒计时。
+	case errors.Is(err, service.ErrEmailCodeTooFrequent):
+		return echo.NewHTTPError(http.StatusTooManyRequests, strings.TrimSpace(err.Error()))
 	case errors.Is(err, service.ErrEmailSendingDisabled):
 		return echo.NewHTTPError(http.StatusServiceUnavailable, "email sending is disabled")
 	default:

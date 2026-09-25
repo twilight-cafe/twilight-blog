@@ -34,6 +34,20 @@ function headingText(): string {
   return (h3?.textContent ?? '').replace(/\s+/g, ' ').trim()
 }
 
+/**
+ * 等按钮从「请求中」复活再点。
+ *
+ * 点赞的处理函数里有 `if (liking) return` 的防连点重入守卫，而失败时的 toast 是
+ * ink-design 用**另一个 root**（`#inkui-message-container`）渲染的：`waitFor` 会被
+ * 那个 root 的 DOM 变化唤醒，此时主树上的 `setLiking(false)` 可能还没提交。于是
+ * 点下去被守卫吞掉，表现为「接口少调了一次」——全量并发时必现，单跑却全绿。
+ * 断言必须等**主树**自己的状态，不能拿另一个 root 的变化当同步点。
+ */
+async function clickLike(likeBtn: () => HTMLButtonElement): Promise<void> {
+  await waitFor(() => expect(likeBtn().className).not.toContain('busy'))
+  fireEvent.click(likeBtn())
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   client.setCurrentUser(null)
@@ -213,24 +227,24 @@ describe('已登录：发帖与回复', () => {
 
     // 点赞成功
     client.blog.likeComment.mockResolvedValueOnce(makeComment({ id: 1, like_count: 3, liked_by_me: true }))
-    fireEvent.click(likeBtn())
+    await clickLike(likeBtn)
     await waitFor(() => expect(likeBtn().textContent).toBe('♥ 3'))
 
     // 取消点赞失败：toast，状态保持
     client.blog.unlikeComment.mockRejectedValueOnce(new Error('点赞失败'))
-    fireEvent.click(likeBtn())
+    await clickLike(likeBtn)
     await waitFor(() => expect(screen.getAllByText('点赞失败').length).toBeGreaterThan(0))
     expect(likeBtn().textContent).toBe('♥ 3')
 
     // 服务端返回 null：不更新本地状态
     client.blog.unlikeComment.mockResolvedValueOnce(null)
-    fireEvent.click(likeBtn())
+    await clickLike(likeBtn)
     await waitFor(() => expect(client.blog.unlikeComment).toHaveBeenCalledTimes(2))
     expect(likeBtn().textContent).toBe('♥ 3')
 
     // 取消点赞成功
     client.blog.unlikeComment.mockResolvedValueOnce(makeComment({ id: 1, like_count: 2, liked_by_me: false }))
-    fireEvent.click(likeBtn())
+    await clickLike(likeBtn)
     await waitFor(() => expect(likeBtn().textContent).toBe('♡ 2'))
   })
 

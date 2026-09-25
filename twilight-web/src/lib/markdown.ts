@@ -28,6 +28,17 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeHighlightCodeLines from 'rehype-highlight-code-lines'
 import rehypeStringify from 'rehype-stringify'
 
+// 这两个样式表被刻意**移出首屏包**（原来在 main.tsx 里静态引入）：KaTeX 的 CSS
+// 连同 62 个字体文件、highlight.js 的代码主题，都只在这条管线真的渲染出内容时
+// 才用得上。放在这里，Vite 会把它们拆成随本块一起加载的独立 CSS。
+//
+// 先后顺序变了也不会出事：app.css 里所有与代码块/公式相关的规则都写在
+// `.plain-body` 之下（特异性更高），后加载的主题样式覆盖不了它们。
+import 'katex/dist/katex.min.css'
+import 'highlight.js/styles/github-dark.min.css'
+
+import { escapeHtml } from './format'
+
 export interface TocItem {
   id: string
   text: string
@@ -462,15 +473,6 @@ const tocProcessor = unified()
   .use(remarkParse)
   .use(remarkGfm)
   .use(remarkMath)
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
 
 /**
  * Renders trusted (site-owner authored) article/page/moment bodies. Markdown,

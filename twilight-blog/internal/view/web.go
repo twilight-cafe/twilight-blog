@@ -21,6 +21,13 @@ import (
 //go:embed all:web
 var webAssets embed.FS
 
+// Hooks for deterministic route-registration error tests.
+var (
+	subFS                = fs.Sub
+	resolveIndexAssetsFn = resolveIndexAssets
+	parseIndexTemplateFn = parseIndexTemplate
+)
+
 // registerWeb 把内嵌的前端产物挂到根路径上。
 //
 // 资源的来源是 internal/view/web 目录，它由根目录的 build.py 从
@@ -33,18 +40,18 @@ var webAssets embed.FS
 // 与 `<title>` 带上**当前**的站点描述。嵌入目录只提供带指纹的静态资源
 // （JS/CSS/字体）与那份资源清单。
 func registerWeb(e *echo.Echo, cfg *config.Config) error {
-	webFS, err := fs.Sub(webAssets, "web")
+	webFS, err := subFS(webAssets, "web")
 	if err != nil {
 		return fmt.Errorf("extract embedded web assets: %w", err)
 	}
 
 	// 入口 chunk 的文件名带内容指纹，只有 Vite 的清单知道。启动时解析一次：
 	// 清单随二进制一起被嵌入，运行期不会变（换前端=换二进制）。
-	stylesheets, scripts, err := resolveIndexAssets(webFS)
+	stylesheets, scripts, err := resolveIndexAssetsFn(webFS)
 	if err != nil {
 		return fmt.Errorf("resolve front-end entry assets: %w", err)
 	}
-	indexTmpl, err := parseIndexTemplate()
+	indexTmpl, err := parseIndexTemplateFn()
 	if err != nil {
 		return err
 	}
@@ -53,7 +60,7 @@ func registerWeb(e *echo.Echo, cfg *config.Config) error {
 		// 每次都读一遍当前配置：站点描述与搜索开关都可以在运行期被改
 		// （PUT /api/admin/site / settings.json），值班到启动时渲染的副本上
 		// 就会得到「改完刷新还是旧的」。
-		body, err := renderIndex(indexTmpl, newIndexData(cfg.SiteDescriptionValue(), cfg.SearchEnabledValue(), stylesheets, scripts))
+		body, err := renderIndex(indexTmpl, newIndexData(cfg.SiteDescriptionValue(), cfg.SearchEnabledValue(), cfg.HomePageSizeValue(), cfg.BorderRadiusValue(), stylesheets, scripts))
 		if err != nil {
 			return err
 		}
@@ -62,9 +69,6 @@ func registerWeb(e *echo.Echo, cfg *config.Config) error {
 
 	serve := func(c echo.Context) error {
 		requestPath := c.Request().URL.Path
-		if requestPath == "" {
-			requestPath = "/"
-		}
 
 		// 未知的 /api 路径维持 404，不要回退成 index.html：
 		// 否则前端把接口路径写错时会拿到一坨 HTML 并当成 JSON 解析，
@@ -81,15 +85,11 @@ func registerWeb(e *echo.Echo, cfg *config.Config) error {
 			return echo.ErrNotFound
 		}
 
-		// 路径先 Clean 再经 fs.ValidPath 校验，挡掉 ../ 之类的穿越尝试；
-		// 任何不合法或查不到对应文件的路径都回退到 index.html，
+		// 路径先 Clean；任何不合法或查不到对应文件的路径都回退到 index.html，
 		// 这正是 SPA history 路由能正常工作的原因。
 		name := strings.TrimLeft(requestPath, "/")
 		name = path.Clean(name)
 		if name == "" || name == "." || name == "index.html" {
-			return serveIndex(c)
-		}
-		if !fs.ValidPath(name) {
 			return serveIndex(c)
 		}
 		if fileExists(webFS, name) {

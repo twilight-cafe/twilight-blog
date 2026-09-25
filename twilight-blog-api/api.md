@@ -212,7 +212,7 @@ returns `429 Too Many Requests` with a `Retry-After` header.
 | Endpoint | Default allowance |
 |---|---|
 | `POST /api/auth/login` (and its alias `POST /api/auth/user/login`) | 3 / minute, shared bucket |
-| `POST /api/auth/email-code` | 3 / minute and 10 / hour, **plus 10 / hour per recipient address** |
+| `POST /api/auth/email-code` | 3 / minute and 10 / hour, **plus 10 / hour per recipient address, with a 60-second minimum interval between two sends to the same address** |
 | `POST /api/auth/register`, `POST /api/auth/reset-password` | 10 / minute |
 | `POST /api/comments`, `POST`/`DELETE /api/comments/:id/like` | 5 / minute |
 | `POST /install` | 5 / minute |
@@ -227,10 +227,20 @@ switching source IP, whereas a victim has only one inbox. Counting is by codes
 issued, not codes still valid, so letting an old code expire does not restore the
 allowance.
 
-Allowances are configurable in `settings.json` under `rate_limit`. The per-address
-limit is not configurable; it is a fixed guard against using the blog as a mail
-cannon. Throttling is **on** unless `rate_limit.enabled` is explicitly set to
-`false`.
+On top of that hourly allowance, the same address may not be sent a second code
+within **60 seconds**. The hourly cap alone still permits a burst — ten codes in
+one second is within the allowance but is both inbox harassment and a way to
+compress the quota into a single spike. The interval is enforced on the server,
+so calling the endpoint directly (bypassing the client-side countdown) does not
+get around it. A request refused by this interval is a `429` (`Retry-After` set)
+and, importantly, **does not invalidate the code the recipient already holds**;
+the same applies to the address that sent case-varied (`A@x.com` vs `a@x.com`),
+which counts as one inbox.
+
+Allowances are configurable in `settings.json` under `rate_limit`. Neither the
+per-address hourly limit nor the 60-second interval is configurable; they are
+fixed guards against using the blog as a mail cannon. Throttling is **on** unless
+`rate_limit.enabled` is explicitly set to `false`.
 
 ### How the client IP is determined
 
@@ -465,9 +475,14 @@ address.
 }
 ```
 
-The code is valid for 10 minutes and is stored only as a SHA-256 hash. Issuing a
+A code is valid for 10 minutes and is stored only as a SHA-256 hash. Issuing a
 new code retires any code still outstanding for the same address, so only the most
 recent one is accepted, and a code is consumed by its first successful use.
+
+Successive sends to the same address must be at least **60 seconds apart**; a
+faster retry is refused with `429` and leaves the outstanding code untouched.
+This is what stops a scripted client from turning the hourly allowance into one
+burst — the countdown the client shows is only a convenience and is not trusted.
 
 A code also stops being accepted after **5 failed verification attempts**: trying
 wrong codes burns it, and the recipient has to request a new one. A six-digit code
@@ -484,7 +499,7 @@ recorded for delivery auditing with the code replaced by `[redacted]` — see
 | Status | Condition |
 |---|---|
 | `400 Bad Request` | Missing or malformed email |
-| `429 Too Many Requests` | Per-IP email rate limit exceeded, or this address has already been sent 10 codes in the last hour |
+| `429 Too Many Requests` | Per-IP email rate limit exceeded; fewer than 60 seconds since the last send to this address; or this address has already been sent 10 codes in the last hour |
 | `503 Service Unavailable` | `mail.api_key` or `mail.from` is not configured |
 
 ### `POST /api/auth/register`
@@ -1298,7 +1313,11 @@ home page, the introduction in the footer, and the page metadata.
 
 ```json
 {
-  "description": "以代码为笔，以时间为墨。"
+  "description": "以代码为笔，以时间为墨。",
+  "avatar_url": "",
+  "code_block_max_lines": 20,
+  "home_page_size": 12,
+  "border_radius": 4
 }
 ```
 
@@ -1306,6 +1325,30 @@ home page, the introduction in the footer, and the page metadata.
 client falls back to its own built-in copy. The field is limited to 200
 characters, and line breaks and runs of whitespace are collapsed to single spaces
 when it is saved.
+
+`avatar_url` is the administrator's avatar as a site-relative path
+(`/api/media/{id}`), or an empty string when none is set.
+
+`code_block_max_lines` caps how tall a fenced code block is rendered before it
+scrolls internally. Default `20`, allowed range `3`–`500`.
+
+`home_page_size` is how many articles the home page lists per page; the rest are
+paginated. Default `12`, allowed range `1`–`12`. The upper bound is a **hard
+limit** rather than a taste call: it equals the `page_size` ceiling every list
+endpoint enforces, so a larger value would make the home page's very first
+request fail with `400`.
+
+`border_radius` is the unified corner radius, in pixels, applied to card-like
+components (cards, buttons, inputs, the pagination control). Default `4`, allowed
+range `0`–`24`. **`0` means square corners and is a legitimate value, not "unset"** —
+omitting the key is what leaves the value unchanged. Shapes whose corner is part
+of their meaning do not follow it: avatars stay circular, pill-shaped tags stay
+fully rounded, and code blocks keep their own radius.
+
+All five keys are always present in the response — none is omitted when empty or
+zero. A client can therefore tell "the server sent no value" apart from "the value
+is 0", which matters most for `border_radius` and `home_page_size`: treating a
+missing key as a default would silently replace a deliberate setting.
 
 No other key from `settings.json` appears here. Password hashes, the mail API key,
 rate-limit allowances and `trusted_proxies` are configuration, not public copy, and
@@ -1366,8 +1409,22 @@ see.
 
 #### `PUT /api/admin/site`
 
-Sets the site description, i.e. the public copy described under
-[`GET /api/site`](#get-apisite).
+Sets the site-level rendering settings described under
+[`GET /api/site`](#get-apisite): the public description, the code block line cap,
+the home page size, and the unified border radius.
+
+The four settings are sent in a **single** request. Every field is **optional and
+tri-state**: omit the key to leave that setting unchanged, or send a value to
+replace it. Omitting is not the same as sending a zero — a request that only
+carries `description` (as older clients do) must not reset the other three.
+
+Clients must spread all four keys into the request body explicitly rather than
+forwarding their input object wholesale. A missing key is the *only* way to say
+"leave it alone", so a field dropped in the middle of the chain is not a lost
+update but a silent command to reset — which is exactly what happened to
+`home_page_size` before it was added to the request body: the settings form
+appeared to save a new page size, the response echoed the old one, and nothing
+reported an error.
 
 **Authentication:** administrator session, CSRF token required
 
@@ -1375,20 +1432,36 @@ Sets the site description, i.e. the public copy described under
 
 ```json
 {
-  "description": "一个人的博客：记录技术、设计与生活。"
+  "description": "一个人的博客：记录技术、设计与生活。",
+  "code_block_max_lines": 20,
+  "home_page_size": 12,
+  "border_radius": 4
 }
 ```
 
-The value is trimmed, line breaks and runs of whitespace are collapsed into single
-spaces, and control characters are dropped. An empty string is accepted and clears
-the description, which makes the client fall back to its built-in copy.
+`description` is trimmed, line breaks and runs of whitespace are collapsed into
+single spaces, and control characters are dropped. An empty string is accepted and
+clears the description, which makes the client fall back to its built-in copy.
 
-**Response `200 OK`** — the value as stored, so a client can show the final text
-without a second request:
+`code_block_max_lines` must be an integer in `3`–`500`.
+`home_page_size` must be an integer in `1`–`12`.
+`border_radius` must be an integer in `0`–`24`; **`0` is accepted and stores
+square corners**.
+
+Out-of-range values are rejected with `400` rather than clamped — silently
+changing a submitted value would make the saved result disagree with what the
+settings form displays.
+
+**Response `200 OK`** — every setting as stored, so a client can show the final
+values without a second request:
 
 ```json
 {
-  "description": "一个人的博客：记录技术、设计与生活。"
+  "description": "一个人的博客：记录技术、设计与生活。",
+  "avatar_url": "",
+  "code_block_max_lines": 20,
+  "home_page_size": 12,
+  "border_radius": 4
 }
 ```
 
@@ -1396,7 +1469,7 @@ without a second request:
 
 | Status | Condition |
 |---|---|
-| `400 Bad Request` | Invalid request body, or the description exceeds 200 characters |
+| `400 Bad Request` | Invalid request body; the description exceeds 200 characters; or one of the numeric settings is out of range |
 | `500 Internal Server Error` | The change could not be persisted to `settings.json` (the in-memory value is rolled back) |
 
 ### Visitor Accounts

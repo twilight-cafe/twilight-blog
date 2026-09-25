@@ -20,6 +20,7 @@ import (
 	"blog-engine/internal/config"
 	"blog-engine/internal/database"
 	"blog-engine/internal/logging"
+	"blog-engine/internal/mediaconv"
 	"blog-engine/internal/middleware"
 	"blog-engine/internal/model"
 	"blog-engine/internal/pidfile"
@@ -68,7 +69,7 @@ func startWithRetries(attempts int, backoff time.Duration, start func() (*search
 	return nil, lastErr
 }
 
-// main 是进程入口：先处理 email / admin / backup / restore 子命令，
+// main 是进程入口：先处理 email / admin / backup / restore / upgrade-media 子命令，
 // 否则走启动 HTTP 服务的主路径。启动顺序与失败策略见包注释；
 // 任何一步失败都以非零状态退出。
 func main() {
@@ -79,7 +80,7 @@ func main() {
 		}
 		return
 	}
-	// admin / backup / restore 三个子命令自己决定退出码
+	// admin / backup / restore / upgrade-media 四个子命令自己决定退出码
 	// （2 = 用法或校验失败，1 = 运行失败），所以这里直接用它返回的值。
 	if len(os.Args) > 1 && os.Args[1] == "admin" {
 		os.Exit(runAdminCommand(os.Args[2:]))
@@ -89,6 +90,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "restore" {
 		os.Exit(runRestoreCommand(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "upgrade-media" {
+		os.Exit(runUpgradeMediaCommand(os.Args[2:]))
 	}
 
 	const settingsPath = "settings.json"
@@ -133,6 +137,22 @@ func main() {
 		logging.Fatalf("configure log level: %v", err)
 	}
 	logging.Infof("log level set to %s", logging.CurrentLevel())
+
+	// 图片必须在落盘前转成 WebP，而这个承诺只能靠真正的编码器兑现——Go 标准库与
+	// golang.org/x/image 都只有 WebP 解码器，没有编码器（见 internal/mediaconv）。
+	// 所以**先探测再决定要不要继续启动**：没有编码器就直接退出，绝不带病运行。
+	//
+	// 位置是刻意的：排在打开数据库与启动 Meilisearch **之前**。这样一次「漏装 cwebp」
+	// 只打印一条能照着做的错误就结束，而不是先把索引子进程拉起来、跑完迁移，最后才在
+	// 第一次上传时以「图片被存成了 jpg」的形式暴露——那正是这条链路上曾经失效的样子
+	// （settings.json 里钉着另一台机器的 webp_tool 绝对路径时就会这样）。
+	//
+	// 探测结果同时交给 view.Register，避免同一次判断在启动路径上出现两份。
+	mediaConv, err := mediaconv.Detect(cfg.WebPTool, cfg.WebMTool)
+	if err != nil {
+		logging.Fatalf("media conversion is required: %v", err)
+	}
+	logging.Infof("[media] WebP conversion enabled: using %s (%s)", mediaConv.WebPTool, mediaConv.WebPKind)
 	// 读完配置立刻回写一次，让 settings.json 始终包含完整的键：
 	// 已有的值原样保留，缺的补默认值。这样用户打开文件就能看到全部可选项。
 	//
@@ -286,7 +306,7 @@ func main() {
 	if meili != nil {
 		searchClient = meili.Client()
 	}
-	if err := view.Register(e, cfg, db, settingsPath, searchClient); err != nil {
+	if err := view.Register(e, cfg, db, settingsPath, searchClient, mediaConv); err != nil {
 		if meili != nil {
 			meili.Stop()
 		}

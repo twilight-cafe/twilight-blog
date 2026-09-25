@@ -5,11 +5,14 @@
 // 恢复路径，与文章/页面不同。
 // 渲染上：image 直接 <img>，非 image（如 audio）只显示「MP3」占位文字而非播放器，
 // 这是展示层的简化（若日后支持音频应换成 <audio>）。
+// 复制按钮给的是**绝对地址**（toAbsoluteUrl），因为那是要贴进浏览器地址栏的；
+// <img src> 仍用接口给的相对路径，理由见 lib/url.ts。
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, CopyButton, Pagination } from 'ink-design'
 import { blog, getErrorMessage } from '../../lib/client'
 import { fmtDateTime, fmtSize } from '../../lib/format'
+import { toAbsoluteUrl } from '../../lib/url'
 import type { MediaItem } from 'twilight-blog-api'
 import { useDialog } from '../../lib/dialog'
 import { useToast } from '../../lib/toast'
@@ -103,7 +106,7 @@ export default function MediaAdmin() {
                   <span>MP3</span>
                 )}
                 <div className="mact">
-                  <CopyButton text={item.url}><Icon name="copy" size={13} /></CopyButton>
+                  <CopyButton text={toAbsoluteUrl(item.url)}><Icon name="copy" size={13} /></CopyButton>
                   <button type="button" title="删除" onClick={() => void remove(item)}><Icon name="x" size={13} /></button>
                 </div>
               </div>
@@ -115,7 +118,7 @@ export default function MediaAdmin() {
           ))}
         </div>
       )}
-      <Pagination current={page} total={totalPages} pageSize={1} onChange={setPage} />
+      <Pagination align="center" current={page} total={totalPages} pageSize={1} onChange={setPage} />
     </>
   )
 }

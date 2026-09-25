@@ -16,13 +16,41 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Hooks used by failure-path tests. Production always uses the real
+// implementations; these variables exist because the corresponding failures
+// depend on filesystem permissions, broken drivers, or timing.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+var (
+	sqlOpen                      = sql.Open
+	migrateFn                    = migrate
+	verifyPragmasFn              = verifyPragmas
+	chmodPath                    = os.Chmod
+	isWindows                    = runtime.GOOS == "windows"
+	pragmaRow                    = func(db *sql.DB, query string) rowScanner { return db.QueryRow(query) }
+	rowsNext                     = (*sql.Rows).Next
+	rowsScan                     = (*sql.Rows).Scan
+	rowsErr                      = (*sql.Rows).Err
+	rowsAffected                 = func(result sql.Result) (int64, error) { return result.RowsAffected() }
+	ensureColumnFn               = ensureColumn
+	execMigration                = func(db *sql.DB, statement string) (sql.Result, error) { return db.Exec(statement) }
+	backfillUsernamesFn          = backfillUsernames
+	selectUsersWithoutUsernameFn = selectUsersWithoutUsername
+	selectTakenUsernamesFn       = selectTakenUsernames
+	beginTx                      = func(db *sql.DB) (*sql.Tx, error) { return db.Begin() }
+	execTx                       = func(tx *sql.Tx, query string, args ...any) (sql.Result, error) { return tx.Exec(query, args...) }
+	commitTx                     = func(tx *sql.Tx) error { return tx.Commit() }
+)
+
 // Open 打开数据库、执行迁移，并校验关键 pragma。
 //
 // 任何一步失败都会关闭连接并返回错误，由 main 直接终止进程：
 // 数据库不可用不是一种可以降级的状态。
 func Open(path string) (*sql.DB, error) {
 	logging.Debugf("[database] opening sqlite database: %s", path)
-	db, err := sql.Open("sqlite", buildDSN(path))
+	db, err := sqlOpen("sqlite", buildDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -35,7 +63,7 @@ func Open(path string) (*sql.DB, error) {
 	db.SetConnMaxLifetime(0)
 
 	logging.Debugf("[database] running migrations for %s", path)
-	if err := migrate(db); err != nil {
+	if err := migrateFn(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -43,7 +71,7 @@ func Open(path string) (*sql.DB, error) {
 	// 宁可启动失败，也不要静默地跑在一个没有引用完整性的库上：
 	// schema 里每一处 ON DELETE CASCADE 都依赖这个开关真的生效，
 	// 一旦失效，删文章不会清掉 article_tags，会悄悄留下孤儿行。
-	if err := verifyPragmas(db); err != nil {
+	if err := verifyPragmasFn(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -81,7 +109,7 @@ func Snapshot(srcPath, dstPath string) error {
 		return fmt.Errorf("the snapshot target %s already exists", dstPath)
 	}
 
-	db, err := sql.Open("sqlite", buildDSN(srcPath))
+	db, err := sqlOpen("sqlite", buildDSN(srcPath))
 	if err != nil {
 		return fmt.Errorf("open the database: %w", err)
 	}
@@ -96,7 +124,7 @@ func Snapshot(srcPath, dstPath string) error {
 	// 的 bcrypt 哈希、会话 token 摘要与回收站内容——权限必须和源库一样紧。
 	// 失败只告警：与 restrictDatabasePermissions 同一个理由（有些文件系统根本没有
 	// POSIX 权限概念，为此让备份失败会误伤合法部署）。
-	if err := os.Chmod(dstPath, 0o600); err != nil {
+	if err := chmodPath(dstPath, 0o600); err != nil {
 		logging.Warnf("[database] tightening permissions on the snapshot %s failed: %v", dstPath, err)
 	}
 	return nil
@@ -132,7 +160,7 @@ func restrictDatabasePermissions(path string) {
 	// 目录也要收：0600 的文件放进 0755 的目录里仍然安全，但目录可列举本身
 	// 就暴露了「这里有个数据库、它多大、什么时候写的」。0700 一并解决。
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.Chmod(dir, 0o700); err != nil {
+		if err := chmodPath(dir, 0o700); err != nil {
 			logging.Warnf("[database] tightening permissions on the data directory %s failed: %v", dir, err)
 		}
 	}
@@ -143,7 +171,7 @@ func restrictDatabasePermissions(path string) {
 		if _, err := os.Stat(target); err != nil {
 			continue
 		}
-		if err := os.Chmod(target, 0o600); err != nil {
+		if err := chmodPath(target, 0o600); err != nil {
 			logging.Warnf("[database] tightening permissions on %s failed: "+
 				"the database may be readable by other local users: %v", target, err)
 		}
@@ -173,7 +201,7 @@ func buildDSN(path string) string {
 	// 位置（或写到不存在的目录而失败），而报错里显示的是改写后的路径，
 	// 排查起来毫无线索。
 	dsn := path
-	if runtime.GOOS == "windows" {
+	if isWindows {
 		dsn = strings.ReplaceAll(dsn, "\\", "/")
 	}
 	if !strings.HasPrefix(dsn, "file:") {
@@ -200,7 +228,7 @@ func buildDSN(path string) string {
 // 启动时花两次查询换一个明确的失败，非常划算。
 func verifyPragmas(db *sql.DB) error {
 	var foreignKeys int
-	if err := db.QueryRow(`PRAGMA foreign_keys;`).Scan(&foreignKeys); err != nil {
+	if err := pragmaRow(db, `PRAGMA foreign_keys;`).Scan(&foreignKeys); err != nil {
 		return fmt.Errorf("check foreign_keys pragma: %w", err)
 	}
 	if foreignKeys != 1 {
@@ -208,7 +236,7 @@ func verifyPragmas(db *sql.DB) error {
 	}
 
 	var busyTimeout int
-	if err := db.QueryRow(`PRAGMA busy_timeout;`).Scan(&busyTimeout); err != nil {
+	if err := pragmaRow(db, `PRAGMA busy_timeout;`).Scan(&busyTimeout); err != nil {
 		return fmt.Errorf("check busy_timeout pragma: %w", err)
 	}
 	if busyTimeout <= 0 {
@@ -244,7 +272,7 @@ func PruneExpired(ctx context.Context, db *sql.DB) (int64, error) {
 		if err != nil {
 			return removed, fmt.Errorf("prune expired rows: %w", err)
 		}
-		n, err := res.RowsAffected()
+		n, err := rowsAffected(res)
 		if err != nil {
 			return removed, fmt.Errorf("prune rows affected: %w", err)
 		}
@@ -273,18 +301,18 @@ func migrate(db *sql.DB) error {
 	}
 
 	for _, column := range addedColumns {
-		if err := ensureColumn(db, column.table, column.name, column.definition); err != nil {
+		if err := ensureColumnFn(db, column.table, column.name, column.definition); err != nil {
 			return err
 		}
 	}
 
 	for _, statement := range addedIndexes {
-		if _, err := db.Exec(statement); err != nil {
+		if _, err := execMigration(db, statement); err != nil {
 			return fmt.Errorf("create index after column addition: %w", err)
 		}
 	}
 
-	if err := backfillUsernames(db); err != nil {
+	if err := backfillUsernamesFn(db); err != nil {
 		return err
 	}
 	return nil
@@ -305,7 +333,7 @@ func migrate(db *sql.DB) error {
 // 占住的连接，表现成**进程卡死且不报任何错**。所以这里先把结果全部读进切片、
 // 关闭 rows，再开始写。
 func backfillUsernames(db *sql.DB) error {
-	pending, err := selectUsersWithoutUsername(db)
+	pending, err := selectUsersWithoutUsernameFn(db)
 	if err != nil {
 		return err
 	}
@@ -313,12 +341,12 @@ func backfillUsernames(db *sql.DB) error {
 		return nil
 	}
 
-	taken, err := selectTakenUsernames(db)
+	taken, err := selectTakenUsernamesFn(db)
 	if err != nil {
 		return err
 	}
 
-	tx, err := db.Begin()
+	tx, err := beginTx(db)
 	if err != nil {
 		return fmt.Errorf("begin username backfill: %w", err)
 	}
@@ -329,14 +357,14 @@ func backfillUsernames(db *sql.DB) error {
 		username := uniqueUsername(deriveUsername(row.email), taken)
 		taken[strings.ToLower(username)] = struct{}{}
 
-		if _, err := tx.Exec(
+		if _, err := execTx(tx,
 			`UPDATE users SET username = ? WHERE id = ?`, username, row.id,
 		); err != nil {
 			return fmt.Errorf("backfill username for user %d: %w", row.id, err)
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := commitTx(tx); err != nil {
 		return fmt.Errorf("commit username backfill: %w", err)
 	}
 
@@ -359,14 +387,14 @@ func selectUsersWithoutUsername(db *sql.DB) ([]userWithoutUsername, error) {
 	defer rows.Close()
 
 	var result []userWithoutUsername
-	for rows.Next() {
+	for rowsNext(rows) {
 		var row userWithoutUsername
-		if err := rows.Scan(&row.id, &row.email); err != nil {
+		if err := rowsScan(rows, &row.id, &row.email); err != nil {
 			return nil, fmt.Errorf("scan user without username: %w", err)
 		}
 		result = append(result, row)
 	}
-	if err := rows.Err(); err != nil {
+	if err := rowsErr(rows); err != nil {
 		return nil, fmt.Errorf("iterate users without username: %w", err)
 	}
 	return result, nil
@@ -381,14 +409,14 @@ func selectTakenUsernames(db *sql.DB) (map[string]struct{}, error) {
 	defer rows.Close()
 
 	taken := make(map[string]struct{})
-	for rows.Next() {
+	for rowsNext(rows) {
 		var username string
-		if err := rows.Scan(&username); err != nil {
+		if err := rowsScan(rows, &username); err != nil {
 			return nil, fmt.Errorf("scan existing username: %w", err)
 		}
 		taken[strings.ToLower(username)] = struct{}{}
 	}
-	if err := rows.Err(); err != nil {
+	if err := rowsErr(rows); err != nil {
 		return nil, fmt.Errorf("iterate existing usernames: %w", err)
 	}
 	return taken, nil
@@ -473,13 +501,13 @@ func ensureColumn(db *sql.DB, table, column, definition string) error {
 	defer rows.Close()
 
 	found := false
-	for rows.Next() {
+	for rowsNext(rows) {
 		var cid int
 		var name, columnType string
 		var notNull int
 		var defaultValue any
 		var pk int
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+		if err := rowsScan(rows, &cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
 			return fmt.Errorf("scan column %s.%s: %w", table, column, err)
 		}
 		if name == column {
@@ -487,7 +515,7 @@ func ensureColumn(db *sql.DB, table, column, definition string) error {
 			break
 		}
 	}
-	if err := rows.Err(); err != nil {
+	if err := rowsErr(rows); err != nil {
 		return fmt.Errorf("iterate columns %s: %w", table, err)
 	}
 	if found {

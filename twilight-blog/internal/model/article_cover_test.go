@@ -155,7 +155,7 @@ func TestDeletingAMediaRowClearsTheCover(t *testing.T) {
 //
 // 反证方式：把任一 NOT EXISTS 或 deleted_at IS NOT NULL 条件删掉 → 对应子用例失败。
 func TestCoverMediaIDsToDeleteIsConservative(t *testing.T) {
-	repo, mediaRepo, momentRepo, _ := newTestArticleRepos(t)
+	repo, mediaRepo, momentRepo, db := newTestArticleRepos(t)
 	ctx := context.Background()
 
 	// 每个场景用一张独立的图，互不干扰。
@@ -163,6 +163,7 @@ func TestCoverMediaIDsToDeleteIsConservative(t *testing.T) {
 	sharedWithActive := addMedia(t, mediaRepo, "shared-active.png", 100)
 	sharedWithTrashed := addMedia(t, mediaRepo, "shared-trashed.png", 100)
 	usedByMoment := addMedia(t, mediaRepo, "moment.png", 100)
+	usedByAvatar := addMedia(t, mediaRepo, "avatar.png", 100)
 	activeOnly := addMedia(t, mediaRepo, "active-only.png", 100)
 
 	newArticle := func(title string, cover *int64, trashed bool) int64 {
@@ -190,6 +191,14 @@ func TestCoverMediaIDsToDeleteIsConservative(t *testing.T) {
 	moment := &Moment{Content: "uses the same file", MediaIDs: []int64{usedByMoment}, CreatedAt: 100, UpdatedAt: 100}
 	if err := momentRepo.Create(ctx, moment); err != nil {
 		t.Fatalf("create moment: %v", err)
+	}
+
+	withAvatar := newArticle("trashed, its cover is the admin avatar", &usedByAvatar, true)
+
+	if _, err := db.Exec(`
+INSERT INTO users (email, username, nickname, password_hash, is_admin, avatar_media_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, 0, ?, ?, ?)`, "avatar@example.com", "avatar-user", "Avatar User", "x", usedByAvatar, 100, 100); err != nil {
+		t.Fatalf("create user with avatar: %v", err)
 	}
 
 	untouched := newArticle("active article with a cover", &activeOnly, false)
@@ -247,6 +256,16 @@ func TestCoverMediaIDsToDeleteIsConservative(t *testing.T) {
 		}
 		if len(ids) != 0 {
 			t.Fatalf("ids = %v, want empty: the media is also a moment photo", ids)
+		}
+	})
+
+	t.Run("a cover that a user avatar uses is kept", func(t *testing.T) {
+		ids, err := repo.CoverMediaIDsToDelete(ctx, []int64{withAvatar})
+		if err != nil {
+			t.Fatalf("CoverMediaIDsToDelete: %v", err)
+		}
+		if len(ids) != 0 {
+			t.Fatalf("ids = %v, want empty: the media is also the admin avatar", ids)
 		}
 	})
 

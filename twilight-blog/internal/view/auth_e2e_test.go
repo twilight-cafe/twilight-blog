@@ -22,8 +22,10 @@ import (
 
 	"blog-engine/internal/config"
 	"blog-engine/internal/database"
+	"blog-engine/internal/mediaconv"
 	"blog-engine/internal/model"
 	"blog-engine/internal/service"
+	"blog-engine/internal/testtool"
 	"blog-engine/internal/view"
 )
 
@@ -705,6 +707,21 @@ func newTestServerWithConfig(t *testing.T, seed func(*config.Config)) (*httptest
 	cfg.ApplyDefaults()
 	seed(cfg)
 
+	// 图片必须在落盘前转成 WebP，转换器因此是硬性依赖——测试服务器也得有一个。
+	// 默认注入一个「假 cwebp」（见 internal/testtool）；用例可以把 cfg.WebPTool
+	// 改成别的路径来构造「这台机器上没有可用编码器」的处境，那时 Detect 会失败。
+	//
+	// 这里比生产路径**宽松**：main 在探测失败时直接退出，而这里把零值转换器交给
+	// 路由，让请求照常走到 service 并拿到 500。差异是刻意的——要让「没有编码器时
+	// 上传会怎样」可测，就不能把整个测试进程一起退出。
+	if cfg.WebPTool == "" {
+		cfg.WebPTool = testtool.Fake(t, testtool.ModeOK)
+	}
+	mediaConv, detectErr := mediaconv.Detect(cfg.WebPTool, cfg.WebMTool)
+	if detectErr != nil {
+		mediaConv = &mediaconv.Converter{}
+	}
+
 	// 与 main.go 完全相同的顺序：迁移 → 清空配置里的凭据 → 再注册路由。
 	// 少了这一步，管理员就不在库里，而 /install_status 会报告「未安装」。
 	if err := model.MigrateAdminCredentials(context.Background(), db, cfg); err != nil {
@@ -715,7 +732,7 @@ func newTestServerWithConfig(t *testing.T, seed func(*config.Config)) (*httptest
 	e := echo.New()
 	e.HideBanner = true
 	// Search is not part of these flows, and a nil client keeps the test offline.
-	if err := view.Register(e, cfg, db, settingsPath, nil); err != nil {
+	if err := view.Register(e, cfg, db, settingsPath, nil, mediaConv); err != nil {
 		t.Fatalf("register routes: %v", err)
 	}
 

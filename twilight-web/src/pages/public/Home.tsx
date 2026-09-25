@@ -1,5 +1,6 @@
 // Home.tsx —— 公开首页：文章列表 + 分页
-// 每页 12 篇，翻页用 Pager 替换整个 articles 状态（非无限滚动）。
+// 每页篇数由站点设置决定（外壳属性 data-home-page-size 下发，见 lib/flags.ts），
+// 翻页用 Pager 替换整个 articles 状态（非无限滚动）。
 // 「阅读时长」是字符数 / 600 的粗略估算，不是真实阅读速度；摘要用 excerpt 截 160 字。
 
 import { useEffect, useState } from 'react'
@@ -9,21 +10,38 @@ import { mediaUrl } from 'twilight-blog-api'
 import { blog } from '../../lib/client'
 import { excerpt, fmtMonthDay } from '../../lib/format'
 import type { Article } from 'twilight-blog-api'
-import { useHomeDocumentTitle } from '../../lib/site'
+import { useHomeDocumentTitle, useSiteDescription } from '../../lib/site'
+import { useCanonicalPath, usePageHead, websiteJsonLd } from '../../lib/head'
 import { Empty, Loading, Reveal } from '../../components/common'
+import { toAbsoluteUrl } from '../../lib/url'
+import { homePageSize } from '../../lib/flags'
 
 export default function Home() {
   // 首页标题用「Twilight · <站点描述>」，不同于内页的「<页面名> · Twilight」。
   useHomeDocumentTitle()
+  // og:title 用品牌名而不是上面那个「品牌 · 描述」：分享卡片已经有描述那一行，
+  // 标题再把它重复一遍只会被截断。「Twilight」在这里是既有常量（外壳品牌名、
+  // 页脚、侧栏都用它），不是新引入的一处来源。
+  const description = useSiteDescription()
+  const canonicalPath = useCanonicalPath()
+  usePageHead({
+    path: canonicalPath,
+    title: 'Twilight',
+    description,
+    jsonLd: websiteJsonLd('Twilight', description, toAbsoluteUrl(canonicalPath)),
+  })
   const [articles, setArticles] = useState<Article[]>([])
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [loading, setLoading] = useState(true)
+  // 每页篇数在渲染期读一次即可：外壳属性在整个会话期间不会变（改站点设置要
+  // 重新加载页面才会下发新值），放进 state 或 effect 只会多一层无意义的同步。
+  const pageSize = homePageSize()
 
   useEffect(() => {
     let alive = true
     setLoading(true)
-    blog.listArticles({ page, pageSize: 12 })
+    blog.listArticles({ page, pageSize })
       .then((result) => {
         if (!alive) return
         setArticles(result.items)
@@ -41,7 +59,9 @@ export default function Home() {
     return () => {
       alive = false
     }
-  }, [page])
+    // pageSize 进入依赖：它是本页唯一的请求参数来源，漏掉会让人以为
+    // 「改了站点设置但首页没变」是后端没生效。
+  }, [page, pageSize])
 
   return (
     <div className="wrap">
@@ -83,7 +103,7 @@ export default function Home() {
           </Reveal>
         ))}
       </div>
-      <Pagination current={page} total={totalPages} pageSize={1} onChange={setPage} />
+      <Pagination align="center" current={page} total={totalPages} pageSize={1} onChange={setPage} />
     </div>
   )
 }

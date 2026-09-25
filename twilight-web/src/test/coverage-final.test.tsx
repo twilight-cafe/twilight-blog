@@ -38,7 +38,7 @@ import { saveSiteDescription, resetSiteCacheForTests } from '../lib/site'
 import { excerpt } from '../lib/format'
 import { DialogProvider } from '../lib/dialog'
 import { ToastProvider, useToast } from '../lib/toast'
-import { adminMe, getSharedClientMock, makeArticle, makeComment, makeMedia, makeMoment, makePage, makeTag, makeUser, resetClientMock, visitorMe } from './helpers'
+import { adminMe, expireEmailCodeCooldown, getSharedClientMock, makeArticle, makeComment, makeMedia, makeMoment, makePage, makeTag, makeUser, resetClientMock, visitorMe } from './helpers'
 
 vi.mock('../lib/client', async () => {
   const { getSharedClientMock } = await import('./helpers')
@@ -120,8 +120,9 @@ beforeEach(() => {
   client.setCurrentUser(null)
   client.blog.getSite.mockResolvedValue({ description: '测试站' })
   client.blog.getInstallStatus.mockResolvedValue({ installed: true })
-  // 功能开关由外壳注入；各用例显式设置，缺省时拆掉避免泄漏。
-  delete (window as { __SITE__?: unknown }).__SITE__
+  // 功能开关由外壳写在 <html> 的 data-search-enabled 上；各用例显式设置，
+  // 缺省时拆掉避免泄漏。
+  delete document.documentElement.dataset.searchEnabled
   emptyLists()
 })
 
@@ -528,7 +529,7 @@ describe('PublicShell 独立页面导航', () => {
   })
 
   it('页脚搜索链接跟随开关：关闭时连页脚也不给出死链接', async () => {
-    ;(window as { __SITE__?: unknown }).__SITE__ = { searchEnabled: false }
+    document.documentElement.dataset.searchEnabled = 'false'
     const { container } = renderWithRouter(<PublicShell />)
     await waitFor(() => expect(container.querySelector('footer')).toBeTruthy())
     const footer = Array.from(container.querySelectorAll('footer a')).map((a) => a.getAttribute('href'))
@@ -536,7 +537,7 @@ describe('PublicShell 独立页面导航', () => {
     expect(footer).toContain('/archive')
 
     // 开启（与外壳缺省）时页脚恢复搜索链接。
-    ;(window as { __SITE__?: unknown }).__SITE__ = { searchEnabled: true }
+    document.documentElement.dataset.searchEnabled = 'true'
     cleanup()
     const second = renderWithRouter(<PublicShell />)
     await waitFor(() => expect(second.container.querySelector('footer')).toBeTruthy())
@@ -717,12 +718,22 @@ describe('ForgotPassword 补缺', () => {
     expect(client.blog.requestEmailCode).not.toHaveBeenCalled()
   })
 
-  it('发送成功后可「重新发送」', async () => {
+  it('发送成功后被 60 秒冷却锁住；冷却结束后可「重新发送」', async () => {
     client.blog.requestEmailCode.mockResolvedValue({ message: 'ok' })
     const { container } = renderRouted(<ForgotPassword />, '/admin/forgot', '/admin/forgot')
     fireEvent.change(container.querySelector('input[type=email]') as HTMLInputElement, { target: { value: 'a@x.com' } })
     fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
     await waitFor(() => expect(container.querySelector('input[placeholder=验证码]')).toBeTruthy())
+
+    // 发送成功 → 按钮立刻进入倒计时且禁用（「前后端一起限制」的前端那一半）。
+    await waitFor(() => {
+      const button = screen.getByRole('button', { name: /秒后可重发/ })
+      expect(button.hasAttribute('disabled')).toBe(true)
+    })
+
+    // 等冷却结束 → 恢复「重新发送」并可再次发码。
+    await expireEmailCodeCooldown('a@x.com')
+    await waitFor(() => expect(screen.getByRole('button', { name: '重新发送' })).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: '重新发送' }))
     await waitFor(() => expect(client.blog.requestEmailCode).toHaveBeenCalledTimes(2))
   })

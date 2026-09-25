@@ -16,11 +16,14 @@
 //
 // 描述的五个落点（改这里时请一并考虑）：首页标语、页脚简介、侧栏作者卡、
 // 首页标签页标题、<meta name="description">。前三者分别由 PublicShell 与
-// PublicSidebar 订阅，后两者由本模块自己维护——描述既然是可配置的站点文案，
-// 就不该有一个落点还留着硬编码。
+// PublicSidebar 订阅，首页标题由本模块的 useHomeDocumentTitle 维护，而 meta
+// 由本模块**转交**给 head.ts 写入（那里是描述的唯一下笔处，页面级摘要优先于
+// 站点级——理由见 head.ts 文件头）。描述既然是可配置的站点文案，就不该有一个
+// 落点还留着硬编码。
 
 import { useEffect, useState } from 'react'
 import { blog } from './client'
+import { setSiteDescription } from './head'
 
 const FALLBACK_DESCRIPTION = '以代码为笔，以时间为墨。'
 
@@ -30,6 +33,12 @@ const DESCRIPTION_MAX = 200
 /** 与后端 config.DefaultCodeBlockMaxLines 镜像；改一处必须改另一处。 */
 const DEFAULT_CODE_LINES = 20
 
+/** 与后端 config.DefaultHomePageSize 镜像；改一处必须改另一处。 */
+const DEFAULT_HOME_PAGE_SIZE = 12
+
+/** 与后端 config.DefaultBorderRadius 镜像；改一处必须改另一处。 */
+const DEFAULT_BORDER_RADIUS = 4
+
 /** 站点公开信息的一份快照。两个字段都可能为空串（未设置 / 后端只回了其中一项）。 */
 export interface SiteMeta {
   description: string
@@ -37,10 +46,26 @@ export interface SiteMeta {
   avatarUrl: string
   /** 代码块最大显示行数；决定块级代码框的限高（超出部分块内滚动）。 */
   codeBlockMaxLines: number
+  /** 首页每页文章数；设置页用它回显当前值（首页本身读外壳属性，见 lib/flags.ts）。 */
+  homePageSize: number
+  /**
+   * 站点统一圆角（px）；设置页用它回显当前值。
+   *
+   * 与 homePageSize 同理：**真正生效的圆角**由 main.tsx 从外壳属性写进
+   * --radius（见 lib/flags.ts 的 applyBorderRadius），这里这一份只服务于
+   * 设置页回显。两处若不一致，设置页会显示一个页面并未采用的数值。
+   */
+  borderRadius: number
 }
 
 /** 请求失败时的快照。刻意不进缓存（见 loadMeta），只是给调用方一个可用的值。 */
-const EMPTY_META: SiteMeta = { description: '', avatarUrl: '', codeBlockMaxLines: DEFAULT_CODE_LINES }
+const EMPTY_META: SiteMeta = {
+  description: '',
+  avatarUrl: '',
+  codeBlockMaxLines: DEFAULT_CODE_LINES,
+  homePageSize: DEFAULT_HOME_PAGE_SIZE,
+  borderRadius: DEFAULT_BORDER_RADIUS,
+}
 
 let cache: SiteMeta | null = null
 let inFlight: Promise<SiteMeta> | null = null
@@ -55,30 +80,40 @@ const listeners = new Set<(value: SiteMeta) => void>()
  * 这里不需要再判 settings 本身是空——真出现 null 响应时，本函数会在 then 里抛，
  * 而紧随其后的 catch 会把它收敛成 EMPTY_META，与「请求失败」同一条出路。
  */
-function toMeta(settings: { description?: string; avatar_url?: string; code_block_max_lines?: number }): SiteMeta {
+function toMeta(settings: {
+  description?: string
+  avatar_url?: string
+  code_block_max_lines?: number
+  home_page_size?: number
+  border_radius?: number
+}): SiteMeta {
   return {
     description: settings.description ?? '',
     avatarUrl: settings.avatar_url ?? '',
     // 后端该字段恒输出；?? 兜底的是「更旧的服务端」——此时与失败同路，
     // 回退到与服务端默认值一致的行数，保证两侧渲染口径一致。
     codeBlockMaxLines: settings.code_block_max_lines ?? DEFAULT_CODE_LINES,
+    // 同理。注意首页**不用**这个值发列表请求（首次请求必须已经带上正确的
+    // page_size，等这里回来就晚了，见 lib/flags.ts 的 homePageSize），
+    // 它只服务于设置页回显与订阅者。
+    homePageSize: settings.home_page_size ?? DEFAULT_HOME_PAGE_SIZE,
+    // 同理。注意这里**不能**写成 `?? DEFAULT` 之外再补 `|| DEFAULT`：
+    // 0 是合法的直角，`|| ` 会把它当假值换成 4。
+    borderRadius: settings.border_radius ?? DEFAULT_BORDER_RADIUS,
   }
 }
 
 /**
- * 把描述同步到 <meta name="description">。服务端渲染的外壳里已经带了一份默认值，
- * 这里只做覆盖：拿不到描述（接口失败、站点未设置）时页面仍是那一份文案，
- * 不会留下一个空的 meta 标签。
+ * 把描述交给 head.ts —— 它是 `meta[name=description]` 的**唯一写入者**。
+ *
+ * 以前这里自己写那个标签，于是与「文章页写自己的摘要」构成竞态：谁能赢取决于
+ * /api/site 与文章接口谁先返回，同一页刷新两次可能给出不同的分享文案。
+ * 现在两边都只是把值交给 head.ts，页面级优先，顺序不再影响结果。
  */
-function applyMetaDescription(value: string) {
-  const tag = document.querySelector('meta[name="description"]')
-  if (tag) tag.setAttribute('content', value)
-}
-
 function publish(next: SiteMeta) {
   cache = next
   // 站点描述是「网站描述」这个设置唯一的对外落点，标题与 meta 都跟着它走。
-  applyMetaDescription(next.description || FALLBACK_DESCRIPTION)
+  setSiteDescription(next.description || FALLBACK_DESCRIPTION)
   for (const listener of listeners) listener(next)
 }
 
@@ -138,10 +173,14 @@ export function refreshSiteMeta(): Promise<SiteMeta> {
 export async function saveSiteSettings(input: {
   description: string
   codeBlockMaxLines?: number
+  homePageSize?: number
+  borderRadius?: number
 }): Promise<SiteMeta> {
   const saved = await blog.updateSite({
     description: input.description,
     code_block_max_lines: input.codeBlockMaxLines,
+    home_page_size: input.homePageSize,
+    border_radius: input.borderRadius,
   })
   // 用服务端返回的整份快照覆盖：它同时带着头像，因此改描述不会把头像从缓存里抹掉。
   const meta = toMeta(saved)
@@ -236,13 +275,22 @@ export function useHomeDocumentTitle() {
   }, [description])
 }
 
-export { DESCRIPTION_MAX, DEFAULT_CODE_LINES, FALLBACK_DESCRIPTION }
+export {
+  DESCRIPTION_MAX,
+  DEFAULT_BORDER_RADIUS,
+  DEFAULT_CODE_LINES,
+  DEFAULT_HOME_PAGE_SIZE,
+  FALLBACK_DESCRIPTION,
+}
 
 /**
  * 仅供测试：清空模块级缓存。vitest 里模块单例会跨用例存活，
  * 不清的话上一个用例保存的值会泄漏进下一个用例的「初始描述」。
+ * 站点描述在 head.ts 里也有一份，一并清掉——否则前一个用例 publish 过的描述
+ * 会留在下一个用例的 head 里，表现为「我没给它却出现在 meta 上」。
  */
 export function resetSiteCacheForTests() {
   cache = null
   inFlight = null
+  setSiteDescription('')
 }

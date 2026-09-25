@@ -515,6 +515,72 @@ describe('SDK 下发的请求体形状（真实模块）', () => {
   })
 })
 
+/* ------------------- updateSite 的请求体形状（真实模块） ------------------- */
+
+/**
+ * 站点设置这一族字段有**三个**可选数值项，而它们的「省略」都表示「服务端保持
+ * 现值」——这个契约的脆弱之处在于：漏掉一个键不会报错，只会静默不生效。
+ *
+ * 这不是假设。`home_page_size` 曾经就是这样丢的：Go 端点接受并持久化这个字段，
+ * 前端也真的把它传进了 `saveSiteSettings`，但封装层组装请求体时只写了
+ * `description` 与 `code_block_max_lines` 两项，于是请求体里根本没有它 ——
+ * PUT 只改了描述，服务端原样回旧值，`home_page_size: pageSize` 那一行成了
+ * 一句无害的注释。站长看到的景象是「保存成功、值又变回去了」，而控制台里
+ * 没有一条报错。
+ *
+ * 所以这里逐个键断言**存在性**（不只是值），并且断言「省略时整键不出现」。
+ * 若把 json 写成 `{ ...input }`，第一条用例的第二个 assert 会先红。
+ */
+describe('SDK 下发的站点设置请求体形状（真实模块）', () => {
+  function recordingClient() {
+    const bodies: Record<string, unknown>[] = []
+    const fetchStub = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>)
+      return new Response(JSON.stringify({ description: '', avatar_url: '' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    return { api: createClient({ baseUrl: 'https://blog.test', fetch: fetchStub as unknown as typeof fetch }), bodies }
+  }
+
+  it('三项数值设置都必须逐个展开进请求体，不能被悄悄丢掉', async () => {
+    const { api, bodies } = recordingClient()
+
+    // 「每页文章数」就是当初丢掉的那一项：只断言值不够，必须断言键在。
+    await api.updateSite({
+      description: '只改每页篇数',
+      home_page_size: 9,
+      code_block_max_lines: 20,
+      border_radius: 4,
+    })
+    expect(bodies[0]).toEqual({
+      description: '只改每页篇数',
+      home_page_size: 9,
+      code_block_max_lines: 20,
+      border_radius: 4,
+    })
+    expect('home_page_size' in bodies[0]).toBe(true)
+  })
+
+  it('省略 = 保持现值：缺的键完全不出现在请求体里', async () => {
+    const { api, bodies } = recordingClient()
+
+    // 老客户端的形状：只有 description。三个数值项都不得出现——它们一旦以
+    // undefined 之外的任何形式下发，就变成了「顺手把站长设的值重置掉」。
+    await api.updateSite({ description: '只有描述' })
+    expect(bodies[0]).toEqual({ description: '只有描述' })
+    expect('home_page_size' in bodies[0]).toBe(false)
+    expect('code_block_max_lines' in bodies[0]).toBe(false)
+    expect('border_radius' in bodies[0]).toBe(false)
+
+    // 传 0 与省略是两回事：0 是合法值（直角圆角），必须真的进请求体。
+    await api.updateSite({ description: 'd', border_radius: 0 })
+    expect(bodies[1]).toEqual({ description: 'd', border_radius: 0 })
+    expect('border_radius' in bodies[1]).toBe(true)
+  })
+})
+
 // 卡片头图的栅格。
 //
 // 这一组是**文本级**断言，看起来像在测实现细节，原因是别的做法都测不到它：

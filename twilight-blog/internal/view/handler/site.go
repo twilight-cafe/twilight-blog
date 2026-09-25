@@ -54,6 +54,8 @@ func (h *SiteHandler) Get(c echo.Context) error {
 		Description:       h.config.SiteDescriptionValue(),
 		AvatarURL:         h.currentAvatarURL(c),
 		CodeBlockMaxLines: h.config.CodeBlockMaxLinesValue(),
+		HomePageSize:      h.config.HomePageSizeValue(),
+		BorderRadius:      h.config.BorderRadiusValue(),
 	})
 }
 
@@ -80,6 +82,8 @@ func (h *SiteHandler) Update(c echo.Context) error {
 
 	previousDescription := h.config.SiteDescriptionValue()
 	previousLines := h.config.CodeBlockMaxLinesValue()
+	previousPageSize := h.config.HomePageSizeValue()
+	previousRadius := h.config.BorderRadiusValue()
 	h.config.SetSiteDescription(req.Description)
 	// 行数是三态（nil=保持现值），所以这里不是无条件调用。
 	// 先暂存合法化后的值：SetCodeBlockMaxLines 可能存的是请求里的指针值，
@@ -91,11 +95,34 @@ func (h *SiteHandler) Update(c echo.Context) error {
 		}
 		newLines = *req.CodeBlockMaxLines
 	}
+	newPageSize := previousPageSize
+	if req.HomePageSize != nil {
+		if err := h.config.SetHomePageSize(*req.HomePageSize); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
+		newPageSize = *req.HomePageSize
+	}
+	// 圆角同样是三态。注意回滚比较用的是**进入 handler 时的值**：
+	// 若写成 `if newRadius != *req.BorderRadius`，请求里恰好等于旧值时就不会回滚，
+	// 但那种情况下本来也没改动，无害；用 previousRadius 比较更直观且不会漏。
+	newRadius := previousRadius
+	if req.BorderRadius != nil {
+		if err := h.config.SetBorderRadius(*req.BorderRadius); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
+		newRadius = *req.BorderRadius
+	}
 
 	if err := h.config.Save(h.settingsPath); err != nil {
 		h.config.SetSiteDescription(previousDescription)
 		if newLines != previousLines {
 			_ = h.config.SetCodeBlockMaxLines(previousLines)
+		}
+		if newPageSize != previousPageSize {
+			_ = h.config.SetHomePageSize(previousPageSize)
+		}
+		if newRadius != previousRadius {
+			_ = h.config.SetBorderRadius(previousRadius)
 		}
 		logging.Errorf("[site] persist settings failed: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to save site settings")
@@ -108,6 +135,8 @@ func (h *SiteHandler) Update(c echo.Context) error {
 		// 前端「拿响应替换本地缓存」的写法就会把头像抹掉。
 		AvatarURL:         h.currentAvatarURL(c),
 		CodeBlockMaxLines: newLines,
+		HomePageSize:      newPageSize,
+		BorderRadius:      newRadius,
 	})
 }
 

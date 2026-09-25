@@ -7,6 +7,7 @@ import type { TocItem } from '../lib/markdown'
 import App from '../App'
 import PublicShell, { type PublicOutletContext } from '../components/PublicShell'
 import PublicSidebar from '../components/PublicSidebar'
+import { resetCountsCacheForTests } from '../components/AdminLayout'
 import { resetSiteCacheForTests } from '../lib/site'
 import { readFile } from '../shims/fs-promises'
 import { adminMe, getSharedClientMock, makePage, resetClientMock, visitorMe } from './helpers'
@@ -47,6 +48,7 @@ const client = getSharedClientMock()
 beforeEach(() => {
   resetClientMock(client)
   resetSiteCacheForTests()
+  resetCountsCacheForTests()
   client.setCurrentUser(null)
   client.blog.getSite.mockResolvedValue({ description: '测试站' })
   client.blog.getInstallStatus.mockResolvedValue({ installed: true })
@@ -90,20 +92,30 @@ describe('App 启动状态机', () => {
     await waitFor(() => expect(screen.getByText('HOME-STUB')).toBeTruthy(), { timeout: 3000 })
   })
 
-  it('已安装：/api/me 解析完成前显示 LOADING，解析后渲染路由', async () => {
-    let release!: () => void
-    const gate = new Promise<void>((resolve) => { release = resolve })
-    client.refreshAuth.mockImplementation(() => gate)
-    const { container } = renderApp('/')
+  it('公开页不被 /api/me 阻塞：身份未解析时首页已可见（这条以前断言相反）', async () => {
+    // 永久 pending 的 /api/me：匿名访客从来拿不到答案，公开页也必须渲染。
+    client.refreshAuth.mockImplementation(() => new Promise(() => {}))
+    renderApp('/')
 
-    await waitFor(() => expect(screen.getAllByText('TWILIGHT · LOADING').length).toBeGreaterThan(0))
-    expect(container.textContent).not.toContain('HOME-STUB')
-
-    // 放行 /api/me：refreshAuth 的 finally 把 authReady 置真，路由才第一次渲染
-    await act(async () => {
-      release()
-    })
     await waitFor(() => expect(screen.getByText('HOME-STUB')).toBeTruthy(), { timeout: 3000 })
+    expect(document.body.textContent).not.toContain('TWILIGHT · LOADING')
+  })
+
+  it('admin 区仍等 /api/me：解析前显示 LOADING，解析后才渲染控制台', async () => {
+    client.setCurrentUser(adminMe)
+    let release!: (value: unknown) => void
+    const gate = new Promise((resolve) => { release = resolve })
+    client.refreshAuth.mockImplementation(() => gate)
+
+    const { container } = renderApp('/admin')
+    await waitFor(() => expect(screen.getAllByText('TWILIGHT · LOADING').length).toBeGreaterThan(0))
+    expect(container.textContent).not.toContain('DASHBOARD-STUB')
+
+    // 放行 /api/me：refreshAuth 的 finally 把 authReady 置真，控制台才第一次渲染
+    await act(async () => {
+      release(adminMe)
+    })
+    await waitFor(() => expect(screen.getByText('DASHBOARD-STUB')).toBeTruthy(), { timeout: 3000 })
   })
 })
 
@@ -142,7 +154,11 @@ describe('App 路由表', () => {
     await waitFor(() => expect(screen.getByText('7').className).toContain('bdg'))
     expect(document.body.textContent).toContain('ADMIN CONSOLE')
     expect(document.body.textContent).toContain('后台 / 概览')
-    expect(document.title).toBe('概览 · Twilight')
+    // 标题是 effect 的产物，而 waitFor 是被 MutationObserver 唤醒的：DOM 变成本次
+    // 提交的产物，effect 却可能在它之后才 flush。两者赛跑，全量并发（CPU 被抢）时
+    // MutationObserver 会赢——于是「内容已出现但标题还是上一页」。断言副作用就必须
+    // 用 waitFor 包住副作用本身，不能拿「另一个副作用出现了」当它的前置条件。
+    await waitFor(() => expect(document.title).toBe('概览 · Twilight'))
     for (const label of ['文章', '页面', '标签', '微语', '评论', '媒体', '用户', '站点', '账号']) {
       expect(screen.getAllByText(label).length).toBeGreaterThan(0)
     }
@@ -151,11 +167,44 @@ describe('App 路由表', () => {
     // 菜单跳转：点击「文章」→ /admin/posts
     fireEvent.click(screen.getByText('文章'))
     await waitFor(() => expect(screen.getByText('POSTS-STUB')).toBeTruthy())
-    expect(document.title).toBe('文章 · Twilight')
+    await waitFor(() => expect(document.title).toBe('文章 · Twilight'))
 
     // 深层路径匹配同一菜单项的高亮逻辑（startsWith）
     expect(container.querySelector('a[href="/admin/posts"]')?.className).toContain('on')
     void document.body
+  })
+
+  it('后台每个路由都能加载出对应页面（懒加载工厂逐个被真正执行）', async () => {
+    client.setCurrentUser(adminMe)
+    client.refreshAuth.mockResolvedValue(adminMe)
+
+    // 后台页面全部走 React.lazy（见 App.tsx）：这里逐个访问一次，既是「路由可达」
+    // 的守护，也保证每个惰性工厂与 PagesAdmin 的两处具名导出映射都被执行到——
+    // 懒加载最典型的故障就是「路由配好了但工厂写错、页面永远停在 loading」。
+    const routes: [string, string][] = [
+      ['/admin', 'DASHBOARD-STUB'],
+      ['/admin/posts', 'POSTS-STUB'],
+      ['/admin/editor', 'EDITOR-STUB'],
+      ['/admin/pages', 'PAGES-STUB'],
+      ['/admin/pages/new', 'NEWPAGE-STUB'],
+      ['/admin/pages/5', 'PAGEEDIT-STUB'],
+      ['/admin/tags', 'TAGSADMIN-STUB'],
+      ['/admin/moments', 'MOMENTSADMIN-STUB'],
+      ['/admin/comments', 'COMMENTSADMIN-STUB'],
+      ['/admin/media', 'MEDIAADMIN-STUB'],
+      ['/admin/users', 'USERS-STUB'],
+      ['/admin/site-settings', 'SITESET-STUB'],
+      ['/admin/profile', 'PROFILE-STUB'],
+      ['/admin/login', 'SIGNIN-STUB'],
+      ['/admin/register', 'REGISTER-STUB'],
+      ['/admin/forgot', 'FORGOT-STUB'],
+    ]
+
+    for (const [path, stub] of routes) {
+      const view = renderApp(path)
+      await waitFor(() => expect(screen.getAllByText(stub).length).toBeGreaterThan(0), { timeout: 3000 })
+      view.unmount()
+    }
   })
 
   it('访客账号：/admin 重定向到我的资料；菜单折叠为单项', async () => {

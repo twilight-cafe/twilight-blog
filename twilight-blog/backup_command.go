@@ -380,27 +380,35 @@ func within(dir, path string) bool {
 }
 
 // readMediaDir 读出 settings.json 里的 media_dir，缺失或未配置时回退到默认值。
+func readMediaDir(path string) string {
+	return readSiteSetting(path, "media_dir", config.DefaultMediaDir)
+}
+
+// readSiteSetting 读出 settings.json 里一个字符串字段；文件缺失、无法解析、该键
+// 不存在或只是空白时，一律返回 fallback。
 //
 // 刻意不走 config.Load：那个函数会做迁移、可能回写文件，而这里只是想**读一个
 // 字符串**。为了一个路径去触发一次「就地升级」，是照着「反正有现成函数」写下的
-// 代码——它会带来难以解释的副作用（例如在一个只读目录里跑备份）。
-func readMediaDir(path string) string {
+// 代码——它会带来难以解释的副作用（例如在一个只读目录里跑备份或升级命令）。
+//
+// 与 config.Load 一样容忍 UTF-8 BOM：Windows 编辑器常加，
+// 而 encoding/json 遇到它会直接报 invalid character。
+func readSiteSetting(path, key, fallback string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return config.DefaultMediaDir
+		return fallback
 	}
-	var settings struct {
-		MediaDir string `json:"media_dir"`
-	}
-	// 与 config.Load 一样容忍 UTF-8 BOM：Windows 编辑器常加，
-	// 而 encoding/json 遇到它会直接报 invalid character。
+	var settings map[string]any
 	if err := json.Unmarshal(bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF}), &settings); err != nil {
-		return config.DefaultMediaDir
+		return fallback
 	}
-	if dir := strings.TrimSpace(settings.MediaDir); dir != "" {
-		return dir
+	// 类型断言而不是直接取值：配错类型（例如把 webp_tool 写成数字）应当退到 fallback，
+	// 让上层走「没配」那条路，而不是把 fmt 出来的数字当成路径去 exec。
+	value, _ := settings[key].(string)
+	if trimmed := strings.TrimSpace(value); trimmed != "" {
+		return trimmed
 	}
-	return config.DefaultMediaDir
+	return fallback
 }
 
 // buildRevision 从二进制里读出 VCS 修订号，写进归档清单。

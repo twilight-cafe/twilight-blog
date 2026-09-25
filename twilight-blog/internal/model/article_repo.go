@@ -341,6 +341,10 @@ WHERE a.id IN (`+list+`)
       SELECT 1 FROM moment_media mm
       WHERE mm.media_id = a.cover_media_id
   )
+  AND NOT EXISTS (
+      SELECT 1 FROM users u
+      WHERE u.avatar_media_id = a.cover_media_id
+  )
 ORDER BY a.cover_media_id
 `, args...)
 	if err != nil {

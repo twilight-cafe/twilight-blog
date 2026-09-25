@@ -197,3 +197,21 @@ export async function flush(times = 3): Promise<void> {
     await Promise.resolve()
   }
 }
+
+/**
+ * 等验证码按钮「复活」以便再次点击。
+ *
+ * 验证码发送有 60 秒冷却（见 lib/email-code-cooldown），按钮在倒计时里是
+ * `60 秒后可重发` 且 disabled。要在测试里走到「再发一次」的分支，就得先把冷却
+ * 抹掉——这是**真实存在的用户路径**（60 秒过去后按钮恢复「重新发送」），
+ * 而不是为了让测试通过而开后门：清掉冷却相当于时间前进了 60 秒。
+ *
+ * 冷却状态是模块级的，跨用例存活，所以每个用到它的用例在点击重发之前都必须
+ * 先调它；否则上一个用例发过码、这个用例一进页面按钮就是锁的。
+ */
+export async function expireEmailCodeCooldown(email: string): Promise<void> {
+  const { clearEmailCodeCooldown } = await import('../lib/email-code-cooldown')
+  clearEmailCodeCooldown(email)
+  // 通知是同步的，但订阅者（hook 的 setState）要等一次提交才反映到 DOM。
+  await flush()
+}

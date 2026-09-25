@@ -2,9 +2,13 @@
 import { Link } from 'react-router-dom'
 import { Button } from 'ink-design'
 import { useDocumentTitle } from '../../lib/site'
+import { useCanonicalPath, usePageHead } from '../../lib/head'
 
 export default function NotFound() {
   useDocumentTitle('页面不存在')
+  // 404 一律 noindex：它被文章页与独立页在「取不到内容」时就地复用，
+  // 而那个时刻地址栏里往往还写着 /post/123 这类看似正常的地址。
+  usePageHead({ path: useCanonicalPath(), title: '页面不存在', robots: 'noindex, nofollow' })
   return (
     <main className="wrap">
       <div className="e404 rv">

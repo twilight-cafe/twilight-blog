@@ -31,6 +31,22 @@ const verificationCodeTTL = 10 * time.Minute
 // 那会引入第三方依赖并拖慢注册，暂时不值得。
 const emailCodesPerHourPerAddress = 10
 
+// emailCodeMinInterval 是同一收件地址两次签发验证码之间的最短间隔。
+//
+// 它挡的是「连点」与「脚本高频重发」，与 emailCodesPerHourPerAddress 是两条
+// 不同粒度的闸：小时的额度允许 10 枚（够真实用户重试），但**不允许 10 枚在一秒内
+// 打完**——那对收件箱是骚扰，对发信通道是浪费，对攻击者则是把「每小时 10 次」
+// 压缩成一次突发。
+//
+// 60 秒的选择依据：验证码本身 10 分钟有效，正常用户几乎不需要第二枚；而"点了没收到、
+// 想再要一封"是唯一的高频场景，等一分钟是合理的。邮件投递本身也常有几十秒延迟，
+// 间隔太短会让用户拿到两枚码而分不清哪枚有效（虽然旧码会被作废，但用户手上
+// 可能正拿着刚抄下来的那一枚）。
+//
+// 这是**服务端**的判定，前端那个倒计时只是体验优化——绕过前端直接打接口时，
+// 唯一还能拦住连发的就是这里。
+const emailCodeMinInterval = 60 * time.Second
+
 // maxVerificationCodeAttempts 是同一枚验证码允许被猜错的次数，超过即作废。
 //
 // 5 这个值留足了手滑的余地（正常用户最多输错一两次），同时把「在十分钟有效期
@@ -58,6 +74,18 @@ type UserService struct {
 	users  model.UserRepository
 	codes  model.EmailVerificationRepository
 	sender EmailSender
+
+	// emailCodeIntervalOverride 覆盖 emailCodeMinInterval，**只供测试使用**。
+	//
+	// 为什么需要这个口子：短间隔节流按收件地址生效，而几乎每条账号流程
+	// （注册、重名重试、重置密码）都需要「为同一个地址连发两枚码」。真实间隔是
+	// 60 秒，测试里逐个 sleep 会让 service 包多出十几分钟；而把间隔做成可注入的，
+	// 就能让这些流程保持**真实调用路径**的同时把等待压到零。
+	//
+	// 0 表示「用常量值」（见 emailCodeInterval）。它不来自配置文件，也不该有
+	// 任何生产写入路径——一旦它变成可配置项，站长就能把防连点闸门调到 1 秒，
+	// 而那正是这个功能要挡的东西。
+	emailCodeIntervalOverride time.Duration
 }
 
 func NewUserService(
@@ -66,6 +94,17 @@ func NewUserService(
 	sender EmailSender,
 ) *UserService {
 	return &UserService{users: users, codes: codes, sender: sender}
+}
+
+// emailCodeInterval 返回实际生效的短间隔节流窗口。
+//
+// 读的是字段而不是常量，使测试能在不改动任何调用点的前提下缩短窗口。
+// 集中的取值方法让「0 = 用默认值」这条规则只有一处。
+func (s *UserService) emailCodeInterval() time.Duration {
+	if s.emailCodeIntervalOverride > 0 {
+		return s.emailCodeIntervalOverride
+	}
+	return emailCodeMinInterval
 }
 
 // RequestEmailCode 生成并发送一枚验证码。
@@ -94,6 +133,30 @@ func (s *UserService) RequestEmailCode(ctx context.Context, email string) error 
 	if issued >= emailCodesPerHourPerAddress {
 		logging.Warnf("[user] per-address verification code limit reached email=%s issued=%d", logging.RedactEmail(email), issued)
 		return ErrEmailCodeAddressLimit
+	}
+
+	// 短间隔节流。同样放在作废之前——被拒的请求不该动用户手上那枚仍然有效的码。
+	//
+	// 这里必须 fail closed：查不出上次签发时间就**拒绝**，而不是放行。把查询失败
+	// 当成「没发过」，会让一次数据库故障静默地把 60 秒闸门整个摘掉。
+	//
+	// 判定分两步，缺一不可：
+	//   - `last > now`（时钟被往回拨）直接放行。曾经只用「now-last < interval」一个
+	//     判据，而负数是「小于 interval」的，于是回拨期间用户被**永久**锁在节流里：
+	//     每过一秒 remaining 反而变大。注释当时就写着「差值为负，直接放行」，
+	//     代码却没有那一步——回拨时宁可宽松一次，也不要让人再也发不出验证码。
+	//   - 其余情况用「now-last < interval」。若写成「last > now-interval」，在回拨
+	//     时同样会把人锁死，这正是上面那条要防的。
+	last, ok, err := s.codes.LastCreatedAt(ctx, email)
+	if err != nil {
+		logging.Errorf("[user] read last verification code time failed email=%s: %v", logging.RedactEmail(email), err)
+		return err
+	}
+	interval := int64(s.emailCodeInterval().Seconds())
+	if ok && last <= now.Unix() && now.Unix()-last < interval {
+		remaining := interval - (now.Unix() - last)
+		logging.Warnf("[user] verification code requested too soon email=%s remaining=%ds", logging.RedactEmail(email), remaining)
+		return ErrEmailCodeTooFrequent
 	}
 
 	code, err := generateVerificationCode()
@@ -624,6 +687,10 @@ var (
 	// ErrDailyEmailLimitReached）。它说明的是「这个地址今天要得太多」，
 	// 刻意不提任何账号是否存在——那会变成一个账号枚举的旁路。
 	ErrEmailCodeAddressLimit = errors.New("该邮箱请求验证码次数过多，请稍后再试。")
+	// ErrEmailCodeTooFrequent 是「两次发送间隔不足 60 秒」。文案同样面向访客，
+	// 且**必须给出还要等多久**——只说「太频繁了」会让用户反复点击试探，
+	// 反而制造更多请求。给一个明确秒数，前端也能直接显示。
+	ErrEmailCodeTooFrequent = errors.New("验证码发送过于频繁，请 60 秒后再试。")
 )
 
 func normalizeEmail(email string) string {

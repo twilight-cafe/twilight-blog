@@ -7,6 +7,10 @@ import (
 	"syscall"
 )
 
+// kill is the syscall used to probe a process by PID. It is a variable so tests
+// can exercise the permission-denied and unknown-error branches deterministically.
+var kill = syscall.Kill
+
 // processAlive 用信号 0 探测进程是否存在。
 //
 // 信号 0 不发送任何东西，只做「存在性 + 权限」检查，所以这是零副作用的探测手段：
@@ -22,7 +26,7 @@ func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
+	err := kill(pid, 0)
 	if err == nil {
 		return true
 	}

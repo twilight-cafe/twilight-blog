@@ -55,6 +55,16 @@ var (
 	loggedLen int64
 )
 
+// Filesystem and fatal hooks. They are variables so tests can exercise the
+// error branches without relying on filesystem races or spawning a child
+// process whose coverage would not reach the parent profile.
+var (
+	openLogFile   = os.OpenFile
+	statLogFile   = func(f *os.File) (os.FileInfo, error) { return f.Stat() }
+	renameLogFile = os.Rename
+	fatalf        = stdlog.Fatalf
+)
+
 // init 把默认级别设为 Info，并让标准库 log 也走本包的轮转 Writer，
 // 这样第三方组件（echo 的 StdLogger 等）的输出同样会进日志文件。
 func init() {
@@ -170,12 +180,12 @@ func openLocked() error {
 		return nil
 	}
 
-	f, err := os.OpenFile(DefaultLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := openLogFile(DefaultLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("open log file: %w", err)
 	}
 
-	info, err := f.Stat()
+	info, err := statLogFile(f)
 	if err != nil {
 		f.Close()
 		return fmt.Errorf("stat log file: %w", err)
@@ -199,11 +209,11 @@ func rotateLocked() {
 	for i := maxLogBackups - 1; i >= 1; i-- {
 		oldName := fmt.Sprintf("%s.%d", DefaultLogFile, i)
 		newName := fmt.Sprintf("%s.%d", DefaultLogFile, i+1)
-		if err := os.Rename(oldName, newName); err != nil && !os.IsNotExist(err) {
+		if err := renameLogFile(oldName, newName); err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "log rotation: rename %s: %v\n", oldName, err)
 		}
 	}
-	if err := os.Rename(DefaultLogFile, DefaultLogFile+".1"); err != nil && !os.IsNotExist(err) {
+	if err := renameLogFile(DefaultLogFile, DefaultLogFile+".1"); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "log rotation: rename %s: %v\n", DefaultLogFile, err)
 	}
 
@@ -234,7 +244,7 @@ func Errorf(format string, args ...any) {
 // 注意它走的是标准库 log.Fatalf，因此会跳过所有 defer——
 // 调用前需要清理的资源必须显式清理。
 func Fatalf(format string, args ...any) {
-	stdlog.Fatalf("%s", sanitizeLogLine("[FATAL] "+fmt.Sprintf(format, args...)))
+	fatalf("%s", sanitizeLogLine("[FATAL] "+fmt.Sprintf(format, args...)))
 }
 
 // logf 是各个级别的公共实现：低于当前级别直接丢弃，

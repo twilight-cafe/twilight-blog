@@ -71,11 +71,54 @@ func (s *captureSender) lastBody() string {
 	return s.bodies[len(s.bodies)-1]
 }
 
+// testEmailCodeInterval 是测试里生效的短间隔节流窗口，**刻意比真实值短**。
+//
+// 真实值是 60 秒（见 emailCodeMinInterval）。账号流程里「为同一个地址连发两枚码」
+// 是常态——注册被拒后换名字重试、重置密码、验证码按地址计数——照真实值走，
+// service 包会因为这些等待多出十几分钟。
+//
+// 但缩短窗口**只是把等待变小，不是把它去掉**，这一点很关键：测试仍然走真实的
+// 节流判定路径（LastCreatedAt → 比较间隔）。凡是需要连发两枚码的地方都必须显式
+// 调用 advancePastEmailCodeInterval 推进「签发时间」；忘了推进，就会像以前那样
+// 拿到 ErrEmailCodeTooFrequent 而失败。
+//
+// ⚠️ 为什么是 2 秒而不是 200 毫秒：created_at 是 **Unix 秒**（整秒）落库的，
+// 而节流把两侧都换算成秒再比较。窗口一旦短于一秒，`interval.Seconds()` 会截断成
+// 0，节流就**永远不会触发**——测试会静默地变成什么都没测。2 秒既能保证换算后
+// 是正整数（2），又远短于 60 秒，等待代价可以忽略。
+const testEmailCodeInterval = 2 * time.Second
+
+// advancePastEmailCodeInterval 让指定地址看起来「上一次签发已经过去足够久」，
+// 从而允许它再申请一枚码。必须在同一地址的第二次 RequestEmailCode 之前调用。
+//
+// 做法是把库里该地址的 created_at **往前挪**，而不是等真实时间流逝；节流判定
+// 本身（LastCreatedAt → 比较间隔）原样运行，所以测试既省掉了等待，又没有把
+// 被测逻辑换掉。
+//
+// ⚠️ 挪的方向必须是**过去**，且要锚定在真实的 time.Now() 上。RequestEmailCode
+// 写入的是 time.Now()，若这里写一个比它更大的值（比如自己累加出来的时钟），
+// created_at 就落到「未来」，而节流恰好有一条「last > now 时放行」的回拨保护
+// ——测试会因此看起来通过，实际上一次都没走到节流判定上。
+func advancePastEmailCodeInterval(t *testing.T, db *sql.DB, email string) {
+	t.Helper()
+
+	// 现在就有一个足够久远的过去时刻：真实当前时间再往前 interval+1 秒。
+	// 每次调用都重新基于 time.Now() 计算，所以不会累积、也不可能超过 now。
+	past := time.Now().Add(-(testEmailCodeInterval + time.Second)).Unix()
+	if _, err := db.Exec(`
+UPDATE email_verification_codes SET created_at = ? WHERE email = ? COLLATE NOCASE
+`, past, email); err != nil {
+		t.Fatalf("advance the verification code clock for %s: %v", email, err)
+	}
+}
+
 // newTestUserService 构造一个只依赖访客账号体系的服务。
 //
 // 从前这里还要注入一个「站长当前登录名」的函数，好让 isReservedUsername 把站长的
 // 名字预留出来。那次重构之后不需要了：站长也是 users 表里的一行，与访客共用同一个
 // 部分唯一索引——测试因此改成「插一行 is_admin = 1，再验证唯一性被数据库守住」。
+//
+// 服务的节流窗口被压到 testEmailCodeInterval，见那个常量的说明。
 func newTestUserService(t *testing.T) (*UserService, *captureSender, *sql.DB) {
 	t.Helper()
 
@@ -91,6 +134,7 @@ func newTestUserService(t *testing.T) (*UserService, *captureSender, *sql.DB) {
 		model.NewSQLiteEmailVerificationRepository(db),
 		sender,
 	)
+	svc.emailCodeIntervalOverride = testEmailCodeInterval
 	return svc, sender, db
 }
 
@@ -121,10 +165,14 @@ func seedAdministrator(t *testing.T, db *sql.DB, username string) *model.User {
 // 每个测试用例都把 username 与 nickname 传成**不同的值**，因为两者必须是
 // 两个独立的字段，测试里若让它们相等，就无法区分「分开存的」与「本来就是
 // 同一个字符串」。
-func register(t *testing.T, svc *UserService, sender *captureSender, email, username, password, nickname string) *model.User {
+//
+// 申请之前先推进节流时钟：调用方可能已经为同一个地址要过一枚码
+// （比如「注册一次 → 再注册一次」），而真实节流是 60 秒。
+func register(t *testing.T, svc *UserService, sender *captureSender, db *sql.DB, email, username, password, nickname string) *model.User {
 	t.Helper()
 	ctx := context.Background()
 
+	advancePastEmailCodeInterval(t, db, email)
 	if err := svc.RequestEmailCode(ctx, email); err != nil {
 		t.Fatalf("RequestEmailCode(%s) error = %v", email, err)
 	}
@@ -136,7 +184,7 @@ func register(t *testing.T, svc *UserService, sender *captureSender, email, user
 }
 
 func TestRegisterThenLogin(t *testing.T) {
-	svc, sender, _ := newTestUserService(t)
+	svc, sender, db := newTestUserService(t)
 	ctx := context.Background()
 
 	if err := svc.RequestEmailCode(ctx, "New@Example.com"); err != nil {
@@ -146,7 +194,10 @@ func TestRegisterThenLogin(t *testing.T) {
 		t.Fatalf("code sent to %q, want the normalised address", sender.to)
 	}
 
-	user := register(t, svc, sender, "new@example.com", "nightwalker", "GoodPass123", "夜行者")
+	// 上面已经为这个地址要过一枚码（地址归一化也在这里被验证），而 register 会
+	// 再要一枚——所以要先把节流时钟推过去，否则第二枚会被 60 秒闸门拦下。
+	advancePastEmailCodeInterval(t, db, "new@example.com")
+	user := register(t, svc, sender, db, "new@example.com", "nightwalker", "GoodPass123", "夜行者")
 	if user.ID == 0 || user.Email != "new@example.com" || user.Nickname != "夜行者" {
 		t.Fatalf("unexpected user: %+v", user)
 	}
@@ -184,10 +235,10 @@ func TestRegisterThenLogin(t *testing.T) {
 // failure mode being guarded against is silent: a single shared column would
 // still make every assertion about "the display name" pass.
 func TestUsernameAndNicknameAreSeparate(t *testing.T) {
-	svc, sender, _ := newTestUserService(t)
+	svc, sender, db := newTestUserService(t)
 	ctx := context.Background()
 
-	user := register(t, svc, sender, "sep@example.com", "sepuser", "GoodPass123", "展示名")
+	user := register(t, svc, sender, db, "sep@example.com", "sepuser", "GoodPass123", "展示名")
 
 	// Changing the display name must not move the login identifier.
 	if _, err := svc.UpdateOwnNickname(ctx, user.ID, "改过的展示名"); err != nil {
@@ -232,10 +283,10 @@ func TestUsernameAndNicknameAreSeparate(t *testing.T) {
 // two accounts may never share a username, and the collision must be reported
 // as a username conflict rather than as an email conflict.
 func TestUsernameUniqueness(t *testing.T) {
-	svc, sender, _ := newTestUserService(t)
+	svc, sender, db := newTestUserService(t)
 	ctx := context.Background()
 
-	register(t, svc, sender, "first@example.com", "taken-name", "GoodPass123", "第一个")
+	register(t, svc, sender, db, "first@example.com", "taken-name", "GoodPass123", "第一个")
 
 	if err := svc.RequestEmailCode(ctx, "second@example.com"); err != nil {
 		t.Fatalf("RequestEmailCode() error = %v", err)
@@ -247,6 +298,7 @@ func TestUsernameUniqueness(t *testing.T) {
 
 	// 被拒绝的注册会**消费掉**那枚码（这是有意为之，理由见 Register 的注释与
 	// TestRejectedRegistrationConsumesTheCode），所以换名字重试之前要重新申请一枚。
+	advancePastEmailCodeInterval(t, db, "second@example.com")
 	if err := svc.RequestEmailCode(ctx, "second@example.com"); err != nil {
 		t.Fatalf("second RequestEmailCode() error = %v", err)
 	}
@@ -306,6 +358,7 @@ func TestAdministratorLoginNameIsReserved(t *testing.T) {
 	if _, err := svc.Register(ctx, "reserved@example.com", sender.latest(), "ADMIN", "候选人", "GoodPass123"); !errors.Is(err, ErrUsernameTaken) {
 		t.Fatalf("Register() with the administrator login name error = %v, want ErrUsernameTaken", err)
 	}
+	advancePastEmailCodeInterval(t, db, "reserved@example.com")
 	if err := svc.RequestEmailCode(ctx, "reserved@example.com"); err != nil {
 		t.Fatalf("second RequestEmailCode() error = %v", err)
 	}
@@ -342,7 +395,7 @@ func TestAdministratorLoginNameIsReserved(t *testing.T) {
 // rule is what keeps confusable Unicode look-alikes out of a name that people
 // read on a sign-in screen.
 func TestUsernameShapeIsValidated(t *testing.T) {
-	svc, sender, _ := newTestUserService(t)
+	svc, sender, db := newTestUserService(t)
 	ctx := context.Background()
 
 	cases := []struct {
@@ -360,6 +413,8 @@ func TestUsernameShapeIsValidated(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// 每个子用例都会为同一个地址再要一枚码，所以每次都要推进节流时钟。
+			advancePastEmailCodeInterval(t, db, "shape@example.com")
 			if err := svc.RequestEmailCode(ctx, "shape@example.com"); err != nil {
 				t.Fatalf("RequestEmailCode() error = %v", err)
 			}
@@ -407,7 +462,7 @@ func TestRegisterRejectsBadInput(t *testing.T) {
 // TestOnlyNewestCodeIsValid covers retiring outstanding codes when a new one is
 // issued: otherwise each request would add another simultaneously valid code.
 func TestOnlyNewestCodeIsValid(t *testing.T) {
-	svc, sender, _ := newTestUserService(t)
+	svc, sender, db := newTestUserService(t)
 	ctx := context.Background()
 
 	if err := svc.RequestEmailCode(ctx, "a@example.com"); err != nil {
@@ -415,6 +470,10 @@ func TestOnlyNewestCodeIsValid(t *testing.T) {
 	}
 	first := sender.latest()
 
+	// 「签发新码即淘汰旧码」要的是两枚码，而第二枚会被短间隔节流拦下——
+	// 节流本身由 TestVerificationCodeMinIntervalIsEnforced 覆盖，这里只想
+	// 拿到两枚码，所以先把时钟推过间隔。
+	advancePastEmailCodeInterval(t, db, "a@example.com")
 	if err := svc.RequestEmailCode(ctx, "a@example.com"); err != nil {
 		t.Fatalf("second RequestEmailCode() error = %v", err)
 	}
@@ -440,6 +499,9 @@ func TestVerificationCodeIsCappedPerAddress(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < emailCodesPerHourPerAddress; i++ {
+		// 这里考的是**每小时**的上限，短间隔节流只会碍事，所以每一轮都把
+		// 签发时间推旧（每轮推进 1 秒以上，10 轮仍在一小时窗口内）。
+		advancePastEmailCodeInterval(t, db, "victim@example.com")
 		if err := svc.RequestEmailCode(ctx, "victim@example.com"); err != nil {
 			t.Fatalf("request %d error = %v, want success", i+1, err)
 		}
@@ -468,6 +530,107 @@ UPDATE email_verification_codes SET consumed_at = ? WHERE email = ?
 	// An address written in a different case is the same inbox.
 	if err := svc.RequestEmailCode(ctx, "Victim@Example.com"); !errors.Is(err, ErrEmailCodeAddressLimit) {
 		t.Fatalf("case-varied address error = %v, want the cap to apply to the same inbox", err)
+	}
+}
+
+// TestVerificationCodeMinIntervalIsEnforced 是本轮新增功能（验证码最短发送间隔）
+// 的**核心守护**：同一收件地址连发两枚码，第二枚必须被拒。
+//
+// 它挡的是「连点」与「脚本高频重发」——按 IP 的限流换 IP 就绕过了，而这个闸门
+// 按收件地址生效，是绕过前端直接打接口时唯一还能拦住连发的东西。
+//
+// 反证方式：删掉 RequestEmailCode 里的短间隔判定（或把 interval 改成 0），
+// 第二个 RequestEmailCode 会成功，测试立刻失败。
+func TestVerificationCodeMinIntervalIsEnforced(t *testing.T) {
+	svc, _, db := newTestUserService(t)
+	ctx := context.Background()
+
+	if err := svc.RequestEmailCode(ctx, "throttle@example.com"); err != nil {
+		t.Fatalf("first RequestEmailCode() error = %v", err)
+	}
+
+	// 立刻再要一枚：必须被拒，且是**节流**错误而不是别的错误——若退化成
+	// 按地址上限，文案会指向「一小时后重试」，对用户是错误指引。
+	if err := svc.RequestEmailCode(ctx, "throttle@example.com"); !errors.Is(err, ErrEmailCodeTooFrequent) {
+		t.Fatalf("immediate resend error = %v, want ErrEmailCodeTooFrequent", err)
+	}
+
+	// 被拒的请求不该动用户手上那枚仍然有效的码：号码是不重号的一张凭证，
+	// 一次失败的连点不该把它作废掉（否则「点快了反而连原来那枚也没了」）。
+	repo := model.NewSQLiteEmailVerificationRepository(db)
+	if _, err := repo.FindLatestActiveByEmail(ctx, "throttle@example.com", time.Now().Unix()); err != nil {
+		t.Fatalf("the first code did not survive the throttled request: %v", err)
+	}
+
+	// 大小写变体是同一个收件箱，不能成为绕过节流的口子。
+	if err := svc.RequestEmailCode(ctx, "THROTTLE@example.com"); !errors.Is(err, ErrEmailCodeTooFrequent) {
+		t.Fatalf("case-varied immediate resend error = %v, want ErrEmailCodeTooFrequent", err)
+	}
+
+	// 另一个地址不受影响：节流按收件地址，不是全局的。
+	if err := svc.RequestEmailCode(ctx, "someone-else@example.com"); err != nil {
+		t.Fatalf("a different address was throttled: %v", err)
+	}
+}
+
+// TestVerificationCodeThrottleSurvivesAClockRollback 是**时钟回拨**的守护测试。
+//
+// 背景：判定写成「now-last < interval」是不够的。若系统时间被 NTP 往回拨，
+// 库里的「上次签发」就会落在 now **之后**，差值为负——而负数是「小于 interval」
+// 的，于是用户被锁在节流里，且**每过一秒 remaining 反而变大**，等于永久发不出
+// 验证码。改动前的注释就写着「差值为负，直接放行」，代码却少了那一步。
+//
+// 反证方式：把判定改回 `now.Unix()-last < interval`（去掉 `last <= now.Unix()`
+// 那半句），这个测试会失败——被拒绝而不是放行。
+func TestVerificationCodeThrottleSurvivesAClockRollback(t *testing.T) {
+	svc, _, db := newTestUserService(t)
+	ctx := context.Background()
+
+	if err := svc.RequestEmailCode(ctx, "rollback@example.com"); err != nil {
+		t.Fatalf("first RequestEmailCode() error = %v", err)
+	}
+
+	// 模拟回拨：把「上次签发」改到未来一分钟。此刻 now-last = -60，
+	// 而 -60 < interval 恒成立——正是那条会把人锁死的路径。
+	future := time.Now().Add(time.Minute).Unix()
+	if _, err := db.Exec(`
+UPDATE email_verification_codes SET created_at = ? WHERE email = ? COLLATE NOCASE
+`, future, "rollback@example.com"); err != nil {
+		t.Fatalf("move the last issue time into the future: %v", err)
+	}
+
+	// 回拨期间宁可宽松一次：必须放行，而不是拒绝。
+	if err := svc.RequestEmailCode(ctx, "rollback@example.com"); err != nil {
+		t.Fatalf("a code was refused while the clock was rolled back: %v; "+
+			"a negative gap means the last issue time is in the future, "+
+			"and refusing there locks the user out permanently", err)
+	}
+}
+
+// TestVerificationCodeIntervalDefaultsToTheProductionValue 钉住**生产默认值本身**。
+//
+// 与 TestVerificationCodeMinIntervalIsEnforced 的分工：那条测「判定确实生效」，
+// 这条测「生效的窗口是 60 秒」。两者缺一不可——把常量改成 1 秒，前者照样绿，
+// 而防连点实际上已经形同虚设（人手速就能连发）。
+//
+// 同时确认测试用的可注入窗口**没有泄漏到默认路径**：裸 NewUserService 必须回落到
+// 常量，否则「测试里缩短窗口」这个口子会在生产里静默生效。
+func TestVerificationCodeIntervalDefaultsToTheProductionValue(t *testing.T) {
+	svc := &UserService{}
+	if got := svc.emailCodeInterval(); got != 60*time.Second {
+		t.Fatalf("the default interval = %v, want 60s", got)
+	}
+	if got := svc.emailCodeInterval(); got != emailCodeMinInterval {
+		t.Fatalf("the default interval = %v, which drifts from emailCodeMinInterval = %v",
+			got, emailCodeMinInterval)
+	}
+
+	// 注入后的窗口仍然必须是「正的」：0 或负值会被 emailCodeInterval 当成
+	// 「用默认值」，所以一个 0 值的注入是**静默无效**的——测试若这么写，
+	// 它测的就是 60 秒而不是它以为的短窗口。
+	svc.emailCodeIntervalOverride = testEmailCodeInterval
+	if got := svc.emailCodeInterval(); got != testEmailCodeInterval {
+		t.Fatalf("the overridden interval = %v, want %v", got, testEmailCodeInterval)
 	}
 }
 
@@ -700,11 +863,12 @@ func TestCodeCannotBeReused(t *testing.T) {
 }
 
 func TestDuplicateRegistrationIsRejected(t *testing.T) {
-	svc, sender, _ := newTestUserService(t)
+	svc, sender, db := newTestUserService(t)
 	ctx := context.Background()
 
-	register(t, svc, sender, "a@example.com", "first-user", "GoodPass123", "first")
+	register(t, svc, sender, db, "a@example.com", "first-user", "GoodPass123", "first")
 
+	advancePastEmailCodeInterval(t, db, "a@example.com")
 	if err := svc.RequestEmailCode(ctx, "a@example.com"); err != nil {
 		t.Fatalf("second RequestEmailCode() error = %v", err)
 	}
@@ -736,10 +900,11 @@ func TestRegistrationDoesNotRevealAccountExistence(t *testing.T) {
 	// 注册成功，测试也就失去了它要断言的东西。
 	seedAdministrator(t, db, "admin")
 
-	register(t, svc, sender, "known@example.com", "known-user", "GoodPass123", "known")
+	register(t, svc, sender, db, "known@example.com", "known-user", "GoodPass123", "known")
 
 	// 让两个地址各自持有一枚**有效的**码，再用一个错误的码去注册。这样走的是
 	// 「码存在、比对失败」这条路径，而不是「根本没有码」那条更简单的路径。
+	advancePastEmailCodeInterval(t, db, "known@example.com")
 	if err := svc.RequestEmailCode(ctx, "known@example.com"); err != nil {
 		t.Fatalf("RequestEmailCode(known) error = %v", err)
 	}
@@ -782,6 +947,9 @@ func TestRegistrationDoesNotRevealAccountExistence(t *testing.T) {
 	// 最后：上面那次被拒的尝试已经把码消费掉了，所以换名字要继续就得重新申请。
 	// 这正是「校验即消费」的既定代价（见 TestRejectedRegistrationConsumesTheCode），
 	// 换来的是完全没有「校验→检查→消费」之间的窗口。
+	//
+	// 这个地址在本用例里已经要过一枚码，所以先推过短间隔节流。
+	advancePastEmailCodeInterval(t, db, "unknown@example.com")
 	if err := svc.RequestEmailCode(ctx, "unknown@example.com"); err != nil {
 		t.Fatalf("RequestEmailCode() after the rejection error = %v", err)
 	}
@@ -805,10 +973,10 @@ func TestRegistrationDoesNotRevealAccountExistence(t *testing.T) {
 // consumeCode 调用移到 FindByEmail/ensureUsernameAvailable 之后，
 // 第二个断言会看到 ErrEmailAlreadyRegistered 或成功，测试立刻失败。
 func TestRejectedRegistrationConsumesTheCode(t *testing.T) {
-	svc, sender, _ := newTestUserService(t)
+	svc, sender, db := newTestUserService(t)
 	ctx := context.Background()
 
-	register(t, svc, sender, "owner@example.com", "taken-name", "GoodPass123", "first")
+	register(t, svc, sender, db, "owner@example.com", "taken-name", "GoodPass123", "first")
 
 	// 用一个已被占用的用户名注册，拿到的是一枚全新的有效码。
 	if err := svc.RequestEmailCode(ctx, "newcomer@example.com"); err != nil {
@@ -825,7 +993,8 @@ func TestRejectedRegistrationConsumesTheCode(t *testing.T) {
 			"the code must be consumed before any occupancy check runs", err)
 	}
 
-	// 重新申请之后一切照常。
+	// 重新申请之后一切照常（先推过短间隔节流）。
+	advancePastEmailCodeInterval(t, db, "newcomer@example.com")
 	if err := svc.RequestEmailCode(ctx, "newcomer@example.com"); err != nil {
 		t.Fatalf("second RequestEmailCode() error = %v", err)
 	}
@@ -841,9 +1010,9 @@ func TestRejectedRegistrationConsumesTheCode(t *testing.T) {
 // TestLoginDoesNotRevealAccountExistence asserts that an unknown identifier and
 // a wrong password are indistinguishable to the caller.
 func TestLoginDoesNotRevealAccountExistence(t *testing.T) {
-	svc, sender, _ := newTestUserService(t)
+	svc, sender, db := newTestUserService(t)
 
-	register(t, svc, sender, "a@example.com", "exists-user", "GoodPass123", "nick")
+	register(t, svc, sender, db, "a@example.com", "exists-user", "GoodPass123", "nick")
 
 	if _, err := svc.LoginWithUsername(context.Background(), "exists-user", "WrongPass123"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("wrong password error = %v, want ErrInvalidCredentials", err)
@@ -887,7 +1056,7 @@ func TestLoginTimingIsEqualized(t *testing.T) {
 	svc, sender, db := newTestUserService(t)
 	ctx := context.Background()
 
-	register(t, svc, sender, "timed@example.com", "timed-user", "GoodPass123", "nick")
+	register(t, svc, sender, db, "timed@example.com", "timed-user", "GoodPass123", "nick")
 
 	// A commenter account that exists but never set a password. It also predates
 	// the username column, so it doubles as the "not yet backfilled" shape.
@@ -966,11 +1135,12 @@ func TestLegacyCommenterCanSetAPassword(t *testing.T) {
 }
 
 func TestResetPassword(t *testing.T) {
-	svc, sender, _ := newTestUserService(t)
+	svc, sender, db := newTestUserService(t)
 	ctx := context.Background()
 
-	register(t, svc, sender, "a@example.com", "reset-user", "GoodPass123", "nick")
+	register(t, svc, sender, db, "a@example.com", "reset-user", "GoodPass123", "nick")
 
+	advancePastEmailCodeInterval(t, db, "a@example.com")
 	if err := svc.RequestEmailCode(ctx, "a@example.com"); err != nil {
 		t.Fatalf("reset RequestEmailCode() error = %v", err)
 	}
@@ -1002,10 +1172,10 @@ func TestResetPassword(t *testing.T) {
 // 角色重新签发会话（见 handler.AuthHandler.reissueSession）。所以这里除了错误之外
 // 还要确认返回的账号是对的——返回 nil 而 error 为 nil 会让 handler 直接 panic。
 func TestChangePassword(t *testing.T) {
-	svc, sender, _ := newTestUserService(t)
+	svc, sender, db := newTestUserService(t)
 	ctx := context.Background()
 
-	user := register(t, svc, sender, "a@example.com", "change-user", "GoodPass123", "nick")
+	user := register(t, svc, sender, db, "a@example.com", "change-user", "GoodPass123", "nick")
 
 	if _, err := svc.ChangePassword(ctx, user.ID, "WrongPass123", "Another456"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("wrong current password error = %v, want ErrInvalidCredentials", err)
@@ -1029,10 +1199,10 @@ func TestChangePassword(t *testing.T) {
 }
 
 func TestNicknameAndProfileUpdates(t *testing.T) {
-	svc, sender, _ := newTestUserService(t)
+	svc, sender, db := newTestUserService(t)
 	ctx := context.Background()
 
-	user := register(t, svc, sender, "a@example.com", "profile-user", "GoodPass123", "nick")
+	user := register(t, svc, sender, db, "a@example.com", "profile-user", "GoodPass123", "nick")
 
 	if _, err := svc.UpdateOwnNickname(ctx, user.ID, "  新名  "); err != nil {
 		t.Fatalf("UpdateOwnNickname() error = %v", err)
@@ -1069,7 +1239,7 @@ func TestNicknameAndProfileUpdates(t *testing.T) {
 	}
 
 	// A taken address must be reported, not silently duplicated.
-	register(t, svc, sender, "other@example.com", "other-user", "GoodPass123", "other")
+	register(t, svc, sender, db, "other@example.com", "other-user", "GoodPass123", "other")
 
 	if _, err := svc.AdminUpdateUser(ctx, user.ID, "admin-renamed", "x", "other@example.com"); !errors.Is(err, ErrEmailAlreadyRegistered) {
 		t.Fatalf("duplicate email error = %v, want ErrEmailAlreadyRegistered", err)
@@ -1081,7 +1251,7 @@ func TestNicknameAndProfileUpdates(t *testing.T) {
 }
 
 func TestListUsers(t *testing.T) {
-	svc, sender, _ := newTestUserService(t)
+	svc, sender, db := newTestUserService(t)
 	ctx := context.Background()
 
 	for _, spec := range []struct{ email, username string }{
@@ -1089,7 +1259,7 @@ func TestListUsers(t *testing.T) {
 		{"b@example.com", "list-user-b"},
 		{"c@example.com", "list-user-c"},
 	} {
-		register(t, svc, sender, spec.email, spec.username, "GoodPass123", "nick")
+		register(t, svc, sender, db, spec.email, spec.username, "GoodPass123", "nick")
 	}
 
 	users, total, err := svc.ListUsers(ctx, model.Pagination{Page: 1, PageSize: 2})

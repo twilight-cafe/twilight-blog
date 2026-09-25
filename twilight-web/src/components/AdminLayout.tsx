@@ -9,14 +9,16 @@
 // 而不是当成首次陌生访问。App 在渲染路由前已解析过会话，所以这里 user 为 null
 // 即「已登出」而非「还在加载」。
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { AdminNav, IconButton } from 'ink-design'
 import { blog, logout, useCurrentUser } from '../lib/client'
 import { useDocumentTitle, useSiteAvatar } from '../lib/site'
+import { useCanonicalPath, usePageHead } from '../lib/head'
 import { useToast } from '../lib/toast'
 import Icon from '../lib/icons'
 import ModeToggle from './ModeToggle'
+import { Loading } from './common'
 
 const ADMIN_MENU = [
   { key: 'posts', to: '/admin/posts', icon: 'doc', label: '文章' },
@@ -47,6 +49,18 @@ const COUNTS_TTL_MS = 30_000
 
 let countsCache: { at: number; value: Record<string, number> } | null = null
 let countsInFlight: Promise<Record<string, number>> | null = null
+
+/**
+ * 仅供测试：清空计数缓存。
+ *
+ * 它是模块级缓存且有 30s TTL，跨用例存活——一个用例渲染过控制台之后，下一个用例
+ * 拿到的是上一条用例的计数（表现为「徽章怎么没了」，且只在某些用例顺序下出现）。
+ * 与 site.ts 的 resetSiteCacheForTests 同一先例。
+ */
+export function resetCountsCacheForTests(): void {
+  countsCache = null
+  countsInFlight = null
+}
 
 function fetchCounts(): Promise<Record<string, number>> {
   const now = Date.now()
@@ -146,6 +160,9 @@ export default function AdminLayout() {
   const current = menu.find((item) => item.to === location.pathname)?.label
     || (location.pathname === '/admin' ? '概览' : (isAdmin ? '管理' : '账号'))
   useDocumentTitle(current)
+  // 控制台整体 noindex, nofollow：这些页面本身要求登录，没有任何被收录的理由，
+  // 而 nufollow 也让「/admin/* 下的链接」不再被抓取器顺着走。
+  usePageHead({ path: useCanonicalPath(), title: current, robots: 'noindex, nofollow' })
   // 站长头像走 /api/site 的公开快照（useSiteAvatar），与前台侧栏作者卡同源；
   // 换头像后 refreshSiteMeta 会更新这份缓存，后台侧栏因此无需再单独拉取。
   // hook 必须在下面的早退之前调用：身份从有到无的重渲染会少执行 hook，
@@ -204,7 +221,11 @@ export default function AdminLayout() {
           <ModeToggle />
         </header>
         <div className="panel">
-          <Outlet />
+          {/* 后台页面按路由懒加载（见 App.tsx）。边界放在这一层而不是整个 Routes
+              外面：加载期间侧栏与顶栏保持挂载，只有内容区显示加载态，不会整屏闪。 */}
+          <Suspense fallback={<Loading height={300} />}>
+            <Outlet />
+          </Suspense>
         </div>
       </div>
     </div>

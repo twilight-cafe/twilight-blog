@@ -41,6 +41,13 @@
      它曾被写成两处各自硬编码的 26px / 0，于是侧栏紧贴顶栏下边框、
      头图却离着 26px——同一个屏幕上「间距」有两个答案。 */
   --top-gap: 26px;
+  /* 站点统一圆角的**静态兜底**，必须与 viewmodel.DefaultBorderRadius 和
+     flags.ts 的 FALLBACK_BORDER_RADIUS 三处一致（当前都是 4px）。
+     真实值由 main.tsx 开头的 applyBorderRadius() 从 <html data-border-radius>
+     写进内联 style，优先级高于这里；这一条只服务于「JS 未执行 / 执行失败」
+     时的首帧——没有它的话，内联样式缺失会让 --radius 直接落回
+     12-inkui-root.css 的 4px，虽然数值恰好相同，但那是巧合而非契约。 */
+  --radius: 4px;
 }
 
 * {
@@ -1266,7 +1273,7 @@ footer.site .bar {
   min-height: 24px;
   padding: 3px 10px;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--faint);
   font-family: var(--mono);
@@ -1497,7 +1504,7 @@ img.avatar {
   font-family: var(--serif);
   font-weight: 900;
   font-size: 22px;
-  border-radius: 4px;
+  border-radius: var(--radius);
   flex: none;
 }
 
@@ -1672,7 +1679,7 @@ img.avatar {
   line-height: 1;
   color: var(--mut);
   border: 1px solid var(--line);
-  border-radius: 99px;
+  border-radius: var(--radius);
   padding: 7px 13px;
   transition: color 0.15s var(--ease), background 0.15s var(--ease), border-color 0.15s var(--ease);
 }
@@ -1758,7 +1765,7 @@ img.avatar {
   color: var(--mut);
   background: transparent;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 5px 10px;
   cursor: pointer;
   transition: color 0.15s var(--ease), background 0.15s var(--ease), border-color 0.15s var(--ease);
@@ -1965,7 +1972,7 @@ img.avatar {
   border: 1px solid rgba(255, 255, 255, 0.4);
   background: rgba(0, 0, 0, 0.45);
   color: #fff;
-  border-radius: 4px;
+  border-radius: var(--radius);
   display: grid;
   place-items: center;
   padding: 0;
@@ -2356,7 +2363,7 @@ img.avatar {
   max-width: 100%;
   max-height: calc(88vh - 48px);
   object-fit: contain;
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: #000;
 }
 
@@ -2429,6 +2436,58 @@ img.avatar {
   border: 1px dashed var(--line);
   border-radius: var(--radius);
   padding: 12px 14px;
+}
+
+/* 圆角设置页的实时预览：三个「不看数字看效果」的样本。
+   前两个跟随输入值（由 TSX 写内联 borderRadius），第三个故意**不跟随**
+   ——把「头像不参与统一」这件事直接摆在站长眼前，比写在说明文字里有效。 */
+.radius-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.radius-preview-item,
+.radius-preview-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  padding: 0 16px;
+  font-size: 12.5px;
+  transition: border-radius 0.15s var(--ease);
+}
+
+.radius-preview-item {
+  min-width: 96px;
+  border: 1px solid var(--line);
+  background: var(--softer);
+  color: var(--fg);
+}
+
+.radius-preview-btn {
+  border: 1px solid var(--fg);
+  background: var(--fg);
+  color: var(--bg);
+}
+
+/* 恒为 50%：与真实头像同一条规则，让它看起来就是「不跟随」的那个。 */
+.radius-preview-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--softer);
+  font-size: 11px;
+  color: var(--mut);
+  text-align: center;
+  line-height: 1.2;
+  padding: 0 4px;
 }
 
 /* 与前台首页 .slogan 同款：预览要能代表实际观感，不能自己另发明一套排版。 */
@@ -2546,4 +2605,48 @@ img.avatar {
   display: grid;
   gap: 10px;
   padding: 2px 0;
+}
+
+/* ============================================================
+   站点统一圆角（--radius）的适用面
+   ------------------------------------------------------------
+   站长在「站点设置」里设的圆角只作用于**目标元素**——卡片、按钮、输入框、
+   下拉、浮层、菜单项、分页器这类方形排版件。以下**特殊元素**保持自身形状、
+   不跟随统一设置：
+
+     ① 头像与圆形控件（50%）：.avatar / .cav / .radius-preview-avatar、
+        灯箱与缩略图上的圆形按钮、加载指示器；
+     ② 标签与徽章：.utag、.aside .anav .bdg，以及 InkUI 的 .badge / .st；
+     ③ 代码框内部：kbd、行内 code、代码块里的复制按钮与滚动条；
+     ④ 下划线输入框（.inp）与滚动条。
+
+   ink-design 是只读依赖（站点不改它的源码），组件内写死数值的目标元素在
+   下面一节覆盖回 --radius。
+   ============================================================ */
+
+/* ink-design 里的目标元素：把硬编码圆角拉回站点设置。
+   这里必须用 !important，不能靠「app.css 是最后一条样式导入」。Toolbar / Select /
+   CopyButton 只在**懒加载页面**里用（后台编辑器、媒体库），它们的样式片段会被
+   拆进各自的异步 chunk（Editor-*.css、MediaAdmin-*.css），由 __vitePreload 在
+   路由切换时才插入 <link>——**晚于** main.css。同特异性下后加载者胜，于是
+   InkUI 的 .tbtn{4px} 会反过来盖住这里的变量。ink-design 自身只对
+   prefers-reduced-motion 用过 !important，没有一处用它设 border-radius，
+   所以这样覆盖不会打架。 */
+.inp.box,                      /* 多行输入框（原 3px） */
+.cpbtn,                        /* 复制按钮（原 3px） */
+.tbtn,                         /* 工具栏按钮（原 4px） */
+.tbtn[data-tip]:hover::after,  /* 工具栏按钮的浮层提示（原 3px） */
+.modal-close,                  /* 模态关闭按钮（原 3px） */
+.select-tag,                   /* 下拉框里的已选标签（原 3px） */
+.anav a                        /* 后台导航项（原 4px） */ {
+  border-radius: var(--radius) !important;
+}
+
+/* 分页器与上下内容保持 16px 呼吸间距。
+   InkUI 的 .pagination 只负责内部排版、不含外边距（间距留给使用方），而站点
+   里分页器总是紧跟在列表/表格之后，「贴着上一块」是它唯一的观感问题——统一
+   在这里给上下 16px，比在每个调用点各写一份内联样式可靠。 */
+.pagination {
+  margin-top: 16px;
+  margin-bottom: 16px;
 }

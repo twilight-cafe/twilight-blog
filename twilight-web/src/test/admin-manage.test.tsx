@@ -212,4 +212,24 @@ describe('MediaAdmin', () => {
     expect(screen.getAllByText('上传成功').length).toBeGreaterThan(0)
     void NOW
   })
+
+  it('复制按钮给绝对地址（能直接贴进浏览器地址栏），img 仍用相对路径', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+
+    client.blog.listMedia.mockResolvedValue(paged([
+      makeMedia({ id: 7, url: '/api/media/7', original_name: 'p.png' }),
+    ]))
+
+    const { container } = renderNode(<MediaAdmin />)
+    await waitFor(() => expect(screen.getByText('p.png')).toBeTruthy())
+
+    // 展示层必须保持相对路径：写死 origin 会在反向代理/多域名/vite 代理下裂图
+    expect(container.querySelector('img[src="/api/media/7"]')).toBeTruthy()
+
+    fireEvent.click(container.querySelector('.mact .cpbtn') as HTMLElement)
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/api/media/7`),
+    )
+  })
 })

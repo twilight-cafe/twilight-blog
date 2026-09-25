@@ -50,10 +50,7 @@ func Acquire(path string) (*Handle, error) {
 		info.Executable = executable
 	}
 
-	data, err := json.Marshal(info)
-	if err != nil {
-		return nil, fmt.Errorf("encode the pid file: %w", err)
-	}
+	data, _ := json.Marshal(info)
 	data = append(data, '\n')
 
 	if err := os.WriteFile(path, data, 0o600); err != nil {

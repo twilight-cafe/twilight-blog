@@ -8,15 +8,21 @@
 // 一个漏写就静默变成存储型 XSS，而且类型检查不会报错。把极性翻过来之后，
 // 漏写只会让文章少渲染一点格式，不会变成漏洞。
 //
+// 渲染器本身是**懒加载**的（见 `lib/markdown-loader.ts`）：KaTeX 与 highlight.js
+// 是首屏包里最重的两块，只有这里才需要它们。所以本组件有一个「等渲染器」的状态，
+// 取不到时给占位、加载失败时给转义后的原文——**绝不**降级成不转义的注入。
+//
 // enhanceCodeBlocks 是渲染后的 DOM 后处理：给每个 <pre> 包一层容器、加语言标签
 // 和「复制」按钮。之所以用命令式 DOM 而非在管线里产出按钮，是因为复制交互
 // （clipboard、定时器）难以在纯 HTML 字符串阶段实现。
 // 注意：复制成功的提示用 setTimeout 还原，所有 timer 收进 ref 集合，卸载时统一
 // clearTimeout，避免组件已卸载还去改按钮文字（内存/警告泄漏）。
 
-import { useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react'
-import { renderCommentMarkdown, renderMarkdown } from '../lib/markdown'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { escapeHtml } from '../lib/format'
+import { loadMarkdown, peekMarkdown } from '../lib/markdown-loader'
 import { useSiteCodeLines } from '../lib/site'
+import { Loading } from './common'
 
 interface ContentViewProps {
   text: string
@@ -112,10 +118,34 @@ export default function ContentView({ text, className = '', trusted = false }: C
   // 样式表而不是内联 max-height：具体怎么限（行高、内边距的合成）是 CSS 的
   // 事，这里只负责「多少行」这一个数字。
   const codeLines = useSiteCodeLines()
+  // 渲染器是懒加载块。**用 peek 当初始值而不是从 null 起步**：已经加载过之后，
+  // 后续挂载（翻页、切文章、列表里每条评论）必须在首次渲染就拿到它，否则每次
+  // 都要先空一帧再填内容。
+  const [renderer, setRenderer] = useState(peekMarkdown)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    if (renderer) return
+    let alive = true
+    loadMarkdown()
+      .then((module) => {
+        if (alive) setRenderer(module)
+      })
+      .catch(() => {
+        // 只有「连渲染器都拿不到」才算失败。降级不在这里做，见下面的 failed 分支。
+        if (alive) setFailed(true)
+      })
+    return () => {
+      alive = false
+    }
+  }, [renderer])
+
   const html = useMemo(
-    // 注意极性与 prop 名一致：trusted 才走文章管线，默认走白名单管线。
-    () => (trusted ? renderMarkdown(text || '') : renderCommentMarkdown(text || '')),
-    [trusted, text],
+    () => (renderer
+      // 注意极性与 prop 名一致：trusted 才走文章管线，默认走白名单管线。
+      ? (trusted ? renderer.renderMarkdown(text || '') : renderer.renderCommentMarkdown(text || ''))
+      : null),
+    [renderer, trusted, text],
   )
 
   // 为什么是「无依赖的 layout effect」而不是 useEffect(..., [html])：
@@ -126,6 +156,8 @@ export default function ContentView({ text, className = '', trusted = false }: C
   // 所以必须在**每次**提交后重新检查一遍。enhanceCodeBlocks 幂等（已包壳的
   // pre 直接跳过），重复执行没有副作用；layout effect 保证重包发生在 paint
   // 之前，不会闪一下裸代码。
+  // 还没拿到渲染器时 ref.current 是 null（此时渲染的是占位），enhanceCodeBlocks
+  // 的空 root 守卫正好接住这一步。
   useLayoutEffect(() => {
     const pending = timers.current
     enhanceCodeBlocks(ref.current, pending)
@@ -135,12 +167,20 @@ export default function ContentView({ text, className = '', trusted = false }: C
     }
   })
 
-  return (
-    <div
-      ref={ref}
-      className={`plain-body ${className}`.trim()}
-      style={{ '--code-max-lines': codeLines } as CSSProperties}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  )
+  const shellProps = {
+    className: `plain-body ${className}`.trim(),
+    style: { '--code-max-lines': codeLines } as CSSProperties,
+  }
+
+  if (failed) {
+    // 降级成**转义后的原文**：宁可让人看到没排版的 Markdown，也不要白屏。
+    // 转义这一步不能省——评论是不可信输入，这条路径绝不能把原文当 HTML 注进去。
+    return (
+      <div {...shellProps} dangerouslySetInnerHTML={{ __html: `<p>${escapeHtml(text || '')}</p>` }} />
+    )
+  }
+
+  if (html === null) return <Loading height={160} />
+
+  return <div ref={ref} {...shellProps} dangerouslySetInnerHTML={{ __html: html }} />
 }

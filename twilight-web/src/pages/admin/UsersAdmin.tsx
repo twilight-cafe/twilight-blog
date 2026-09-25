@@ -79,7 +79,7 @@ export default function UsersAdmin() {
           </div>
         </div>
       )}
-      <Pagination current={page} total={totalPages} pageSize={1} onChange={setPage} />
+      <Pagination align="center" current={page} total={totalPages} pageSize={1} onChange={setPage} />
     </>
   )
 }

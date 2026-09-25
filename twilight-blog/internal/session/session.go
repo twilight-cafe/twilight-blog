@@ -57,6 +57,10 @@ var (
 	ErrSessionExpired  = errors.New("session expired")
 )
 
+// randRead is crypto/rand.Read behind a variable so tests can exercise the
+// otherwise-impossible entropy-failure branches deterministically.
+var randRead = rand.Read
+
 // Session 是解析成功后的服务端会话。
 type Session struct {
 	TokenHash string
@@ -293,7 +297,7 @@ func HashToken(token string) string {
 // 必须用 crypto/rand：math/rand 的序列可预测，等于没有会话安全。
 func randomToken() (string, error) {
 	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := randRead(buf); err != nil {
 		return "", fmt.Errorf("generate token: %w", err)
 	}
 	return hex.EncodeToString(buf), nil

@@ -1,9 +1,21 @@
 // Package mediaconv 调用外部二进制（cwebp / ffmpeg / avconv）做媒体转码。
 //
-// 定位：这是**可选增强**而不是必需依赖。Detect 找不到工具不算错误，
-// 只是把对应能力关掉，上传的文件保持原格式（router 会为此打一条 Warn）。
-// 因此本包所有 Convert* 方法在能力未启用时返回错误，调用方必须能接受
-// 「不转码、原样存储」这条路径。
+// # WebP 编码器是硬性依赖
+//
+// 站点承诺「图片一律以 WebP 落盘」，而这个承诺只能靠真正的编码器兑现：Go 标准库
+// 与 golang.org/x/image 都只有 WebP 解码器，没有编码器。所以 Detect 找不到 WebP
+// 编码器时返回 ErrWebPUnavailable，调用方必须让**进程启动失败**（见 main.go）
+// 而不是降级运行。
+//
+// 这条硬约束是有来历的：旧实现把「找不到 cwebp」当成可选能力缺失，于是上传退回
+// 原格式落盘。当 settings.json 里钉的是另一台机器的绝对路径时，症状就是「上传
+// 头图和头像后磁盘上还是 jpg/png」——而且只在有人去看磁盘时才会被发现。
+//
+// # WebM 能力目前未接线
+//
+// ConvertAudioToWebM 与它的探测都保留着，但**站点当前不使用**：音视频一律原样
+// 落盘（见 service.StoreFile 里那段说明）。保留而非删除，是为了让重新启用只是
+// 加回一个分支的事，而不是把这段实现重写一遍。
 package mediaconv
 
 import (
@@ -32,6 +44,11 @@ const conversionTimeout = 2 * time.Minute
 // ffmpeg 处理大文件时输出极其啰嗦，直接 CombinedOutput 会把它们全缓冲在内存里。
 const maxCapturedOutput = 16 << 10
 
+// ErrWebPUnavailable 表示这台机器上没有任何可用的 WebP 编码器。
+//
+// 它是一条**启动失败**，不是「可选能力没开」：见包注释里关于硬性依赖的说明。
+var ErrWebPUnavailable = errors.New("no WebP encoder is available")
+
 // Converter 描述有哪些外部转码工具可用。
 // WebPKind 记录选中工具的类型（"cwebp" 或 "ffmpeg"），因为两者的命令行不同。
 type Converter struct {
@@ -42,26 +59,49 @@ type Converter struct {
 	WebMTool    string
 }
 
-// Detect 探测 WebP 与 WebM 转码工具：先看配置里指定的路径，再退回 PATH 查找。
-// 工具缺失不算错误——它只意味着对应转码能力关闭，上传仍然照常进行。
-func Detect(webpTool, webmTool string) *Converter {
+// Detect 探测可用的转码工具：先看配置里指定的路径，再退回 PATH 查找。
+//
+// WebP 编码器是**硬性依赖**：一个都没找到就返回包装了 ErrWebPUnavailable 的错误，
+// 调用方应当让进程启动失败。错误信息里带上该改哪个配置键、该装什么——这条路径上
+// 唯一的读者是正在排障的运维，一句「找不到 cwebp」不足以让他动手。
+//
+// WebM 工具缺失不算错误：它只意味着 WebM 能力关闭（而站点目前也并未使用它，
+// 见包注释「WebM 能力目前未接线」）。
+func Detect(webpTool, webmTool string) (*Converter, error) {
 	logging.Debugf("[mediaconv] detecting conversion tools webp_tool=%q webm_tool=%q", webpTool, webmTool)
 	c := &Converter{}
 
-	if path, kind := detectWebP(webpTool); path != "" {
-		c.WebPEnabled = true
-		c.WebPTool = path
-		c.WebPKind = kind
-		logging.Debugf("[mediaconv] WebP tool detected: kind=%s path=%s", kind, path)
+	path, kind := detectWebP(webpTool)
+	if path == "" {
+		return nil, webPUnavailableError(webpTool)
 	}
+	c.WebPEnabled = true
+	c.WebPTool = path
+	c.WebPKind = kind
+	logging.Debugf("[mediaconv] WebP tool detected: kind=%s path=%s", kind, path)
 
-	if path := detectWebM(webmTool); path != "" {
+	if webmPath := detectWebM(webmTool); webmPath != "" {
 		c.WebMEnabled = true
-		c.WebMTool = path
-		logging.Debugf("[mediaconv] WebM tool detected: path=%s", path)
+		c.WebMTool = webmPath
+		logging.Debugf("[mediaconv] WebM tool detected: path=%s", webmPath)
 	}
 
-	return c
+	return c, nil
+}
+
+// webPUnavailableError 组装一条能照着做的启动失败信息。
+//
+// 「配了路径、但那个文件不在」与「什么都没配、PATH 里也没有」是两种处境，处置方式
+// 并不相同——前者多半是把另一台机器的 settings.json 拷了过来，改配置即可；后者
+// 要装东西。所以分两种写法，而不是笼统一句「找不到 cwebp」。
+func webPUnavailableError(configured string) error {
+	const guidance = "install cwebp (recommended, from libwebp) or ffmpeg and make it reachable on PATH, " +
+		"or point webp_tool in settings.json at the binary"
+	if configured != "" {
+		return fmt.Errorf("%w: the configured webp_tool %q does not exist and neither cwebp nor ffmpeg "+
+			"was found on PATH; %s", ErrWebPUnavailable, configured, guidance)
+	}
+	return fmt.Errorf("%w: neither cwebp nor ffmpeg was found on PATH; %s", ErrWebPUnavailable, guidance)
 }
 
 // ConvertImageToWebP 把图片转成 WebP，按 WebPKind 选择 cwebp 或 ffmpeg 的命令行。
@@ -256,15 +296,24 @@ func detectWebM(configured string) string {
 }
 
 // execNames 在 Windows 上额外列出 .exe/.bat/.cmd 变体。
-//
-// 严格说这不是必需的：Go 的 exec.LookPath 在 Windows 上本来就会按 PATHEXT
-// 自动补后缀。显式列出只是让候选名一目了然，顺带兼容 PATHEXT 被改坏的环境。
 func execNames(base string) []string {
+	return toolNameCandidates(base, runtime.GOOS)
+}
+
+// toolNameCandidates 给出某个候选名在给定平台上要尝试的全部写法。
+//
+// 平台作为参数传进来、而不是在函数里直接读 runtime.GOOS，是为了让两个分支都能被测到：
+// runtime.GOOS 是编译期常量，直接判断的话永远只有一个分支可达，而这段逻辑在两个平台
+// 上**确实不同**，两边都该有人守着——只在你手上这台机器上成立的分支，等于另一台上没测。
+//
+// 严格说这个后缀列表不是必需的：Go 的 exec.LookPath 在 Windows 上本来就会按 PATHEXT
+// 自动补后缀。显式列出只是让候选名一目了然，顺带兼容 PATHEXT 被改坏的环境。
+func toolNameCandidates(base, goos string) []string {
 	names := []string{base}
-	if runtime.GOOS == "windows" {
-		names = append(names, base+".exe", base+".bat", base+".cmd")
+	if goos != "windows" {
+		return names
 	}
-	return names
+	return append(names, base+".exe", base+".bat", base+".cmd")
 }
 
 // exists 报告路径是否是一个存在的**文件**（目录不算，空路径也不算）。

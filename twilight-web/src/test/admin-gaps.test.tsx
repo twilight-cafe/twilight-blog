@@ -16,8 +16,9 @@ import TagsAdmin from '../pages/admin/TagsAdmin'
 import MediaAdmin from '../pages/admin/MediaAdmin'
 import { DialogProvider } from '../lib/dialog'
 import { ToastProvider } from '../lib/toast'
+import { BlogApiError } from 'twilight-blog-api'
 import { resetSiteCacheForTests } from '../lib/site'
-import { adminMe, getSharedClientMock, makeArticle, makeComment, makeMedia, makeMoment, makePage, makeTag, makeUser, resetClientMock, visitorMe } from './helpers'
+import { adminMe, expireEmailCodeCooldown, getSharedClientMock, makeArticle, makeComment, makeMedia, makeMoment, makePage, makeTag, makeUser, resetClientMock, visitorMe } from './helpers'
 
 vi.mock('../lib/client', async () => {
   const { getSharedClientMock } = await import('./helpers')
@@ -53,6 +54,19 @@ function renderPlain(ui: React.ReactElement) {
       <DialogProvider>{ui}</DialogProvider>
     </ToastProvider>,
   )
+}
+
+/**
+ * 点「发送验证码」。请求进行中按钮显示「发送中…」且 disabled，请求失败后
+ * **toast 落地与状态复位是两次独立提交**——ink-design 的 message 走自己的
+ * createRoot，实测（别名开启/关闭做 A/B）它可能先于主树的 setSending(false) 提交。
+ *
+ * 所以「失败后再发一次」必须等按钮复活再点，不能假设它已经复活：直接 getByRole
+ * 会在中间态抛「找不到按钮」，把一个无害的提交顺序差异表现成真实故障。
+ */
+async function clickSendCode(): Promise<void> {
+  await waitFor(() => expect(screen.getByRole('button', { name: '发送验证码' })).toBeTruthy())
+  fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
 }
 
 beforeEach(() => {
@@ -242,7 +256,7 @@ describe('注册与找回密码分支', () => {
 
     // 再发一次成功 → codeSent 置真，出现验证码输入与「重新发送」按钮
     client.blog.requestEmailCode.mockResolvedValueOnce({ message: 'ok' })
-    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
+    await clickSendCode()
     await waitFor(() => expect(container.querySelector('input[placeholder=验证码]')).toBeTruthy())
 
     // 邮箱非法
@@ -266,7 +280,7 @@ describe('注册与找回密码分支', () => {
     await waitFor(() => expect(screen.getAllByText('发送验证码失败').length).toBeGreaterThan(0))
 
     client.blog.requestEmailCode.mockResolvedValueOnce({ message: 'ok' })
-    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
+    await clickSendCode()
     await waitFor(() => expect(container.querySelector('input[placeholder=验证码]')).toBeTruthy())
 
     const form = container.querySelector('form') as HTMLFormElement
@@ -287,6 +301,39 @@ describe('注册与找回密码分支', () => {
     await waitFor(() => expect(screen.getByText('LOGIN-STUB')).toBeTruthy(), { timeout: 3000 })
     await waitFor(() => expect(screen.getAllByText('密码已重置，请使用新密码登录').length).toBeGreaterThan(0))
   })
+
+  it('ForgotPassword：服务端 429 时按钮进入冷却；非 429 失败不锁', async () => {
+    const { container } = renderRouted(<ForgotPassword />, '/admin/forgot', '/admin/forgot')
+    const email = container.querySelector('input[type=email]') as HTMLInputElement
+    fireEvent.change(email, { target: { value: 'a@x.com' } })
+    await waitFor(() => expect(email.value).toBe('a@x.com'))
+
+    // 429 → 冷却。必须用真正的 BlogApiError：isRateLimited 走 instanceof 收窄。
+    client.blog.requestEmailCode.mockRejectedValueOnce(new BlogApiError('太频繁', {
+      status: 429, method: 'POST', path: '/api/auth/email-code',
+    }))
+    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
+    // 等按钮真正落进冷却态（倒计时标签 + 禁用），这同时保证请求已经结算完。
+    await waitFor(() => {
+      const button = screen.getByRole('button', { name: /秒后可重发/ })
+      expect(button.hasAttribute('disabled')).toBe(true)
+    })
+
+    // 冷却结束后非 429 失败**不**重新锁住。
+    await expireEmailCodeCooldown('a@x.com')
+    await waitFor(() => {
+      const button = screen.getByRole('button', { name: '发送验证码' })
+      expect(button.hasAttribute('disabled')).toBe(false)
+    })
+    client.blog.requestEmailCode.mockRejectedValueOnce(new Error('发送验证码失败'))
+    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
+    await waitFor(() => expect(screen.getAllByText('发送验证码失败').length).toBeGreaterThan(0))
+    // 非 429 不启动冷却：按钮回到可点的「发送验证码」，用户可以立刻重试。
+    await waitFor(() => {
+      const button = screen.getByRole('button', { name: '发送验证码' })
+      expect(button.hasAttribute('disabled')).toBe(false)
+    })
+  })
 })
 
 describe('SiteSettings 分支', () => {
@@ -306,7 +353,12 @@ describe('SiteSettings 分支', () => {
     // 合法长度但接口失败
     fireEvent.change(textarea(), { target: { value: '合法描述' } })
     fireEvent.submit(textarea().closest('form') as HTMLFormElement)
-    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({ description: '合法描述', code_block_max_lines: 20 }))
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({
+      description: '合法描述',
+      code_block_max_lines: 20,
+      home_page_size: 12,
+      border_radius: 4,
+    }))
     await waitFor(() => expect(screen.getAllByText('保存失败').length).toBeGreaterThan(0))
   })
 })

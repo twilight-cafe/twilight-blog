@@ -37,7 +37,48 @@ var (
 	ErrEmptyFile            = errors.New("uploaded file is empty")
 	ErrImageTooLarge        = errors.New("image is too large to decode")
 	ErrBusy                 = errors.New("media converter is busy")
+	// ErrConversionUnavailable 表示图片要在落盘前转成 WebP，而本站没有任何可用的
+	// 编码器。它是**部署问题**，因此 handler 让它落到 500 而不是 4xx：换个文件
+	// 重传没有用，要动的是这台机器。
+	//
+	// 正常情况下走不到这里——启动路径已经先拦了一道（main.go 的启动检测）。
+	// 它存在的意义是让「原样落盘」不能作为静默降级重新长回来。
+	ErrConversionUnavailable = errors.New("media conversion is not available")
+	// ErrInvalidStorageName 表示数据库里的 media.storage_name 不是一个可以安全
+	// 拼接成路径的普通文件名。
+	//
+	// 为什么会有这种值：storage_name 由本服务生成，**通过 HTTP 注入不了**；但
+	// restore 会把归档里的 blog.db 整体换上，而 backup 包只校验归档的**文件路径**、
+	// 不校验数据库**内容**。于是一份恶意归档就能往 media 表塞进
+	// `../../../../etc/passwd`，让公开的 GET /api/media/:id 变成任意文件读取
+	// （第七轮渗透测试 R7-02）。校验放在这里，是因为「拼路径」这个动作只发生在这里。
+	//
+	// 它是**数据损坏**而不是客户端错误，所以 handler 让它落到 500：静默 404 会让
+	// 「库里有一行坏数据」永远不为人知。
+	ErrInvalidStorageName = errors.New("invalid media storage name")
+	// ErrInvalidMediaMimeType 表示数据库里的 media.mime_type 不是一个允许通过
+	// 公开读接口回放的类型。它和 storage_name 一样属于「数据损坏」而不是客户端
+	// 错误：恶意归档可以还原任意 blog.db，把一行 media 的 mime_type 改成
+	// text/html 或 application/javascript。如果 handler 原样回放，就会把同源
+	// 页面/脚本端点交给攻击者，形成存储型 XSS。
+	ErrInvalidMediaMimeType = errors.New("invalid media mime type")
 )
+
+// removeFile 是 os.Remove 的间接层，只为让「文件删不掉」这条告警分支可测。
+//
+// 为什么不能靠文件系统构造：POSIX 上删除取决于**父目录**是否可写，而 saveFile 每次
+// 都会把 mediaDir chmod 回 0700（见它的说明），于是「把目录改 0500」这种构造会被
+// 悄悄抵消——TestUpgradeToWebPWarnsWhenTheOriginalFileCannotBeRemoved 因此长期
+// 红着，而它守的告警路径实际上从未被验证过（第七轮渗透测试报告 §4.2）。
+// 与 restore_command.go 里的 isTerminal 是同一种做法：给一条无法从外部伪造的分支
+// 留一个可替换的钩子。
+var removeFile = os.Remove
+
+// mkdirAll 是 os.MkdirAll 的间接层，用途与 removeFile 相同：saveFile 开头那一步
+// 「媒体目录建不出来」在 POSIX 上很难稳定构造（目录一旦存在 MkdirAll 就成功，而
+// 源文件必须先在同一个目录里存在），而它正是 UpgradeToWebP 里 saveFile 失败那一支
+// 的入口。钩子让这条分支在任何平台上都能被钉住，与 removeFile 是同一套做法。
+var mkdirAll = os.MkdirAll
 
 // 解码资源闸门。这三个常量共同决定「一次上传最坏能吃掉多少内存」，改动任何一个
 // 都要重新算一遍：maxImagePixels × 4 字节 × maxConcurrentTranscodes。
@@ -198,8 +239,9 @@ type transcoding struct {
 // 目录约定：所有文件都落在 mediaDir 下，文件名（StorageName）由服务层生成，
 // 与用户上传时的原始名无关——OriginalName 只作为展示与留档使用。
 //
-// 存储策略：图片一律转为 WebP；音频在配置了转换器时转 WebM；
-// 其余类型原样落盘。是否转换由 mediaconv.Converter 的能力开关决定。
+// 存储策略：**图片一律转为 WebP**，转不了就拒绝上传；音频、视频与其余类型原样
+// 落盘。转码能力由 mediaconv.Converter 决定，而 WebP 编码器本身是启动阶段的
+// 硬性依赖（见 mediaconv 包注释）。
 type MediaService struct {
 	repo     model.MediaRepository
 	mediaDir string
@@ -211,7 +253,12 @@ type MediaService struct {
 }
 
 // NewMediaService 构造服务，并为两个可选依赖补上安全的默认值：
-// mediaDir 为空时落到 "media"，conv 为 nil 时用零值转换器（即不启用任何转码）。
+// mediaDir 为空时落到 "media"，conv 为 nil 时用零值转换器。
+//
+// ⚠️ 零值转换器意味着没有 WebP 编码器，于是**任何图片上传都会被拒绝**
+// （见 StoreFile 对 ErrConversionUnavailable 的说明）。所以这个默认值不是
+// 「降级可用」，它只是让调用方少写一次 nil 检查；生产路径必须注入一个真正可用的
+// Converter——router 拿到的正是 main.go 启动时探测出来的那一个。
 func NewMediaService(repo model.MediaRepository, mediaDir string, conv *mediaconv.Converter) *MediaService {
 	if mediaDir == "" {
 		mediaDir = "media"
@@ -357,41 +404,43 @@ func (s *MediaService) StoreFile(ctx context.Context, header *multipart.FileHead
 	finalMime := mimeType
 	converted := false
 
-	// 图片一律转成 WebP；音频在配置了转换器时转成 WebM；
-	// 其余类型原样落盘，不做任何处理。
+	// 图片**一律**转成 WebP；其余类型原样落盘，不做任何处理。
 	//
-	// ⚠️ 转换器**不可用**时必须退化成「原样落盘」，而不是拒绝上传。
-	// 旧实现在 !WebPEnabled 时直接返回 ErrUnsupportedMediaType（→ 400），
-	// 这与本包与 mediaconv 的设计声明（「找不到工具只关闭对应能力，
-	// 上传照常进行」/ router 里那句 "Images will be stored as-is"）**直接矛盾**。
-	// 后果在 Linux 上尤其明显：发行版默认不装 cwebp/ffmpeg，于是**任何 JPG/PNG
-	// 都传不上去**，博客没法配图。
+	// ⚠️ 图片这条路没有任何例外，尤其**不再**退化成「原样落盘」。
+	// 旧实现在 !WebPEnabled 时只打一条 Warn 就 break，于是上传默默退回原格式。
+	// 触发条件比想象的近：settings.json 里的 webp_tool 一旦钉的是**另一台机器**的
+	// 绝对路径（例如从 Windows 开发机复制到 Linux 服务器），exists() 为假、PATH 里
+	// 又没有 cwebp，症状就是「上传头图和头像后磁盘上还是 jpg/png」——而且只在有人
+	// 真去看磁盘时才会被发现。这与站点对外声明的「图片一律 WebP」是矛盾的。
 	//
-	// 代价是失去「重新编码以抹掉多态载荷」这层纵深防御——但内容嗅探
-	// （classify，不信任客户端 Content-Type）、nosniff 与 CSP 都还在，
-	// 而「完全不能传图」显然比这层加固更糟。
+	// 现在的选择是拒绝上传（ErrConversionUnavailable → 500），因为这是**部署问题**：
+	// 启动路径本来就已经把它拦下了（main.go 的启动检测），能走到这里说明配置在运行
+	// 期内被改动了。代价是失去「重新编码以抹掉多态载荷」这层纵深防御——但内容嗅探
+	// （classify，不信任客户端 Content-Type）、nosniff 与 CSP 都还在，而「悄悄存下
+	// 原格式」比这层加固更糟：它让站点的存储策略变成不可信的。
+	//
+	// 如果将来真要恢复「没有编码器也能用」，那应当是一次显式的产品决策（并说清楚
+	// 图片将以原格式落盘），而不是一个兜底分支。
+	//
+	// 音视频转 WebM 已**暂时关闭**：音频与视频一律原样落盘。重新启用时在下面补回
+	// 一个 audio 分支即可，mediaconv.ConvertAudioToWebM 及其探测都还在
+	// （见 mediaconv 包注释「WebM 能力目前未接线」）。
+	needsWebP := mediaType == model.MediaTypeImage && !isWebP(mimeType)
+	if needsWebP && !s.conv.WebPEnabled {
+		logging.Errorf("[media] refusing to store %q as-is: images must be re-encoded to WebP, "+
+			"but this build found no WebP encoder", header.Filename)
+		return nil, fmt.Errorf("%w: %q was rejected instead of being stored in its original format",
+			ErrConversionUnavailable, header.Filename)
+	}
+
 	var plan *transcoding
-	switch {
-	case mediaType == "image" && !isWebP(mimeType):
-		if !s.conv.WebPEnabled {
-			logging.Warnf("[media] no WebP converter available; storing %q in its original format "+
-				"(install cwebp or ffmpeg to enable conversion)", header.Filename)
-			break
-		}
+	if needsWebP {
 		plan = &transcoding{
 			ext:      ".webp",
 			mimeType: "image/webp",
 			label:    "WebP",
 			tool:     s.conv.WebPTool,
 			convert:  s.conv.ConvertImageToWebP,
-		}
-	case mediaType == "audio" && s.conv.WebMEnabled && !isWebM(mimeType):
-		plan = &transcoding{
-			ext:      ".webm",
-			mimeType: "audio/webm",
-			label:    "WebM",
-			tool:     s.conv.WebMTool,
-			convert:  s.conv.ConvertAudioToWebM,
 		}
 	}
 
@@ -441,6 +490,102 @@ func (s *MediaService) StoreFile(ctx context.Context, header *multipart.FileHead
 	return media, nil
 }
 
+// UpgradeToWebP 把一条**已经落盘**的图片重新编码为 WebP，并就地更新它的记录。
+//
+// 它是 upgrade-media 子命令的执行体，用来给「上线这套逻辑之前传进来的图片」补上
+// 新上传已经享受的待遇。与 StoreFile 的差别在于输入不是上传流，而是媒体目录里已有
+// 的文件，所以类型嗅探与解码尺寸闸门都不再重复——那些文件当初就是穿过它们进来的。
+// 但转码槽位仍然要占（理由见 maxConcurrentTranscodes）：这条路上的 cwebp 一样会按
+// 宽×高×4 分配缓冲，而升级命令完全可能与一个正在服务的实例同时跑。
+//
+// 落盘顺序刻意与 StoreFile **相反**（新文件 → 改库 → 删旧文件），为的是让「库里
+// 指着的那个文件」在每一步之后都仍然存在：
+//  1. 先写新文件：此刻库还指着旧文件，而旧文件完好无损；
+//  2. 再改库：改成功之后，读到的一定是新文件；
+//  3. 最后删旧文件：删不掉只留下一个无人引用的孤儿文件（记一条 Warn），
+//     不影响任何读取路径。
+//
+// 反过来（先删旧文件）会打开一个「库里指着、磁盘上没有」的窗口，而这期间每一次
+// GET /api/media/:id 都会返回 404。
+//
+// 任一步失败都不会留下半成品：新文件已经在盘上、但库没改成功时，新文件被删掉、
+// 记录保持原样，重跑一遍即可。
+func (s *MediaService) UpgradeToWebP(ctx context.Context, media *model.Media) (*model.Media, error) {
+	logging.Debugf("[media] upgrading id=%d storage_name=%s mime=%s", media.ID, media.StorageName, media.MimeType)
+
+	if media.MediaType != model.MediaTypeImage {
+		return nil, fmt.Errorf("%w: media %d is %q, not an image", ErrUnsupportedMediaType, media.ID, media.MediaType)
+	}
+	if !s.conv.WebPEnabled {
+		return nil, fmt.Errorf("%w: no WebP encoder is available", ErrConversionUnavailable)
+	}
+
+	srcPath, err := s.Path(media)
+	if err != nil {
+		return nil, err
+	}
+	if info, err := os.Stat(srcPath); err != nil {
+		return nil, fmt.Errorf("read the original file %s: %w", srcPath, err)
+	} else if info.IsDir() {
+		return nil, fmt.Errorf("read the original file %s: it is a directory", srcPath)
+	}
+
+	// 与 StoreFile 同一套私有临时目录的理由（见那边的长注释）：转码器要自己创建
+	// 输出文件，因此给它一个别人无法写入条目的目录。
+	tmpDir, err := os.MkdirTemp("", "media-upgrade-")
+	if err != nil {
+		return nil, fmt.Errorf("create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tmpOutput := filepath.Join(tmpDir, "output.webp")
+	if err := s.withTranscodeSlot(ctx, func() error {
+		return s.conv.ConvertImageToWebP(ctx, srcPath, tmpOutput)
+	}); err != nil {
+		return nil, err
+	}
+
+	storageBase, err := randomHex(16)
+	if err != nil {
+		return nil, fmt.Errorf("generate storage name: %w", err)
+	}
+	newName := storageBase + ".webp"
+	if err := s.saveFile(tmpOutput, newName); err != nil {
+		return nil, err
+	}
+	newPath := filepath.Join(s.mediaDir, newName)
+
+	info, err := os.Stat(newPath)
+	if err != nil {
+		removeQuietly(newPath)
+		return nil, fmt.Errorf("stat the converted file: %w", err)
+	}
+
+	if err := s.repo.UpdateStorage(ctx, media.ID, newName, "image/webp", info.Size(), true); err != nil {
+		// 库没改成，新文件就成了孤儿。删掉它，维持「磁盘上每个文件都能被一条记录
+		// 解释」这条性质；旧文件与旧记录全程没被动过，重跑一次即可。
+		removeQuietly(newPath)
+		return nil, err
+	}
+
+	updated := *media
+	updated.StorageName = newName
+	updated.MimeType = "image/webp"
+	updated.Size = info.Size()
+	updated.Converted = true
+
+	// 旧文件此刻已经没有任何记录指向它。删不掉不算失败——转换与登记都已完成——
+	// 但必须留下线索，否则这块残留没人查得出来。
+	if err := removeFile(srcPath); err != nil && !os.IsNotExist(err) {
+		logging.Warnf("[media] upgraded id=%d but the original file %s could not be removed: %v",
+			media.ID, srcPath, err)
+	}
+
+	logging.Infof("[media] upgraded id=%d from %s (%s) to %s (%s) size=%d",
+		media.ID, media.StorageName, media.MimeType, updated.StorageName, updated.MimeType, updated.Size)
+	return &updated, nil
+}
+
 func (s *MediaService) Get(ctx context.Context, id int64) (*model.Media, error) {
 	logging.Debugf("[media] get id=%d", id)
 	return s.repo.GetByID(ctx, id)
@@ -456,6 +601,11 @@ func (s *MediaService) List(ctx context.Context, p model.Pagination) ([]model.Me
 // 顺序是先删库、再删文件：库删除失败就直接返回（文件还留着，可重试）；
 // 文件删除失败只记警告、仍然返回成功——此时记录已经没了，
 // 磁盘上留下一个无人引用的文件，比让接口报错更有用（日志里可追）。
+//
+// storage_name 必须先校验（见 Path）：它是数据库里的值，而删除是**破坏性**动作，
+// 未校验的 `../../x` 等于让管理员点一下就把任意文件删掉（R7-02）。
+// 校验放在删库**之前**计算，但它的失败不阻止删库：一条坏记录本身就该被清掉，
+// 只是不能拿它的 storage_name 去碰文件系统。
 func (s *MediaService) Delete(ctx context.Context, id int64) error {
 	logging.Debugf("[media] deleting id=%d", id)
 	media, err := s.repo.GetByID(ctx, id)
@@ -463,11 +613,16 @@ func (s *MediaService) Delete(ctx context.Context, id int64) error {
 		logging.Errorf("[media] get for delete failed id=%d: %v", id, err)
 		return err
 	}
+	path, pathErr := s.Path(media)
 	if err := s.repo.Delete(ctx, id); err != nil {
 		logging.Errorf("[media] delete record failed id=%d: %v", id, err)
 		return err
 	}
-	path := s.Path(media)
+	if pathErr != nil {
+		logging.Warnf("[media] deleted id=%d but refused to touch the file: %v", id, pathErr)
+		logging.Infof("[media] deleted id=%d storage_name=%s", id, media.StorageName)
+		return nil
+	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		logging.Warnf("[media] remove file after delete failed id=%d path=%s: %v", id, path, err)
 	} else {
@@ -477,9 +632,70 @@ func (s *MediaService) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-// Path 返回该媒体在磁盘上的绝对或相对路径（由 mediaDir 与 StorageName 拼成）。
-func (s *MediaService) Path(media *model.Media) string {
-	return filepath.Join(s.mediaDir, media.StorageName)
+// Path 返回该媒体在磁盘上的路径。
+//
+// StorageName 来自数据库，属于**不可信输入**（见 ErrInvalidStorageName 的说明），
+// 所以它不能直接参与路径拼接。这里要求它是**单个普通文件名**：
+//
+//   - 非空、不是 "."；
+//   - filepath.IsLocal：拒绝绝对路径、盘符、以及任何会走出 mediaDir 的形态
+//     （`..`、`a/../../b`……）——它给的正是「拼接结果仍在 mediaDir 之内」这条
+//     性质，所以不需要再补一次 filepath.Rel 复核（那种复核在本函数的输入约束下
+//     恒为真，只会变成一段没人能验的死代码）；
+//   - filepath.Base(name) == name：拒绝任何路径分隔符，即不允许子目录。
+//     它同时排掉了 IsLocal 会放过的 `a/../b`（Clean 后确实还在目录内，但 Base
+//     不等于自身）。
+//
+// 最后再 Lstat 一次拒绝符号链接。因为上面已经把名字限制成单层文件名，所以只有
+// **最后一个分量**可能是链接；拦住它就够了。解包端（internal/backup）本来就
+// 拒绝符号链接，这一步是纵深防御，防的是有人手工往 mediaDir 里放链接。
+// ContentType 返回公开读接口应当使用的安全 Content-Type。
+//
+// 不能直接信任 media.MimeType：它同样是数据库内容，而 restore 会把归档里的
+// blog.db 整体换上。图片必须落在服务端固定的图片 allowlist 内，音视频只允许
+// audio/ 与 video/ 前缀；text/html、application/javascript、image/svg+xml 等
+// 可执行/脚本化类型一律拒绝。合法类型会统一成小写并去掉首尾空白。
+func (s *MediaService) ContentType(media *model.Media) (string, error) {
+	if media == nil {
+		return "", fmt.Errorf("%w: no media record", ErrInvalidMediaMimeType)
+	}
+
+	mimeType := strings.ToLower(strings.TrimSpace(media.MimeType))
+	switch media.MediaType {
+	case model.MediaTypeImage:
+		if supportedImageMimes[mimeType] {
+			return mimeType, nil
+		}
+	case "audio":
+		if strings.HasPrefix(mimeType, "audio/") {
+			return mimeType, nil
+		}
+	case "video":
+		if strings.HasPrefix(mimeType, "video/") {
+			return mimeType, nil
+		}
+	}
+
+	return "", fmt.Errorf("%w: media %d declares type=%q mime=%q", ErrInvalidMediaMimeType, media.ID, media.MediaType, media.MimeType)
+}
+
+func (s *MediaService) Path(media *model.Media) (string, error) {
+	if media == nil {
+		return "", fmt.Errorf("%w: no media record", ErrInvalidStorageName)
+	}
+	name := strings.TrimSpace(media.StorageName)
+	if name == "" || name == "." {
+		return "", fmt.Errorf("%w: %q does not name a file", ErrInvalidStorageName, media.StorageName)
+	}
+	if !filepath.IsLocal(name) || filepath.Base(name) != name {
+		return "", fmt.Errorf("%w: %q is not a plain file name", ErrInvalidStorageName, media.StorageName)
+	}
+
+	full := filepath.Join(s.mediaDir, name)
+	if info, err := os.Lstat(full); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%w: %q is a symbolic link", ErrInvalidStorageName, media.StorageName)
+	}
+	return full, nil
 }
 
 // applyTranscoding 先把转码结果写到中间文件，成功后再移动到最终位置。
@@ -528,7 +744,7 @@ func removeQuietly(path string) {
 // 否则升级只对新部署生效，老部署的 0755 目录会一直留到有人手工改。
 // 沿用 database.Open 与 search.manager 的同一条做法：失败只告警，不影响上传。
 func (s *MediaService) saveFile(srcName, dstName string) error {
-	if err := os.MkdirAll(s.mediaDir, 0o700); err != nil {
+	if err := mkdirAll(s.mediaDir, 0o700); err != nil {
 		return fmt.Errorf("create media dir: %w", err)
 	}
 	if err := os.Chmod(s.mediaDir, 0o700); err != nil {
@@ -695,8 +911,11 @@ func checkImageBudget(width, height int) error {
 			ErrImageTooLarge, width, height, maxImageDimension)
 	}
 	if pixels := int64(width) * int64(height); pixels > maxImagePixels {
-		return fmt.Errorf("%w: %.1f megapixels exceeds the %d megapixel limit",
-			ErrImageTooLarge, float64(pixels)/1e6, maxImagePixels)
+		// 上限也要换算成百万像素再印出来：原先这里印的是 maxImagePixels 的原值，
+		// 于是消息变成「256.0 megapixels exceeds the 40000000 megapixel limit」——
+		// 两个同单位的数字差了六个数量级，读的人只会以为闸门坏了。
+		return fmt.Errorf("%w: %.1f megapixels exceeds the %.0f megapixel limit",
+			ErrImageTooLarge, float64(pixels)/1e6, float64(maxImagePixels)/1e6)
 	}
 	return nil
 }
@@ -704,9 +923,13 @@ func checkImageBudget(width, height int) error {
 // safeExt 取出一个「可安全用于拼文件名」的扩展名：只允许小写字母与数字、
 // 长度不超过 10，否则返回空串。这既避免了把用户输入直接拼进路径，
 // 也避免构造出带路径分隔符或 .. 的名字。
+//
+// 「.」也要拒掉：filepath.Ext("photo.") 返回的就是它，而按上面的契约那不是一个
+// 扩展名（没有任何字母数字）。放过去本身不会造成漏洞——调用方只拿它当查找键，
+// 且拿不准时一律退回 .bin——但它会让这个函数的契约变成一句假话。
 func safeExt(filename string) string {
 	ext := strings.ToLower(filepath.Ext(filename))
-	if ext == "" || len(ext) > 10 {
+	if ext == "" || ext == "." || len(ext) > 10 {
 		return ""
 	}
 	for _, r := range ext[1:] {
@@ -748,20 +971,26 @@ func extensionFor(mimeType, filename string) string {
 	return ".bin"
 }
 
-// isWebP / isWebM 用于判断「是否已经就是目标格式」，从而跳过不必要的转码。
+// isWebP 用于判断「是否已经就是目标格式」，从而跳过不必要的转码。
+//
+// 只有它这一个判断：原先与它成对的 isWebM 随「音视频转 WebM 暂时关闭」一并删掉了
+// （见 StoreFile 里那段说明）。重新启用 WebM 时把它加回来即可，格式是
+// `mimeType == "audio/webm" || mimeType == "video/webm"`。
 func isWebP(mimeType string) bool {
 	return mimeType == "image/webp"
 }
 
-func isWebM(mimeType string) bool {
-	return mimeType == "audio/webm" || mimeType == "video/webm"
-}
-
 // randomHex 生成指定字节数的随机十六进制串，用作落盘文件名的主体——
 // 与原始文件名解耦，既避免重名覆盖，也避免暴露用户上传时的文件名。
+//
+// 这里用 io.ReadFull(rand.Reader, …) 而**不是** crypto/rand.Read。后者在 Go 1.24
+// 之后换了契约：它不再返回错误，而是直接让进程崩掉（见 rand.Read 的注释与
+// issue 66821）。于是它的返回值永远是非 nil 的错误这一支根本走不到，这个函数的
+// error 也就成了一段没人能验、也没人会读的死代码。显式走 Reader 让「取不到随机数」
+// 回到一条**调用方可以处置**的错误路径上：上传失败是 500，而不是整站进程消失。
 func randomHex(bytes int) (string, error) {
 	buf := make([]byte, bytes)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := io.ReadFull(rand.Reader, buf); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil

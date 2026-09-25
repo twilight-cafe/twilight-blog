@@ -418,13 +418,44 @@ export interface SiteSettingsResponse {
    * 在块内上下滚动，而不是把整页撑长。恒输出（服务端不带 omitempty）。
    */
   code_block_max_lines: number;
+  /**
+   * 首页文章列表每页展示的篇数。恒输出（服务端不带 omitempty）。
+   *
+   * 注意前端首页**不读这个字段**来发列表请求——首次请求必须带上正确的
+   * page_size，而等这个响应回来才发就已经晚了。首页改用外壳属性
+   * `data-home-page-size`（见 twilight-web 的 lib/flags.ts）。这个字段保留
+   * 在这里是为了让后台设置在保存后能回读并显示当前值。
+   */
+  home_page_size: number;
+  /**
+   * 站点统一圆角，单位 px。恒输出（服务端不带 omitempty）。
+   *
+   * 作用于**卡片类**组件（卡片、按钮、输入框、下拉、弹窗、分页按钮等），
+   * 不作用于形状即语义的组件：头像恒 50%、胶囊标签恒 999px、勾选框与
+   * 状态点也各自保持原样——那些圆角一旦跟着变就不再是「圆」和「胶囊」了。
+   *
+   * 与 home_page_size 同理，前端也**不读这个字段**来应用圆角：真正生效的
+   * 值由外壳属性 `data-border-radius` 经 lib/flags.ts 写进 --radius，
+   * 以免首屏先按默认圆角画一遍再跳变。这里保留是为了设置页回读当前值。
+   *
+   * 0 是**合法值**（直角），不是「未设置」。
+   */
+  border_radius: number;
 }
 
-/** 修改站点设置。description 必填；code_block_max_lines 省略表示保持现值。 */
+/** 修改站点设置。description 必填；其余字段省略表示保持现值。 */
 export interface SiteSettingsInput {
   description: string;
   /** 代码块最大显示行数（3..500）；省略 = 不修改。 */
   code_block_max_lines?: number;
+  /** 首页每页文章数（1..12）；省略 = 不修改。 */
+  home_page_size?: number;
+  /**
+   * 站点统一圆角（0..24）；省略 = 不修改。
+   *
+   * 注意 0 与「省略」含义不同：省略保持现值，0 表示把圆角设成直角。
+   */
+  border_radius?: number;
 }
 
 // 媒体源：浏览器里传 Blob/ArrayBuffer/Uint8Array，Node 里也可传文件路径字符串（由 media.ts 读盘）。

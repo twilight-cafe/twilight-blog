@@ -14,6 +14,14 @@ import (
 // 这些操作是整条链路里**唯一不可逆**的动作，值得单独测；而且「先挪开旧的、
 // 再把新的放进来、失败要能退回去」这套顺序，写错了不会编译失败，只会丢数据。
 
+// renamePath 是 os.Rename 的间接层，只为让「旧数据挪不开」这条守卫在任何平台上都
+// 可测。Windows 上「文件被占用导致 rename 失败」可以真实构造（Go 不开
+// FILE_SHARE_DELETE），POSIX 上却不行：对目录做 rename 与打开的文件句柄无关。
+// 于是 TestRestoreRefusesToSwapAnIndexThatIsInUse 在 Linux 上一直红着——它守的
+// 「挪不开就停下来、不要半途换掉一半数据」实际上从未被验证过。
+// 与 service.removeFile、restore_command.isTerminal 是同一种做法。
+var renamePath = os.Rename
+
 // swapIn 把 src 换到 dst 位置。keepOld 为真时把原有内容改名保留，返回保留路径。
 //
 // 为什么不是一句 os.Rename：dst 通常已经存在（这正是「还原」的含义），而 Rename
@@ -30,14 +38,14 @@ func swapIn(src, dst string, keepOld bool) (kept string, err error) {
 	var parked string
 	if _, err := os.Lstat(dst); err == nil {
 		parked = dst + ".replaced-" + nowStamp()
-		if err := os.Rename(dst, parked); err != nil {
+		if err := renamePath(dst, parked); err != nil {
 			return "", fmt.Errorf("move the existing %s aside: %w", dst, err)
 		}
 	}
 
 	if err := place(src, dst); err != nil {
 		if parked != "" {
-			if backErr := os.Rename(parked, dst); backErr != nil {
+			if backErr := renamePath(parked, dst); backErr != nil {
 				// 恢复也失败时两个错误都要报出来：此刻磁盘上同时存在
 				// 旧数据（在 parked 下）与一个半成品，现场的人需要知道
 				// 哪个文件能救回来。
@@ -67,7 +75,7 @@ func swapIn(src, dst string, keepOld bool) (kept string, err error) {
 // 平台相关代码才能准确做出来，不如直接试一次、失败就退化成拷贝：这条路慢，但只有
 // 跨卷时才会走到，而它比写错一个平台判断要可靠得多。
 func place(src, dst string) error {
-	if err := os.Rename(src, dst); err == nil {
+	if err := renamePath(src, dst); err == nil {
 		return nil
 	}
 

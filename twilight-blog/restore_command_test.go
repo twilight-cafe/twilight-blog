@@ -85,13 +85,37 @@ func TestParseRestoreArgs(t *testing.T) {
 		opts, err := parseRestoreArgs([]string{
 			"site.tar.gz", "--yes", "--keep-settings", "--keep-sessions",
 			"--no-safety-backup", "--dry-run", "--force",
+			"--accept-archive-settings", "--media-dir", "photos",
 		})
 		if err != nil {
 			t.Fatalf("parseRestoreArgs() 报错: %v", err)
 		}
 		if opts.archive != "site.tar.gz" || !opts.yes || !opts.keepSettings ||
-			!opts.keepSessions || !opts.noSafetyBackup || !opts.dryRun || !opts.force {
+			!opts.keepSessions || !opts.noSafetyBackup || !opts.dryRun || !opts.force ||
+			!opts.acceptArchiveSettings || opts.mediaDir != "photos" {
 			t.Fatalf("参数没有被正确记下来: %+v", opts)
+		}
+	})
+
+	t.Run("--media-dir=value", func(t *testing.T) {
+		opts, err := parseRestoreArgs([]string{"site.tar.gz", "--media-dir=photos"})
+		if err != nil {
+			t.Fatalf("parseRestoreArgs() 报错: %v", err)
+		}
+		if opts.mediaDir != "photos" {
+			t.Fatalf("mediaDir = %q, 期望 photos", opts.mediaDir)
+		}
+	})
+
+	t.Run("--media-dir 缺失值/空值/重复", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"site.tar.gz", "--media-dir"},
+			{"site.tar.gz", "--media-dir", "  "},
+			{"site.tar.gz", "--media-dir", "a", "--media-dir", "b"},
+		} {
+			if _, err := parseRestoreArgs(args); err == nil {
+				t.Fatalf("parseRestoreArgs(%v) 应当报错", args)
+			}
 		}
 	})
 
@@ -127,16 +151,34 @@ func TestParseRestoreArgs(t *testing.T) {
 
 	t.Run("拒绝", func(t *testing.T) {
 		for _, args := range [][]string{
-			nil,                      // 缺少归档
-			{"a.tar.gz", "b.tar.gz"}, // 两个归档
-			{"--nope", "a.tar.gz"},   // 未知参数
-			{"-o", "a.tar.gz"},       // backup 的选项不该在这里被接受
+			nil,                          // 缺少归档
+			{"a.tar.gz", "b.tar.gz"},     // 两个归档
+			{"--nope", "a.tar.gz"},       // 未知参数
+			{"-o", "a.tar.gz"},           // backup 的选项不该在这里被接受
+			{"a.tar.gz", "--media-dir="}, // 空值
 		} {
 			if _, err := parseRestoreArgs(args); err == nil {
 				t.Fatalf("parseRestoreArgs(%v) 应当报错", args)
 			}
 		}
 	})
+}
+
+// TestSetRestoreMediaDir 覆盖 --media-dir 在运行期的完整校验。
+func TestSetRestoreMediaDir(t *testing.T) {
+	var opts restoreOptions
+	if err := setRestoreMediaDir(&opts, "  photos  "); err != nil {
+		t.Fatalf("setRestoreMediaDir() error = %v", err)
+	}
+	if opts.mediaDir != "photos" {
+		t.Fatalf("mediaDir = %q, want photos", opts.mediaDir)
+	}
+	if err := setRestoreMediaDir(&opts, "other"); err == nil {
+		t.Fatal("a second --media-dir must be rejected")
+	}
+	if err := setRestoreMediaDir(&restoreOptions{}, "   "); err == nil {
+		t.Fatal("an empty --media-dir must be rejected")
+	}
 }
 
 // TestConfirmRestore 钉住「没人能回答不等于同意」。

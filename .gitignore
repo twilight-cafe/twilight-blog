@@ -4,6 +4,13 @@
 # 子项目内的 .gitignore（如 twilight-blog/.gitignore）继续各自生效
 # ===============================================================
 
+# --- 调试产出目录（约定：调试一律用 debug/）-----------------------
+# 用户的长期约定：以后调试时默认在 debug 文件夹下调试。
+# 工作区根或任一子项目根下的 debug/ 都是调试现场（探针脚本、
+# 抓包/响应体转储、临时 sqlite、截图等），一律不入库。
+# 用不带前导斜杠的写法，让它在任意层级都生效。
+debug/
+
 # --- Node / 前端 -------------------------------------------------
 node_modules/
 .pnpm-store/
@@ -45,11 +52,21 @@ dkim_private.pem
 .env
 .env.local
 .env.*.local
+# Vite 会读 .env.production / .env.development，上面三条只覆盖了 .local 变体。
+# 模板文件必须能入库，故显式放行。
+.env.*
+!.env.example
 
 # --- SQLite 运行期数据 -------------------------------------------
 *.db
 *.db-shm
 *.db-wal
+# 回滚日志：WAL 模式下少见，但 restore 子命令专门要清理 -journal 残留，
+# 说明它确实会出现；只覆盖 -wal/-shm 是漏的。
+*.db-journal
+# 换扩展名或用 sqlite3 CLI 做快照时会出现，*.db 管不到。
+*.sqlite
+*.sqlite3
 
 # --- 日志 --------------------------------------------------------
 *.log
@@ -61,6 +78,14 @@ log.txt
 /twilight-blog/dumps/
 /twilight-blog/bin/meilisearch-*
 /twilight-blog/bin/*.exe
+# 站点运行期的 PID 文件（internal/pidfile 写的 blog.pid，落在站点根目录，
+# 服务一跑就出现）
+*.pid
+# backup / restore 子命令的归档产物（单文件 tar.gz）
+*.tar.gz
+*.tgz
+# 根目录下同名的 dumps 目录：上面那条只锚定了 /twilight-blog/ 里的
+/dumps/
 
 # --- 编辑器与操作系统 -------------------------------------------
 .idea/
@@ -94,8 +119,24 @@ Thumbs.db
 # 即 PENTEST-REPORT-ROUND3.md；本目录只作为工作区。
 /.pentest-round3/
 
+# --- 探针 / 沙箱实例的运行期数据（build5 等，非源码）--------------
+# build5/ 里只有「探针脚本」与「复现程序」是开发产物，其余全是运行期状态：
+# instance/ 下有 settings.json、cookies.txt（**含 tw_session 会话令牌**）、
+# SQLite 库、上传媒体、Meilisearch 索引与转储的可执行文件。
+# 这里刻意**不写整目录规则**，只排运行期产物，免得把 build5/probe5.sh 与
+# build5/routerrepro/main.go 这两个开发产物一起排掉。
+/build5/instance/
+/build5/probe5-results.txt
+/build5/*.exe
+
 # --- 提交信息等一次性临时文件 ------------------------------------
 .git-commit-msg.tmp
+
+# --- 打包器残留的零字节临时文件 ----------------------------------
+# vite/esbuild 在被打断（沙箱 safe-delete 拦截、Ctrl-C）时会留下
+# `_tmp_<pid>_<hash>` 的 0 字节文件，散在项目根下。它们不是源码，
+# 却会让 git status 一直有噪音、干扰「本轮到底改了什么」的判断。
+_tmp_*
 
 # --- AI Agent 工作目录 ---
 .claude/

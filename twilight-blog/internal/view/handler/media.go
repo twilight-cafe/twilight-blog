@@ -112,7 +112,25 @@ func (h *MediaHandler) Get(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get media")
 	}
 
-	f, err := os.Open(h.service.Path(media))
+	// Path 会对数据库里的 storage_name 做校验（R7-02：恶意归档可以把一行
+	// `../../..` 还原进来，未校验时这里就是任意文件读取）。它返回的错误是
+	// **数据损坏**而不是「文件不在」，所以落到 500 而不是静默 404——后者会让
+	// 库里那行坏数据永远不为人知。
+	path, err := h.service.Path(media)
+	if err != nil {
+		logging.Errorf("[handler:media] refusing to serve media id=%d: %v", media.ID, err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to open media")
+	}
+
+	// 数据库里的 MIME 同样不可信：restore 可以还原任意 blog.db。公开接口绝不能
+	// 把 text/html / application/javascript / SVG 之类原样回放成同源页面或脚本。
+	contentType, err := h.service.ContentType(media)
+	if err != nil {
+		logging.Errorf("[handler:media] refusing to serve media id=%d: %v", media.ID, err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to open media")
+	}
+
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return echo.NewHTTPError(http.StatusNotFound, "media file not found")
@@ -122,7 +140,7 @@ func (h *MediaHandler) Get(c echo.Context) error {
 	defer f.Close()
 
 	c.Response().Header().Set(echo.HeaderCacheControl, "public, max-age=86400")
-	return c.Stream(http.StatusOK, media.MimeType, f)
+	return c.Stream(http.StatusOK, contentType, f)
 }
 
 // List 对应 GET /api/admin/media，分页列出媒体库。

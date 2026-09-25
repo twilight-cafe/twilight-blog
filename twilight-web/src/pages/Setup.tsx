@@ -11,6 +11,7 @@ import { Button, Input } from 'ink-design'
 import { blog, getErrorMessage, setCurrentUser } from '../lib/client'
 import { PASSWORD_RULE_TEXT, validatePassword } from '../lib/password'
 import { useToast } from '../lib/toast'
+import { useCanonicalPath, usePageHead } from '../lib/head'
 
 interface SetupProps {
   onInstalled?: () => void
@@ -24,6 +25,8 @@ export default function Setup({ onInstalled }: SetupProps) {
   const toast = useToast()
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
+  // 安装页是「站点还不存在」时的入口，同样不该被收录。
+  usePageHead({ path: useCanonicalPath(), title: '安装', robots: 'noindex, nofollow' })
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()

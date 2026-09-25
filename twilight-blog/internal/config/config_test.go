@@ -534,3 +534,264 @@ func TestCodeBlockMaxLinesRoundTripsAndValidatesOnLoad(t *testing.T) {
 		t.Fatal("Load accepted an out-of-range code_block_max_lines")
 	}
 }
+
+// TestHomePageSizeAccessorCoversUnset 与行数的访问器同构：
+// 未设置读出默认值；合法值往返；区间外被拒绝而不是夹取。
+func TestHomePageSizeAccessorCoversUnset(t *testing.T) {
+	cfg := &Config{}
+	if got := cfg.HomePageSizeValue(); got != DefaultHomePageSize {
+		t.Fatalf("HomePageSizeValue() = %d on an unset config, want %d", got, DefaultHomePageSize)
+	}
+
+	if err := cfg.SetHomePageSize(6); err != nil {
+		t.Fatalf("SetHomePageSize(6) error = %v", err)
+	}
+	if got := cfg.HomePageSizeValue(); got != 6 {
+		t.Fatalf("HomePageSizeValue() = %d, want 6", got)
+	}
+
+	// 边界值必须都收：区间的意义就靠它们定义。
+	for _, edge := range []int{MinHomePageSize, MaxHomePageSize} {
+		if err := cfg.SetHomePageSize(edge); err != nil {
+			t.Fatalf("SetHomePageSize(%d) error = %v", edge, err)
+		}
+	}
+
+	// 拒绝而不是夹取。上界之外尤其不能放过：首页发出的 page_size 会被
+	// 列表端点按 handler.maxPageSize 校验，放行等于让首页第一次请求就 400。
+	for _, bad := range []int{-1, 0, MaxHomePageSize + 1} {
+		if err := cfg.SetHomePageSize(bad); err == nil {
+			t.Fatalf("SetHomePageSize(%d) was accepted", bad)
+		}
+	}
+}
+
+// TestHomePageSizeRoundTripsAndValidatesOnLoad 覆盖持久化路径：
+// 合法值随 Save/Load 往返；缺失键由 ApplyDefaults 补默认值；
+// 越界值让 Load 直接失败。
+func TestHomePageSizeRoundTripsAndValidatesOnLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+
+	cfg := &Config{PasswordHash: testPasswordHash, settingsPath: path}
+	cfg.ApplyDefaults()
+	if err := cfg.SetHomePageSize(5); err != nil {
+		t.Fatalf("SetHomePageSize(5) error = %v", err)
+	}
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if got := readSettings(t, path)["home_page_size"]; got != float64(5) {
+		t.Fatalf("home_page_size = %v in the file, want 5", got)
+	}
+
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := reloaded.HomePageSizeValue(); got != 5 {
+		t.Fatalf("HomePageSizeValue() = %d after a reload, want 5", got)
+	}
+
+	// 缺失键 → ApplyDefaults 补默认值。老站点的 settings.json 里没有这个键，
+	// 补上的默认值必须与升级前的写死值一致（12），否则观察到的首屏会变。
+	empty := &Config{}
+	empty.ApplyDefaults()
+	if empty.HomePageSize != DefaultHomePageSize {
+		t.Fatalf("ApplyDefaults left HomePageSize at %d, want %d", empty.HomePageSize, DefaultHomePageSize)
+	}
+
+	// 一个只写了旧键的文件：home_page_size 缺失时不报错、走默认值。
+	legacyPath := filepath.Join(t.TempDir(), "legacy.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"site_description": "旧站"}`), 0o600); err != nil {
+		t.Fatalf("write legacy fixture: %v", err)
+	}
+	legacy, err := Load(legacyPath)
+	if err != nil {
+		t.Fatalf("Load() of a legacy file error = %v", err)
+	}
+	if got := legacy.HomePageSizeValue(); got != DefaultHomePageSize {
+		t.Fatalf("HomePageSizeValue() = %d on a legacy file, want the default %d", got, DefaultHomePageSize)
+	}
+
+	// 非法值 → Load 报错。
+	badPath := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(badPath, []byte(`{"home_page_size": 13}`), 0o600); err != nil {
+		t.Fatalf("write bad fixture: %v", err)
+	}
+	if _, err := Load(badPath); err == nil {
+		t.Fatal("Load accepted an out-of-range home_page_size")
+	}
+}
+
+// TestHomePageSizeDefaultMatchesTheLegacyHardcodedValue 钉住默认值就是升级前
+// 首页写死的那个 12。
+//
+// 首页此前是 `blog.listArticles({ page, pageSize: 12 })`（硬编码）。把 12 提升成
+// 可配置项时，默认值若不是 12，**每个没配置过的站点**都会在升级后立刻看到首页
+// 行数变化——一个纯重构不该产生可见的行为变更。
+func TestHomePageSizeDefaultMatchesTheLegacyHardcodedValue(t *testing.T) {
+	if DefaultHomePageSize != 12 {
+		t.Fatalf("DefaultHomePageSize = %d, want 12 (the value Home.tsx hardcoded before this setting existed)", DefaultHomePageSize)
+	}
+}
+
+// TestBorderRadiusAccessorTreatsZeroAsAValue 与前两项设置最大的不同就在 0：
+// 对圆角来说 0 是**合法值**（直角），不是「未设置」。
+//
+// 这条测试的存在理由与别处相反：别处要钉住「0 等于没设置」，这里要钉住
+// 「0 就是 0」。写错的方向也不同——把 0 当哨兵会走 SetHomePageSize 的老路，
+// 于是站长设成直角后：保存返回成功、界面显示 0，页面却是圆的，
+// 而且没有任何报错可查（这一项不像 home_page_size 会让请求 400）。
+func TestBorderRadiusAccessorTreatsZeroAsAValue(t *testing.T) {
+	cfg := &Config{}
+	// 未设置（nil 指针）才走默认值。
+	if got := cfg.BorderRadiusValue(); got != DefaultBorderRadius {
+		t.Fatalf("BorderRadiusValue() = %d on an unset config, want %d", got, DefaultBorderRadius)
+	}
+
+	// 显式写 0 必须被当成原样的配置读出来，而不是被换成 DefaultBorderRadius。
+	if err := cfg.SetBorderRadius(0); err != nil {
+		t.Fatalf("SetBorderRadius(0) error = %v", err)
+	}
+	if got := cfg.BorderRadiusValue(); got != 0 {
+		t.Fatalf("BorderRadiusValue() = %d after setting 0, want 0 (0 is a legitimate radius, not \"unset\")", got)
+	}
+	if cfg.BorderRadius == nil {
+		t.Fatal("SetBorderRadius(0) left the pointer nil, which makes 0 indistinguishable from unset")
+	}
+
+	// 上界与常用值原样往返。
+	for _, good := range []int{4, 8, 16, MaxBorderRadius} {
+		if err := cfg.SetBorderRadius(good); err != nil {
+			t.Fatalf("SetBorderRadius(%d) error = %v", good, err)
+		}
+		if got := cfg.BorderRadiusValue(); got != good {
+			t.Fatalf("BorderRadiusValue() = %d, want %d", got, good)
+		}
+	}
+
+	// 越界拒绝而不是夹取：20 与 25 都会让分页按钮、小标签变成怪形状，
+	// 悄悄夹到 24 会让保存结果与输入框显示不一致。
+	for _, bad := range []int{-1, MaxBorderRadius + 1, 999} {
+		if err := cfg.SetBorderRadius(bad); err == nil {
+			t.Fatalf("SetBorderRadius(%d) was accepted", bad)
+		}
+	}
+}
+
+// TestBorderRadiusRoundTripsAndValidatesOnLoad 覆盖持久化路径。
+//
+// 与其它两项设置的关键差异：**0 必须能存进文件再读回来**。若 Save 用
+// `omitempty` 或「0 就跳过」的写法，直角设置会在重启后静默变圆角。
+func TestBorderRadiusRoundTripsAndValidatesOnLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+
+	// 先验 0 的往返：这是最容易被 omitempty 吃掉的值。
+	zeroCfg := &Config{PasswordHash: testPasswordHash, settingsPath: path}
+	zeroCfg.ApplyDefaults()
+	if err := zeroCfg.SetBorderRadius(0); err != nil {
+		t.Fatalf("SetBorderRadius(0) error = %v", err)
+	}
+	if err := zeroCfg.Save(path); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if _, ok := readSettings(t, path)["border_radius"]; !ok {
+		t.Fatal("border_radius is missing from the file: 0 was treated as \"unset\" and dropped")
+	}
+	zeroReloaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := zeroReloaded.BorderRadiusValue(); got != 0 {
+		t.Fatalf("BorderRadiusValue() = %d after reloading a saved 0, want 0", got)
+	}
+
+	// 普通值往返。
+	other := filepath.Join(t.TempDir(), "other.json")
+	cfg := &Config{PasswordHash: testPasswordHash, settingsPath: other}
+	cfg.ApplyDefaults()
+	if err := cfg.SetBorderRadius(18); err != nil {
+		t.Fatalf("SetBorderRadius(18) error = %v", err)
+	}
+	if err := cfg.Save(other); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if got := readSettings(t, other)["border_radius"]; got != float64(18) {
+		t.Fatalf("border_radius = %v in the file, want 18", got)
+	}
+	reloaded, err := Load(other)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := reloaded.BorderRadiusValue(); got != 18 {
+		t.Fatalf("BorderRadiusValue() = %d after a reload, want 18", got)
+	}
+
+	// 缺失键 → ApplyDefaults 补默认值（老站点的 settings.json 没有这个键，
+	// 补上的默认值必须与升级前的写死的 4px 一致）。
+	empty := &Config{}
+	empty.ApplyDefaults()
+	if empty.BorderRadius == nil || *empty.BorderRadius != DefaultBorderRadius {
+		t.Fatalf("ApplyDefaults left BorderRadius at %v, want %d", empty.BorderRadius, DefaultBorderRadius)
+	}
+
+	// 越界值 → Load 报错（而不是带着坏参数继续跑）。
+	for _, bad := range []string{`{"border_radius": 25}`, `{"border_radius": -1}`} {
+		badPath := filepath.Join(t.TempDir(), "bad.json")
+		if err := os.WriteFile(badPath, []byte(bad), 0o600); err != nil {
+			t.Fatalf("write bad fixture: %v", err)
+		}
+		if _, err := Load(badPath); err == nil {
+			t.Fatalf("Load accepted an out-of-range %s", bad)
+		}
+	}
+}
+
+// TestBorderRadiusDefaultMatchesTheLegacyHardcodedValue 钉住默认值就是升级前
+// 前端写死的那个 --radius: 4px。
+//
+// 与 home_page_size 同理：把 4px 提升成可配置项时，默认值若不是 4，
+// 每个没配置过的站点都会在升级后立刻看到圆角变化——纯重构不该有可见变更。
+func TestBorderRadiusDefaultMatchesTheLegacyHardcodedValue(t *testing.T) {
+	if DefaultBorderRadius != 4 {
+		t.Fatalf("DefaultBorderRadius = %d, want 4 (the value InkUI's :root --radius used before this setting existed)", DefaultBorderRadius)
+	}
+	if MinBorderRadius != 0 {
+		t.Fatalf("MinBorderRadius = %d, want 0 (a square corner is a legitimate style)", MinBorderRadius)
+	}
+}
+
+// TestValidateMediaDir 覆盖 R7-01 之后新增的启动期硬门槛。
+//
+// media_dir 会被媒体、备份与还原三条路径使用；任何一条按非法值落盘都可能不可逆。
+// 因此绝对路径、`..` 逃逸以及把工作目录自己当媒体目录都在这里直接拒绝。
+func TestValidateMediaDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "empty means default", value: "", wantErr: false},
+		{name: "plain relative directory", value: "media", wantErr: false},
+		{name: "dot prefixed relative directory", value: "./media", wantErr: false},
+		{name: "nested relative directory", value: "assets/media", wantErr: false},
+		{name: "cleans to a real subdirectory", value: "assets/../photos", wantErr: false},
+		{name: "working directory itself", value: ".", wantErr: true},
+		{name: "cleans to working directory", value: "media/..", wantErr: true},
+		{name: "parent traversal", value: "..", wantErr: true},
+		{name: "parent traversal with child", value: "../media", wantErr: true},
+		{name: "absolute path", value: "/tmp/media", wantErr: true},
+		{name: "empty quoted path still empty after trim", value: "   ", wantErr: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateMediaDir(tc.value)
+			if tc.wantErr && err == nil {
+				t.Fatalf("ValidateMediaDir(%q) = nil, want an error", tc.value)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("ValidateMediaDir(%q) = %v, want nil", tc.value, err)
+			}
+		})
+	}
+}

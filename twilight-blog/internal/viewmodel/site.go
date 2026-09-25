@@ -32,6 +32,43 @@ const (
 	MaxCodeBlockLines = 500
 )
 
+// 首页每页文章数的合法区间。与 internal/config 的 Min/MaxHomePageSize 语义一致。
+//
+// 上界 12 刻意与 handler 层的 maxPageSize 对齐，理由见 config.HomePageSizeBounds：
+// 首页发出的 page_size 会被列表端点按该上限校验，越界的配置会让首页第一次请求
+// 就 400。此处只做「输入合法」判断，跨包一致性由 handler 层的守护测试保证。
+const (
+	MinHomePageSize = 1
+	MaxHomePageSize = 12
+)
+
+// DefaultHomePageSize 是首页每页文章数在「配置层未提供可用值」时的兜底。
+//
+// 它只在 view 层组装外壳时用到（config 层有自己的 DefaultHomePageSize 常量）。
+// 之所以要有这一份：view 包不该 import config（外壳渲染是纯展示层，
+// 详见 index.go 的说明），但 data-home-page-size 又**必须**永远是个正数——
+// 下发 0 会让首页发出一个 page_size=0 的列表请求。
+const DefaultHomePageSize = 12
+
+// 站点统一圆角的合法区间（px）。与 internal/config 的 Min/MaxBorderRadius 语义一致。
+//
+// 下界 0 是**合法值**（直角），不是「未设置」的哨兵——这是它与
+// MinHomePageSize（下界 1）最要紧的区别。区间只是审美边界，
+// 不像 home_page_size 那样被 handler 的硬上限钉死：圆角过大只会难看，
+// 不会让任何请求失败。
+const (
+	MinBorderRadius = 0
+	MaxBorderRadius = 24
+)
+
+// DefaultBorderRadius 是圆角在「配置层未提供可用值」时的兜底，单位 px。
+//
+// 只在 view 层组装外壳时用到（config 层有自己的 DefaultBorderRadius）。
+// 理由同 DefaultHomePageSize：view 包不该 import config，
+// 而 data-border-radius **必须**永远是个可用的数字——缺席会让前端
+// 回退到它自己的兜底值，服务端与客户端两份兜底值不一致时首屏会跳变。
+const DefaultBorderRadius = 4
+
 // SiteDescription 返回可以直接上屏的站点描述：站长设置过就用它，
 // 否则回退到 DefaultSiteDescription。
 //
@@ -53,6 +90,15 @@ type SiteSettingsRequest struct {
 	Description string `json:"description"`
 	// CodeBlockMaxLines 是代码块最大显示行数；nil 表示本次请求不修改它。
 	CodeBlockMaxLines *int `json:"code_block_max_lines,omitempty"`
+	// HomePageSize 是首页每页文章数；nil 表示本次请求不修改它。
+	HomePageSize *int `json:"home_page_size,omitempty"`
+	// BorderRadius 是站点统一圆角（px）；nil 表示本次请求不修改它。
+	//
+	// 与另外两个三态字段的区别：这里的合法值**包含 0**，
+	// 所以「nil = 不改动」与「0 = 改成直角」必须分得清——
+	// 用 int（零值即 0）会把「没发这个字段」误当成「要设成直角」，
+	// 于是任何只发 description 的旧客户端都会把站点的圆角悄悄改成 0。
+	BorderRadius *int `json:"border_radius,omitempty"`
 }
 
 // SiteSettingsResponse 是站点设置的**公开**视图：任何人都能看到，
@@ -78,12 +124,19 @@ type SiteSettingsResponse struct {
 	// 恒输出（不带 omitempty）：它是渲染参数而不是状态位，缺席会让前端
 	// 分不清「服务端没下发」与「前端该用默认值」。
 	CodeBlockMaxLines int `json:"code_block_max_lines"`
+	// HomePageSize 是首页每页文章数，前台据此决定列表请求的 page_size。
+	// 恒输出（不带 omitempty）：理由同 CodeBlockMaxLines。
+	HomePageSize int `json:"home_page_size"`
+	// BorderRadius 是站点统一圆角（px），前台据此设置 --radius CSS 变量。
+	// 恒输出（不带 omitempty）：理由同 CodeBlockMaxLines。
+	BorderRadius int `json:"border_radius"`
 }
 
 // Validate 清洗描述：折叠换行与连续空白，使它在页脚这种单行场景里不会撑破布局。
 // 允许为空（清空描述是合法意图，前台会回退到内置文案）。
 // CodeBlockMaxLines 为 nil（字段省略）时跳过校验——那是「保持现值」；
 // 显式给出的值必须在合法区间内，负数或 0 一律拒绝而不是夹取到边界。
+// HomePageSize 同理。
 func (r *SiteSettingsRequest) Validate() error {
 	r.Description = normalizeSiteDescription(r.Description)
 	if utf8.RuneCountInString(r.Description) > MaxSiteDescriptionLength {
@@ -93,6 +146,20 @@ func (r *SiteSettingsRequest) Validate() error {
 		lines := *r.CodeBlockMaxLines
 		if lines < MinCodeBlockLines || lines > MaxCodeBlockLines {
 			return fmt.Errorf("code_block_max_lines must be between %d and %d", MinCodeBlockLines, MaxCodeBlockLines)
+		}
+	}
+	if r.HomePageSize != nil {
+		size := *r.HomePageSize
+		if size < MinHomePageSize || size > MaxHomePageSize {
+			return fmt.Errorf("home_page_size must be between %d and %d", MinHomePageSize, MaxHomePageSize)
+		}
+	}
+	// 注意这里**没有** `radius == 0` 的早退：0 是合法配置，
+	// 只要落在 [MinBorderRadius, MaxBorderRadius] 内就该被接受。
+	if r.BorderRadius != nil {
+		radius := *r.BorderRadius
+		if radius < MinBorderRadius || radius > MaxBorderRadius {
+			return fmt.Errorf("border_radius must be between %d and %d", MinBorderRadius, MaxBorderRadius)
 		}
 	}
 	return nil

@@ -15,6 +15,7 @@ import (
 	"blog-engine/internal/logging"
 	"blog-engine/internal/model"
 	"blog-engine/internal/session"
+	"blog-engine/internal/testtool"
 )
 
 // TestMain 负责两件事，都是为了让这条命令可测：
@@ -28,6 +29,10 @@ import (
 //
 //  2. 一个可用的当前工作目录。settingsPath / databasePath 是包级**相对**常量，
 //     切换工作目录就等于把它们指向某个测试实例。
+//
+// 测试的入口交给 testtool：upgrade-media 要探测并使用一个外部 WebP 编码器，而在
+// 这里把**测试二进制自己**当成那个编码器，才能确定性地造出「转码成功 / 静默退出 /
+// 失败」三种结局（见 internal/testtool）。它没有别的模式时会照常跑 m.Run()。
 func TestMain(m *testing.M) {
 	root, err := os.MkdirTemp("", "twilight-blog-cli-tests")
 	if err != nil {
@@ -41,7 +46,7 @@ func TestMain(m *testing.M) {
 	// 在这里先打开，位置就固定了，与用例的执行顺序无关。
 	pinLogFile(root)
 
-	code := m.Run()
+	code := testtool.Main(m)
 
 	// 日志句柄此时仍被持有，删除可能失败；失败不是错误，临时目录会被系统回收。
 	_ = os.RemoveAll(root)

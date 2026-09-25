@@ -14,6 +14,14 @@ import (
 	"strings"
 )
 
+// Hooks for deterministic filesystem-failure tests. Production always uses the
+// real functions; tests replace them to exercise the wrapped-error branches.
+var (
+	mkdirAll         = os.MkdirAll
+	readDir          = os.ReadDir
+	extractFileClose = func(f *os.File) error { return f.Close() }
+)
+
 // 解包时的资源上限。它们防的是**别人的归档**，不是给自己的站点做容量规划——
 // 自己的数据有多大，备份那一刻就知道了。
 const (
@@ -164,7 +172,7 @@ func (r *Reader) Extract(root string, opts ExtractOptions) (*ExtractResult, erro
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(dest, 0o700); err != nil {
+			if err := mkdirAll(dest, 0o700); err != nil {
 				return nil, fmt.Errorf("create %s: %w", dest, err)
 			}
 			continue
@@ -175,15 +183,12 @@ func (r *Reader) Extract(root string, opts ExtractOptions) (*ExtractResult, erro
 				"only regular files and directories are allowed", hdr.Name, hdr.Typeflag)
 		}
 
-		if hdr.Size < 0 {
-			return nil, fmt.Errorf("the archive entry %q declares a negative size", hdr.Name)
-		}
 		result.Bytes += hdr.Size
 		if result.Bytes > opts.MaxBytes {
 			return nil, fmt.Errorf("the archive expands to more than %d bytes: refusing to extract it", opts.MaxBytes)
 		}
 
-		if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+		if err := mkdirAll(filepath.Dir(dest), 0o700); err != nil {
 			return nil, fmt.Errorf("create %s: %w", filepath.Dir(dest), err)
 		}
 
@@ -234,7 +239,7 @@ func extractFile(dest string, src io.Reader) (string, error) {
 		file.Close()
 		return "", fmt.Errorf("write %s: %w", dest, err)
 	}
-	if err := file.Close(); err != nil {
+	if err := extractFileClose(file); err != nil {
 		return "", fmt.Errorf("write %s: %w", dest, err)
 	}
 	return hex.EncodeToString(sum.Sum(nil)), nil
@@ -245,7 +250,7 @@ func prepareRoot(root string) error {
 	info, err := os.Stat(root)
 	if err != nil {
 		if os.IsNotExist(err) {
-			if err := os.MkdirAll(root, 0o700); err != nil {
+			if err := mkdirAll(root, 0o700); err != nil {
 				return fmt.Errorf("create the extract directory: %w", err)
 			}
 			return nil
@@ -255,7 +260,7 @@ func prepareRoot(root string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("the extract target %s is not a directory", root)
 	}
-	children, err := os.ReadDir(root)
+	children, err := readDir(root)
 	if err != nil {
 		return fmt.Errorf("inspect the extract directory: %w", err)
 	}

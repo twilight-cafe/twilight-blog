@@ -11,6 +11,7 @@ import { excerpt, fmtDate } from '../../lib/format'
 import type { SearchResult } from 'twilight-blog-api'
 import { isSearchEnabled } from '../../lib/flags'
 import { useDocumentTitle } from '../../lib/site'
+import { useCanonicalPath, usePageHead } from '../../lib/head'
 import { Empty, Loading, PageHero, Reveal } from '../../components/common'
 
 export default function Search() {
@@ -36,6 +37,10 @@ export default function Search() {
   // 而「不要反射访客可控文本到标签页标题」这条更值钱。若要恢复，请连同
   // 一条长度上限与清洗一起加，并明确接受上述取舍。
   useDocumentTitle('搜索')
+  // 搜索结果页整页 noindex：它是「访客现拼出来的组合」，没有稳定内容，而且会把
+  // 同一篇文章以无数条带 q= 的地址重复送进索引。follow 保留（结果里的文章链接
+  // 本身值得被爬）。
+  usePageHead({ path: useCanonicalPath(), title: '搜索', robots: 'noindex, follow' })
 
   useEffect(() => {
     setDraft(query)
@@ -150,7 +155,7 @@ export default function Search() {
               </Link>
             </Reveal>
           ))}
-          <Pagination current={page} total={totalPages} pageSize={1} onChange={setPage} />
+          <Pagination align="center" current={page} total={totalPages} pageSize={1} onChange={setPage} />
         </div>
       )}
     </main>

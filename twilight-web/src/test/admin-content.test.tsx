@@ -112,6 +112,43 @@ describe('Posts', () => {
     expect(screen.queryByText(/已选/)).toBeNull()
   })
 
+  // 这条用例覆盖「选中项裁剪」这个 effect（Posts.tsx 列表刷新后剔除已消失的 id）。
+  //
+  // 之前它只被「批量操作」那条顺带擦到，而那条刷新后选中项恰好都还在屏上
+  // ——到底有没有走到该 effect，取决于 React 何时 flush 掉 list 的状态更新。
+  // 实测出现过 Posts.tsx 该 effect 零覆盖的抖动（同一批 438 个用例时绿时红）。
+  //
+  // 关键：必须挑一条**刷新列表但不清空选中**的路径。trash/permanent/batchTrash
+  // 都会先 `setSelected([])`，于是 effect 里 selected 已空、裁剪逻辑形同虚设；
+  // 只有回收站的 `restore()` 是「写操作后只 reload()、不动 selected」。
+  // 本用例的判别力来自：勾选的那篇**自己**被恢复掉（restore 不清 selected），
+  // 刷新后它从回收站列表消失 —— 真守卫必须把它剔除，坏守卫则会留下一个
+  // 指向已不在屏上的幽灵选中项。
+  it('列表刷新后已消失的选中项被剔除', async () => {
+    client.blog.listTrashArticles
+      .mockResolvedValueOnce(paged([makeArticle({ id: 1 }), makeArticle({ id: 2 })]))
+      // 恢复 id=2 后重新拉取：只剩 id=1
+      .mockResolvedValue(paged([makeArticle({ id: 1 })]))
+
+    const { container } = renderRouted(<Posts />, '/admin/posts', '/admin/posts')
+    fireEvent.click(screen.getByText('回收站'))
+    await waitFor(() => expect(screen.getAllByText('测试文章').length).toBe(2))
+
+    // 勾选**第二行**（id=2）
+    fireEvent.click(container.querySelectorAll<HTMLInputElement>('tbody input[type=checkbox]')[1])
+    await waitFor(() => expect(screen.getByText('已选 1 篇')).toBeTruthy())
+
+    // 恢复它自己：restore() 只 reload()、**不清 selected**，刷新后 id=2 已消失
+    client.blog.restoreArticle.mockResolvedValueOnce({ message: 'ok' })
+    const restores = screen.getAllByRole('button', { name: '恢复' })
+    fireEvent.click(restores[restores.length - 1])
+    await waitFor(() => expect(client.blog.restoreArticle).toHaveBeenCalledWith(2))
+    await waitFor(() => expect(client.blog.listTrashArticles).toHaveBeenCalledTimes(2))
+
+    // 裁剪 effect 必须把已消失的 id=2 从选中项里剔除 → 批量条消失
+    await waitFor(() => expect(screen.queryByText(/已选/)).toBeNull())
+  })
+
   it('空列表与加载失败', async () => {
     client.blog.listArticles
       .mockResolvedValueOnce(paged([], 1, 1, 0))
@@ -332,8 +369,14 @@ describe('SiteSettings', () => {
     expect(document.body.textContent).toContain('有未保存的修改')
 
     fireEvent.submit(textarea.closest('form') as HTMLFormElement)
-    // code_block_max_lines 一并提交：同一张设置卡、同一次保存（行数来自 getSite 回的缺省 20）。
-    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({ description: '多 段空白 描述', code_block_max_lines: 20 }))
+    // code_block_max_lines 与 home_page_size 一并提交：同一张设置卡、同一次保存
+    // （两个数都来自 getSite 回的缺省值：20 行 / 12 篇）。
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({
+      description: '多 段空白 描述',
+      code_block_max_lines: 20,
+      home_page_size: 12,
+      border_radius: 4,
+    }))
     await waitFor(() => expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('保存后的描述'))
     await waitFor(() => expect(screen.getAllByText('已保存').length).toBeGreaterThan(0))
   })
@@ -346,7 +389,13 @@ describe('SiteSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: '清空描述' }))
     expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('')
     fireEvent.submit(container.querySelector('form') as HTMLFormElement)
-    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({ description: '', code_block_max_lines: 20 }))
+    // 圆角也随同一次保存下发（来自 getSite 回的缺省值 4）。
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({
+      description: '',
+      code_block_max_lines: 20,
+      home_page_size: 12,
+      border_radius: 4,
+    }))
     await waitFor(() => expect(screen.getAllByText('已清空网站描述，前台将使用内置文案').length).toBeGreaterThan(0))
   })
 
@@ -354,13 +403,20 @@ describe('SiteSettings', () => {
     client.blog.getSite.mockResolvedValue({ description: '测试站', code_block_max_lines: 35 })
     client.blog.updateSite.mockResolvedValue({ description: '测试站', code_block_max_lines: 35 })
     const { container } = renderPlain(<SiteSettings />)
-    const linesInput = () => container.querySelector('input[type=number]') as HTMLInputElement
+    // 页面上有两个数字输入框（行数在前、首页每页篇数在后），按顺序取更稳。
+    const numberInputs = () => container.querySelectorAll('input[type=number]')
+    const linesInput = () => numberInputs()[0] as HTMLInputElement
     await waitFor(() => expect(linesInput().value).toBe('35'))
 
     // 保存按钮被「描述未修改」挡住 → 改行数后应放行（行数也计入 dirty）。
     fireEvent.change(linesInput(), { target: { value: '60' } })
     fireEvent.submit(container.querySelector('form') as HTMLFormElement)
-    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({ description: '测试站', code_block_max_lines: 60 }))
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({
+      description: '测试站',
+      code_block_max_lines: 60,
+      home_page_size: 12,
+      border_radius: 4,
+    }))
     // 服务端返回的最终值回填输入框（mock 返回 35）。
     await waitFor(() => expect(linesInput().value).toBe('35'))
 
@@ -377,5 +433,94 @@ describe('SiteSettings', () => {
     fireEvent.submit(container.querySelector('form') as HTMLFormElement)
     await waitFor(() => expect(screen.getAllByText('代码块行数必须是 3 到 500 之间的整数').length).toBeGreaterThan(0))
     expect(client.blog.updateSite).toHaveBeenCalledTimes(1)
+  })
+
+  it('首页每页文章数：加载回填、修改后随描述一并保存、越界拦截', async () => {
+    client.blog.getSite.mockResolvedValue({ description: '测试站', home_page_size: 6 })
+    client.blog.updateSite.mockResolvedValue({ description: '测试站', home_page_size: 6 })
+    const { container } = renderPlain(<SiteSettings />)
+    const pageSizeInput = () => container.querySelectorAll('input[type=number]')[1] as HTMLInputElement
+    await waitFor(() => expect(pageSizeInput().value).toBe('6'))
+
+    // 只改这一项也应放行保存（它计入 dirty）。
+    fireEvent.change(pageSizeInput(), { target: { value: '9' } })
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({
+      description: '测试站',
+      code_block_max_lines: 20,
+      home_page_size: 9,
+      border_radius: 4,
+    }))
+    // 服务端返回的最终值回填输入框（mock 返回 6）。
+    await waitFor(() => expect(pageSizeInput().value).toBe('6'))
+
+    // 越界（1..12 之外）→ 保存按钮禁用；直接提交被 toast 拦截、不发请求。
+    fireEvent.change(pageSizeInput(), { target: { value: '13' } })
+    expect(container.querySelector('.act-row button[type=submit]')?.hasAttribute('disabled')).toBe(true)
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+    await waitFor(() => expect(screen.getAllByText('首页每页文章数必须是 1 到 12 之间的整数').length).toBeGreaterThan(0))
+
+    // 下界同样拦：0 与非整数都不该进请求体。
+    fireEvent.change(pageSizeInput(), { target: { value: '0' } })
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+    await waitFor(() => expect(screen.getAllByText('首页每页文章数必须是 1 到 12 之间的整数').length).toBeGreaterThan(0))
+    expect(client.blog.updateSite).toHaveBeenCalledTimes(1)
+  })
+
+  it('圆角：加载回填、0 是合法值不是空值、越界拦截', async () => {
+    client.blog.getSite.mockResolvedValue({ description: '测试站', border_radius: 8 })
+    client.blog.updateSite.mockResolvedValue({ description: '测试站', border_radius: 8 })
+    const { container } = renderPlain(<SiteSettings />)
+    // 圆角输入框是第三个数字框（行数、每页篇数之后）。
+    const radiusInput = () => container.querySelectorAll('input[type=number]')[2] as HTMLInputElement
+    await waitFor(() => expect(radiusInput().value).toBe('8'))
+
+    // 改一个合法值 → 放行保存（它计入 dirty）。
+    fireEvent.change(radiusInput(), { target: { value: '16' } })
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({
+      description: '测试站',
+      code_block_max_lines: 20,
+      home_page_size: 12,
+      border_radius: 16,
+    }))
+    // 服务端返回 8 → 回填。
+    await waitFor(() => expect(radiusInput().value).toBe('8'))
+
+    // 0 是**合法值**（直角）。这是本项设置最容易写错的地方：若校验写成
+    // `radius <= 0` 早退、或 dirty 用 `!radius` 判断，0 就会被当成「没填」，
+    // 站长永远设不出直角且界面不给任何提示。所以这里必须能提交、且原样透传 0。
+    client.blog.updateSite.mockResolvedValueOnce({ description: '测试站', border_radius: 0 })
+    fireEvent.change(radiusInput(), { target: { value: '0' } })
+    expect(container.querySelector('.act-row button[type=submit]')?.hasAttribute('disabled')).toBe(false)
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenLastCalledWith({
+      description: '测试站',
+      code_block_max_lines: 20,
+      home_page_size: 12,
+      border_radius: 0,
+    }))
+  })
+
+  it('圆角越界（24 之外）拦截：按钮禁用，直接提交被 toast 挡下', async () => {
+    client.blog.getSite.mockResolvedValue({ description: '测试站', border_radius: 4 })
+    const { container } = renderPlain(<SiteSettings />)
+    const radiusInput = () => container.querySelectorAll('input[type=number]')[2] as HTMLInputElement
+    await waitFor(() => expect(radiusInput().value).toBe('4'))
+
+    // 上界外
+    fireEvent.change(radiusInput(), { target: { value: '25' } })
+    expect(container.querySelector('.act-row button[type=submit]')?.hasAttribute('disabled')).toBe(true)
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+    await waitFor(() => expect(screen.getAllByText('圆角必须是 0 到 24 之间的整数').length).toBeGreaterThan(0))
+
+    // 负数与非整数同样拦（空串 parseInt 出 NaN）。
+    fireEvent.change(radiusInput(), { target: { value: '-1' } })
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+    await waitFor(() => expect(screen.getAllByText('圆角必须是 0 到 24 之间的整数').length).toBeGreaterThan(0))
+    fireEvent.change(radiusInput(), { target: { value: '' } })
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+    await waitFor(() => expect(screen.getAllByText('圆角必须是 0 到 24 之间的整数').length).toBeGreaterThan(0))
+    expect(client.blog.updateSite).not.toHaveBeenCalled()
   })
 })

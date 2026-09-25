@@ -52,6 +52,9 @@ beforeEach(() => {
   client.blog.getSite.mockResolvedValue({ description: '测试站' })
   // Moments 内嵌评论区、PageDetail 等都会拉评论；给个合法空页防 undefined
   client.blog.listComments.mockResolvedValue({ items: [], page: 1, page_size: 12, total: 0, total_pages: 1 })
+  // 每页篇数读自外壳属性（见 lib/flags.ts）；不清理会让上一个用例的假外壳泄漏，
+  // 表现为「第一个断言过了、第二个莫名用了别的 pageSize」。
+  delete document.documentElement.dataset.homePageSize
 })
 
 describe('NotFound', () => {
@@ -101,6 +104,26 @@ describe('Home', () => {
     gate.resolve(paged([makeArticle()]))
     await gate.promise.catch(() => {})
     expect(true).toBe(true) // 无异常即通过（alive 守卫生效）
+  })
+
+  it('每页篇数取外壳属性 data-home-page-size；缺失时回退 12', async () => {
+    client.blog.listArticles.mockResolvedValue(paged([]))
+
+    // 站点把首页每页设成 4。
+    document.documentElement.dataset.homePageSize = '4'
+    const first = renderPage(<Home />)
+    await waitFor(() => expect(client.blog.listArticles).toHaveBeenCalledWith({ page: 1, pageSize: 4 }))
+    first.unmount()
+
+    // 属性缺失（老二进制的外壳 / 未配置）→ 与服务端默认值一致的 12。
+    // 这是「首页第一次请求就必须带对 page_size」的守护：若实现改成等
+    // GET /api/site 回来再决定，这里会先看到一次 pageSize=12 的请求。
+    delete document.documentElement.dataset.homePageSize
+    client.blog.listArticles.mockClear()
+    client.blog.listArticles.mockResolvedValue(paged([]))
+    const second = renderPage(<Home />)
+    await waitFor(() => expect(client.blog.listArticles).toHaveBeenCalledWith({ page: 1, pageSize: 12 }))
+    second.unmount()
   })
 })
 
