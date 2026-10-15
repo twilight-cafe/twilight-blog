@@ -5,6 +5,7 @@ import ContentView from '../components/ContentView'
 import MediaThumb from '../components/media/MediaThumb'
 import MediaLightbox from '../components/media/MediaLightbox'
 import MediaPicker from '../components/media/MediaPicker'
+import MediaGallery from '../components/media/MediaGallery'
 import { ToastProvider } from '../lib/toast'
 import { refreshSiteMeta, resetSiteCacheForTests } from '../lib/site'
 import { getSharedClientMock, makeMedia } from './helpers'
@@ -182,6 +183,40 @@ describe('MediaLightbox', () => {
     expect(document.body.style.overflow).toBe('hidden')
     unmount()
     expect(document.body.style.overflow).toBe('')
+  })
+})
+
+describe('MediaGallery', () => {
+  const items = [
+    makeMedia({ id: 1, original_name: 'a.png' }),
+    makeMedia({ id: 2, original_name: 'b.png' }),
+  ]
+
+  it('每个媒体一张缩略图；点第 N 张打开第 N 张的灯箱，关闭后预览下标复位', () => {
+    const { container } = render(<MediaGallery items={items} />)
+
+    const thumbs = Array.from(container.querySelectorAll('.media-thumb-open'))
+    expect(thumbs).toHaveLength(2)
+    // 打开前没有任何灯箱。
+    expect(document.querySelector('.media-lightbox')).toBeNull()
+
+    // 点第二张：灯箱必须拿到 index=1（点第一张却开第二张是最容易写错的一处）。
+    fireEvent.click(thumbs[1])
+    expect(document.querySelector('.media-lightbox')).toBeTruthy()
+    expect(screen.getByText('b.png')).toBeTruthy()
+
+    fireEvent.click(screen.getByLabelText('关闭'))
+    expect(document.querySelector('.media-lightbox')).toBeNull()
+  })
+
+  it('Esc 关闭灯箱（onClose 把 index 复位成 null）', () => {
+    const { container } = render(<MediaGallery items={[items[0]]} />)
+
+    fireEvent.click(container.querySelector('.media-thumb-open') as HTMLButtonElement)
+    expect(document.querySelector('.media-lightbox')).toBeTruthy()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(document.querySelector('.media-lightbox')).toBeNull()
   })
 })
 

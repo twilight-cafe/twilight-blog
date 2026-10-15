@@ -1,0 +1,1 @@
+.cbx-group{display:flex;flex-direction:column;gap:6px}.cbx-item{display:inline-flex;align-items:center;gap:6px;font-size:13.5px;color:var(--fg);cursor:pointer}.cbx-item.dis{color:var(--faint);cursor:not-allowed}.cbx-label{line-height:1.5}

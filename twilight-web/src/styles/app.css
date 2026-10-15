@@ -787,6 +787,39 @@ footer.site .bar {
   border-color: color-mix(in srgb, var(--fg) 36%, var(--bg));
 }
 
+/* 微语卡页脚：只放卡片级动作（目前是「评论」开关），一律靠右下角。
+   评论区是点开后才出现的，所以这里只占一行按钮的高度。 */
+.mom-ft {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+/* 与评论区里的点赞/回复按钮（.cmt .ops button）同一套观感：等宽小字、
+   透明底、hover 才描边。圆角一律用 --radius，不写死数值——写死会让站长设的
+   圆角在这颗按钮上静默失效（见 radius-scale.test.ts 的守护）。 */
+.mom-cmt-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+
+.mom-cmt-btn:hover {
+  color: var(--fg);
+  background: var(--softer);
+  border-color: var(--line);
+}
+
 /* Article / page */
 .phead {
   padding: 36px 0 16px;
@@ -2271,6 +2304,13 @@ img.avatar {
 
 .media-gallery.sm .media-picker-row {
   gap: 8px;
+}
+
+/* 配图行与上方正文的间距。原先写在后台上传卡的内联 style 里，随 MediaGallery
+   成为共用组件（后台微语卡 + 公开微语流）一并挪到这里——两处若各写一份，
+   迟早会出现「后台有间距、前台贴着正文」这类只在一边生效的漂移。 */
+.media-gallery.sm {
+  margin-top: 10px;
 }
 
 

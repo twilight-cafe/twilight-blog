@@ -2,7 +2,8 @@
 // 发布时只把媒体「id」带上（mediaIds）：媒体先经 MediaPicker 上传拿回 id，
 // 再随微语一起提交，前端不直传二进制。remove=软删（deleteMoment），trash 下才可
 // 永久删（permanentlyDeleteMoment）。同样写死 page:1/pageSize:12、无分页。
-// 列表里已存在的微语通过 item.media_items 展示（MomentMedia 调内部灯箱）。
+// 列表里已存在的微语通过 item.media_items 展示（MediaGallery 负责缩略图行与灯箱，
+// 与公开微语流共用同一个组件——两边各写一份时前台那份漏了，微语页因此不显示图）。
 
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Chip, Input } from 'ink-design'
@@ -13,32 +14,10 @@ import { useDialog } from '../../lib/dialog'
 import { useToast } from '../../lib/toast'
 import ContentView from '../../components/ContentView'
 import MediaPicker from '../../components/media/MediaPicker'
-import MediaLightbox from '../../components/media/MediaLightbox'
-import MediaThumb from '../../components/media/MediaThumb'
+import MediaGallery from '../../components/media/MediaGallery'
 import { Empty, Loading } from '../../components/common'
 
 type Tab = 'active' | 'trash'
-
-function MomentMedia({ items }: { items: MediaItem[] }) {
-  const [previewIndex, setPreviewIndex] = useState<number | null>(null)
-
-  // 调用处（L188）已保证 items 非空数组，这里不再重复守卫。
-  return (
-    <div className="media-gallery sm" style={{ marginTop: 10 }}>
-      <div className="media-picker-row">
-        {items.map((item, index) => (
-          <MediaThumb key={item.id} item={item} onOpen={() => setPreviewIndex(index)} />
-        ))}
-      </div>
-      <MediaLightbox
-        items={items}
-        index={previewIndex}
-        onClose={() => setPreviewIndex(null)}
-      />
-    </div>
-  )
-}
-
 
 export default function MomentsAdmin() {
   const toast = useToast()
@@ -184,8 +163,7 @@ export default function MomentsAdmin() {
           </div>
           <div className="bd2" style={{ paddingTop: 6 }}>
             <ContentView text={item.content} trusted />
-              {item.media_items && item.media_items.length > 0 ? <MomentMedia items={item.media_items} /> : null}
-
+            {item.media_items && item.media_items.length > 0 ? <MediaGallery items={item.media_items} /> : null}
           </div>
         </div>
       ))}

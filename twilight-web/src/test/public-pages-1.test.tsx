@@ -8,7 +8,7 @@ import Archive from '../pages/public/Archive'
 import Moments from '../pages/public/Moments'
 import PageDetail from '../pages/public/PageDetail'
 import { ToastProvider } from '../lib/toast'
-import { getSharedClientMock, NOW, makeArticle, makeMoment, makePage } from './helpers'
+import { getSharedClientMock, NOW, makeArticle, makeComment, makeMedia, makeMoment, makePage } from './helpers'
 
 vi.mock('../lib/client', async () => {
   const { getSharedClientMock } = await import('./helpers')
@@ -163,20 +163,68 @@ describe('Archive', () => {
 })
 
 describe('Moments', () => {
-  it('渲染微语流与每条的可评论区；翻页；空态', async () => {
+  it('渲染微语流与评论按钮（未点击不发评论请求）；翻页；空态', async () => {
     client.blog.listMoments
       .mockResolvedValueOnce(paged([makeMoment({ id: 1, content: '今天天气' })], 1, 2, 2))
       .mockResolvedValueOnce(paged([], 2, 2, 2))
 
-    const { unmount } = renderPage(<Moments />, '/moments', '/moments')
+    const { container, unmount } = renderPage(<Moments />, '/moments', '/moments')
     await waitFor(() => expect(screen.getByText('今天天气')).toBeTruthy())
-    // 每条微语挂评论区（listComments 无实现返回 undefined → catch → 还没有评论）
-    await waitFor(() => expect(screen.getAllByText('还没有评论').length).toBeGreaterThan(0))
+
+    // 评论区不再随卡片挂载：一页 12 条微语曾经等于 12 个 GET /api/comments，
+    // 现在只有点过「评论」的那一条才会发请求。
+    expect(client.blog.listComments).not.toHaveBeenCalled()
+    expect(container.querySelector('.cmt-sec')).toBeNull()
+    const button = screen.getByRole('button', { name: '评论' })
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    // 没有配图的微语不渲染空的缩略图行。
+    expect(container.querySelector('.media-gallery')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Page 2' }))
     await waitFor(() => expect(screen.getByText('还没有微语')).toBeTruthy())
     expect(client.blog.listMoments).toHaveBeenLastCalledWith({ page: 2, pageSize: 12 })
     unmount()
+  })
+
+  it('带配图的微语渲染与后台同一套缩略图行：点击全屏放大、Esc 关闭', async () => {
+    client.blog.listMoments.mockResolvedValue(paged([
+      makeMoment({ id: 7, content: '带图的微语', media_items: [makeMedia({ id: 9, original_name: 'pic.png' })] }),
+    ]))
+
+    const { container } = renderPage(<Moments />, '/moments', '/moments')
+    await waitFor(() => expect(screen.getByText('带图的微语')).toBeTruthy())
+
+    // MediaGallery 与后台微语卡是同一个组件，所以类名也必须是同一套。
+    const gallery = container.querySelector('.mom .media-gallery.sm')
+    expect(gallery).toBeTruthy()
+    const thumb = container.querySelector('.media-thumb-open') as HTMLButtonElement
+    expect(thumb.querySelector('img')?.getAttribute('src')).toBe('/uploads/a.png')
+
+    fireEvent.click(thumb)
+    await waitFor(() => expect(document.querySelector('.media-lightbox')).toBeTruthy())
+    expect(screen.getByText('pic.png')).toBeTruthy()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(document.querySelector('.media-lightbox')).toBeNull())
+  })
+
+  it('点击「评论」才挂载评论区并请求评论；再点收起、不重复请求', async () => {
+    client.blog.listMoments.mockResolvedValue(paged([makeMoment({ id: 5, content: '求评论' })]))
+    client.blog.listComments.mockResolvedValue(paged([makeComment({ id: 1, content: '沙发' })]))
+
+    const { container } = renderPage(<Moments />, '/moments', '/moments')
+    await waitFor(() => expect(screen.getByText('求评论')).toBeTruthy())
+    expect(client.blog.listComments).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '评论' }))
+    await waitFor(() => expect(client.blog.listComments).toHaveBeenCalledWith({ targetType: 'moment', targetId: 5, page: 1, pageSize: 12 }))
+    await waitFor(() => expect(container.querySelector('.cmt-sec')).toBeTruthy())
+    expect(container.querySelector('.cmt-sec')?.textContent).toContain('沙发')
+    expect(screen.getByRole('button', { name: '收起评论' }).getAttribute('aria-expanded')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: '收起评论' }))
+    await waitFor(() => expect(container.querySelector('.cmt-sec')).toBeNull())
+    expect(client.blog.listComments).toHaveBeenCalledTimes(1)
   })
 
   it('卸载竞态守卫', async () => {
