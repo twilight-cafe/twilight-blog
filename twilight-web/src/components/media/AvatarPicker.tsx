@@ -17,7 +17,9 @@
 import { useRef, useState, type ChangeEvent } from 'react'
 import { Button } from 'ink-design'
 import { blog, getErrorMessage } from '../../lib/client'
+import ProgressiveImage from '../ProgressiveImage'
 import { useToast } from '../../lib/toast'
+import { useI18n } from '../../lib/i18n'
 
 interface AvatarPickerProps {
   /** 当前要展示的头像地址；空串表示还没有头像。 */
@@ -30,6 +32,7 @@ interface AvatarPickerProps {
 }
 
 export default function AvatarPicker({ url, onChange, onBusyChange, disabled = false }: AvatarPickerProps) {
+  const { t } = useI18n()
   const toast = useToast()
   const inputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
@@ -65,7 +68,7 @@ export default function AvatarPicker({ url, onChange, onBusyChange, disabled = f
       }
       onChange(uploaded.id)
     } catch (error) {
-      toast(getErrorMessage(error, '上传失败'))
+      toast(getErrorMessage(error, t('上传失败', 'Upload failed')))
     } finally {
       setBusy(false)
       // 重置 value，否则同一个文件第二次选中不会触发 change。
@@ -83,7 +86,7 @@ export default function AvatarPicker({ url, onChange, onBusyChange, disabled = f
         accept="image/*"
         hidden
         onChange={(event) => void handleFile(event)}
-        aria-label="上传头像"
+        aria-label={t('上传头像', 'Upload avatar')}
       />
       {url === '' ? (
         <button
@@ -91,7 +94,7 @@ export default function AvatarPicker({ url, onChange, onBusyChange, disabled = f
           className="avatar-picker-empty"
           onClick={() => inputRef.current?.click()}
           disabled={busy}
-          aria-label="上传头像"
+          aria-label={t('上传头像', 'Upload avatar')}
         >
           {uploading
             ? <span className="media-picker-loading" aria-hidden="true" />
@@ -99,13 +102,13 @@ export default function AvatarPicker({ url, onChange, onBusyChange, disabled = f
         </button>
       ) : (
         <>
-          <img className="avatar-picker-preview" src={url} alt="站长头像" />
+          <ProgressiveImage className="avatar-picker-preview" frameClassName="round" src={url} alt={t('站长头像', 'Owner avatar')} />
           <div className="avatar-actions">
             <Button small disabled={busy} onClick={() => inputRef.current?.click()}>
-              {uploading ? '上传中…' : '更换'}
+              {uploading ? t('上传中…', 'Uploading…') : t('更换', 'Change')}
             </Button>
             <Button small ghost disabled={busy} onClick={() => onChange(null)}>
-              移除
+              {t('移除', 'Remove')}
             </Button>
           </div>
         </>

@@ -10,6 +10,7 @@ import { cleanup } from '@testing-library/react'
 import { message } from 'ink-design'
 import { loadMarkdown } from '../lib/markdown-loader'
 import { clearEmailCodeCooldown } from '../lib/email-code-cooldown'
+import { resetLocaleForTests } from '../lib/i18n'
 
 if (typeof window !== 'undefined') installJsdomFixtures()
 
@@ -38,6 +39,9 @@ function installJsdomFixtures(): void {
     // 表现为一连串与冷却毫不相干的用例莫名其妙点不动按钮。
     // 抹掉它相当于「重新打开页面」——真实浏览器里刷新就会回到无冷却的初始态。
     clearEmailCodeCooldown()
+    // 语言也是模块级状态：一个用例切到英文后，下一个用例会莫名其妙地
+    // 拿到英文界面。恢复默认语言等同于「重新打开页面」。
+    resetLocaleForTests()
   })
 
   if (!window.matchMedia) {

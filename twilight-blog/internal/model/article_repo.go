@@ -75,9 +75,10 @@ func (r *SQLiteArticleRepository) Create(ctx context.Context, article *Article) 
 	defer tx.Rollback()
 
 	res, err := tx.ExecContext(ctx, `
-INSERT INTO articles (title, content, created_at, updated_at, cover_media_id, deleted_at)
-VALUES (?, ?, ?, ?, ?, NULL)
-`, article.Title, article.Content, article.CreatedAt, article.UpdatedAt, nullableID(article.CoverMediaID))
+INSERT INTO articles (title, content, title_en, content_en, ai_generated, created_at, updated_at, cover_media_id, deleted_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+`, article.Title, article.Content, article.TitleEN, article.ContentEN, boolToInt(article.AIGenerated),
+		article.CreatedAt, article.UpdatedAt, nullableID(article.CoverMediaID))
 	if err != nil {
 		return fmt.Errorf("insert article: %w", err)
 	}
@@ -120,9 +121,11 @@ func (r *SQLiteArticleRepository) Update(ctx context.Context, article *Article) 
 
 	res, err := tx.ExecContext(ctx, `
 UPDATE articles
-SET title = ?, content = ?, created_at = ?, updated_at = ?, cover_media_id = ?
+SET title = ?, content = ?, title_en = ?, content_en = ?, ai_generated = ?,
+    created_at = ?, updated_at = ?, cover_media_id = ?
 WHERE id = ? AND deleted_at IS NULL
-`, article.Title, article.Content, article.CreatedAt, article.UpdatedAt, nullableID(article.CoverMediaID), article.ID)
+`, article.Title, article.Content, article.TitleEN, article.ContentEN, boolToInt(article.AIGenerated),
+		article.CreatedAt, article.UpdatedAt, nullableID(article.CoverMediaID), article.ID)
 	if err != nil {
 		return fmt.Errorf("update article: %w", err)
 	}
@@ -371,7 +374,7 @@ ORDER BY a.cover_media_id
 func (r *SQLiteArticleRepository) GetByID(ctx context.Context, id int64) (*Article, error) {
 	logging.Debugf("[article-repo] GetByID called")
 	row := r.db.QueryRowContext(ctx, `
-SELECT id, title, content, created_at, updated_at, cover_media_id, deleted_at
+SELECT id, title, content, title_en, content_en, ai_generated, created_at, updated_at, cover_media_id, deleted_at
 FROM articles
 WHERE id = ? AND deleted_at IS NULL
 `, id)
@@ -384,11 +387,12 @@ WHERE id = ? AND deleted_at IS NULL
 		return nil, err
 	}
 
-	tags, err := loadTagsForArticle(ctx, r.db, article.ID)
+	tags, tagsEN, err := loadTagsForArticle(ctx, r.db, article.ID)
 	if err != nil {
 		return nil, err
 	}
 	article.Tags = tags
+	article.TagsEN = tagsEN
 	return article, nil
 }
 
@@ -413,7 +417,7 @@ WHERE deleted_at IS NULL
 		}
 
 		rows, err := q.QueryContext(ctx, `
-SELECT id, title, content, created_at, updated_at, cover_media_id, deleted_at
+SELECT id, title, content, title_en, content_en, ai_generated, created_at, updated_at, cover_media_id, deleted_at
 FROM articles
 WHERE deleted_at IS NULL
 ORDER BY created_at DESC, id DESC
@@ -460,7 +464,7 @@ WHERE deleted_at IS NOT NULL
 		}
 
 		rows, err := q.QueryContext(ctx, `
-SELECT id, title, content, created_at, updated_at, cover_media_id, deleted_at
+SELECT id, title, content, title_en, content_en, ai_generated, created_at, updated_at, cover_media_id, deleted_at
 FROM articles
 WHERE deleted_at IS NOT NULL
 ORDER BY deleted_at DESC, id DESC
@@ -503,10 +507,14 @@ func scanArticle(row scanner) (*Article, error) {
 	var article Article
 	var deletedAt sql.NullInt64
 	var coverMediaID sql.NullInt64
+	var aiGenerated int
 	if err := row.Scan(
 		&article.ID,
 		&article.Title,
 		&article.Content,
+		&article.TitleEN,
+		&article.ContentEN,
+		&aiGenerated,
 		&article.CreatedAt,
 		&article.UpdatedAt,
 		&coverMediaID,
@@ -523,6 +531,7 @@ func scanArticle(row scanner) (*Article, error) {
 		value := coverMediaID.Int64
 		article.CoverMediaID = &value
 	}
+	article.AIGenerated = aiGenerated != 0
 
 	return &article, nil
 }
@@ -583,32 +592,35 @@ VALUES (?, ?)
 	return nil
 }
 
-// loadTagsForArticle 读取一篇文章的标签名，按名称排序（不区分大小写）。
-func loadTagsForArticle(ctx context.Context, q queryRunner, articleID int64) ([]string, error) {
+// loadTagsForArticle 读取一篇文章的标签名（中文名与英文名各一份），按名称排序。
+// 两个切片按索引对应；英文名为空串表示该标签没有英文译名。
+func loadTagsForArticle(ctx context.Context, q queryRunner, articleID int64) ([]string, []string, error) {
 	rows, err := q.QueryContext(ctx, `
-SELECT t.name
+SELECT t.name, t.name_en
 FROM tags t
 JOIN article_tags at ON at.tag_id = t.id
 WHERE at.article_id = ?
 ORDER BY t.name COLLATE NOCASE
 `, articleID)
 	if err != nil {
-		return nil, fmt.Errorf("list article tags: %w", err)
+		return nil, nil, fmt.Errorf("list article tags: %w", err)
 	}
 	defer rows.Close()
 
 	tags := make([]string, 0)
+	tagsEN := make([]string, 0)
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, fmt.Errorf("scan article tag: %w", err)
+		var name, nameEN string
+		if err := rows.Scan(&name, &nameEN); err != nil {
+			return nil, nil, fmt.Errorf("scan article tag: %w", err)
 		}
 		tags = append(tags, name)
+		tagsEN = append(tagsEN, nameEN)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate article tags: %w", err)
+		return nil, nil, fmt.Errorf("iterate article tags: %w", err)
 	}
-	return tags, nil
+	return tags, tagsEN, nil
 }
 
 // loadTagsForArticles 为一批文章装配标签，**只用一次查询**。
@@ -636,7 +648,7 @@ func loadTagsForArticles(ctx context.Context, q queryRunner, articles []Article)
 	}
 
 	rows, err := q.QueryContext(ctx, `
-SELECT at.article_id, t.name
+SELECT at.article_id, t.name, t.name_en
 FROM article_tags at
 JOIN tags t ON t.id = at.tag_id
 WHERE at.article_id IN (`+strings.Join(placeholders, ", ")+`)
@@ -648,13 +660,15 @@ ORDER BY at.article_id ASC, t.name COLLATE NOCASE
 	defer rows.Close()
 
 	byArticle := make(map[int64][]string, len(articles))
+	byArticleEN := make(map[int64][]string, len(articles))
 	for rows.Next() {
 		var articleID int64
-		var name string
-		if err := rows.Scan(&articleID, &name); err != nil {
+		var name, nameEN string
+		if err := rows.Scan(&articleID, &name, &nameEN); err != nil {
 			return fmt.Errorf("scan article tag: %w", err)
 		}
 		byArticle[articleID] = append(byArticle[articleID], name)
+		byArticleEN[articleID] = append(byArticleEN[articleID], nameEN)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate article tags: %w", err)
@@ -667,6 +681,11 @@ ORDER BY at.article_id ASC, t.name COLLATE NOCASE
 			tags = []string{}
 		}
 		articles[i].Tags = tags
+		tagsEN, ok := byArticleEN[articles[i].ID]
+		if !ok {
+			tagsEN = []string{}
+		}
+		articles[i].TagsEN = tagsEN
 	}
 	return nil
 }

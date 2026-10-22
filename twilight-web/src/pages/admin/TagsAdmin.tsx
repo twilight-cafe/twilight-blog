@@ -9,6 +9,8 @@ import { blog, getErrorMessage } from '../../lib/client'
 import type { Tag } from 'twilight-blog-api'
 import { useToast } from '../../lib/toast'
 import { Empty, Loading } from '../../components/common'
+import { useDelayedLoading } from '../../lib/loading'
+import { useI18n } from '../../lib/i18n'
 
 async function fetchAllTags(): Promise<Tag[]> {
   const first = await blog.listTags({ page: 1, pageSize: 12 })
@@ -22,11 +24,15 @@ async function fetchAllTags(): Promise<Tag[]> {
 }
 
 export default function TagsAdmin() {
+  const { t } = useI18n()
   const toast = useToast()
   const [tags, setTags] = useState<Tag[]>([])
   const [loading, setLoading] = useState(true)
+  // 首屏加载超过阈值才显示等待提示（见 lib/loading.ts）。
+  const pending = useDelayedLoading(loading)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editingName, setEditingName] = useState('')
+  const [editingNameEN, setEditingNameEN] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -45,12 +51,12 @@ export default function TagsAdmin() {
 
   const save = async (tag: Tag) => {
     if (!editingName.trim()) {
-      toast('标签名不能为空')
+      toast(t('标签名不能为空', 'The tag name cannot be empty'))
       return
     }
     try {
-      await blog.renameTag(tag.id, { name: editingName.trim() })
-      toast('已保存')
+      await blog.renameTag(tag.id, { name: editingName.trim(), nameEn: editingNameEN.trim() })
+      toast(t('已保存', 'Saved'))
       setEditingId(null)
       await load()
     } catch (error) {
@@ -58,30 +64,34 @@ export default function TagsAdmin() {
     }
   }
 
-  if (loading) return <Loading height={200} />
-
   return (
     <>
       <div className="ph">
-        <h2>标签</h2>
+        <h2>{t('标签', 'Tags')}</h2>
         <span className="kicker" style={{ marginTop: 6 }}>TAGS · {tags.length}</span>
       </div>
       <div className="pcard rv">
-        <div className="bd2" style={{ padding: '8px 16px' }}>
-          {tags.length === 0 ? <Empty text="暂无标签" /> : tags.map((tag) => (
+        {/* 重命名后的刷新不再把整页换成 LOADING：页头与卡片留在原位，旧行
+            变暗、新行替换（第一次加载仍然显示等待提示）。 */}
+        <div className="bd2" style={{ padding: '8px 16px' }} aria-busy={loading} data-busy={String(loading)}>
+          {tags.length === 0 ? (
+            loading ? <Loading height={120} visible={pending} /> : <Empty text={t('暂无标签', 'No tags yet')} />
+          ) : tags.map((tag) => (
             <div key={tag.id} className="frow">
               {editingId === tag.id ? (
                 <>
-                  <Input value={editingName} onChange={(event) => setEditingName(event.target.value)} style={{ maxWidth: 240 }} />
-                  <Button small primary onClick={() => void save(tag)}>保存</Button>
-                  <Button small ghost onClick={() => setEditingId(null)}>取消</Button>
+                  <Input value={editingName} onChange={(event) => setEditingName(event.target.value)} placeholder={t('中文名', 'Chinese name')} style={{ maxWidth: 200 }} />
+                  <Input value={editingNameEN} onChange={(event) => setEditingNameEN(event.target.value)} placeholder={t('英文名（可空）', 'English name (optional)')} style={{ maxWidth: 200 }} />
+                  <Button small primary onClick={() => void save(tag)}>{t('保存', 'Save')}</Button>
+                  <Button small ghost onClick={() => setEditingId(null)}>{t('取消', 'Cancel')}</Button>
                 </>
               ) : (
                 <>
                   <Chip>{tag.name}</Chip>
-                  <span className="mono" style={{ fontSize: 11, color: 'var(--faint)' }}>{tag.article_count} 篇</span>
+                  {tag.name_en ? <Chip>{tag.name_en}</Chip> : null}
+                  <span className="mono" style={{ fontSize: 11, color: 'var(--faint)' }}>{tag.article_count} {t('篇', 'posts')}</span>
                   <span style={{ flex: 1 }} />
-                  <Button ghost small onClick={() => { setEditingId(tag.id); setEditingName(tag.name) }}>编辑</Button>
+                  <Button ghost small onClick={() => { setEditingId(tag.id); setEditingName(tag.name); setEditingNameEN(tag.name_en) }}>{t('编辑', 'Edit')}</Button>
                 </>
               )}
             </div>

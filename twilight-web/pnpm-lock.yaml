@@ -12,8 +12,8 @@ importers:
         specifier: ^11.12.0
         version: 11.12.0
       ink-design:
-        specifier: file:../../InkUI
-        version: file:../../InkUI(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        specifier: ^0.1.4
+        version: 0.1.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       katex:
         specifier: ^0.16.47
         version: 0.16.47
@@ -919,8 +919,8 @@ packages:
   html-void-elements@3.0.0:
     resolution: {integrity: sha512-bEqo66MRXsUGxWHV5IP0PUiAWwoEjba4VCzg0LjFJBpchPaTfyfCKTG6bc5F8ucKec3q5y6qOdGyYTSBEvhCrg==}
 
-  ink-design@file:../../InkUI:
-    resolution: {directory: ../../InkUI, type: directory}
+  ink-design@0.1.4:
+    resolution: {integrity: sha512-thfKeJs1ZlU9L0ZUy7PWAfaO/aFXy3vPqnYtHgkFGbYP8bB5b+RvyyC5WvqYldiioVSmFtgTZ2rU4ZK5A+DxxA==}
     peerDependencies:
       react: '>=18'
       react-dom: '>=18'
@@ -2231,7 +2231,7 @@ snapshots:
 
   html-void-elements@3.0.0: {}
 
-  ink-design@file:../../InkUI(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
+  ink-design@0.1.4(react-dom@19.2.8(react@19.2.8))(react@19.2.8):
     dependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)

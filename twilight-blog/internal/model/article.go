@@ -14,13 +14,25 @@ package model
 // CoverMediaID 是头图那张媒体的 id，nil 表示没有头图。它**不是**「这张图归文章所有」
 // 的声明，只是一个指针——同一张媒体理论上可以被多行指向（服务层不阻止，见
 // ArticleService 的说明）。因此删除文章时不能无条件删掉它指向的媒体。
+// 双语与 AI 标记说明：
+//
+//   - Title / Content 是**中文**（也是唯一必填的一份）；TitleEN / ContentEN 是
+//     附加的英文版本，空串表示没有。前台按当前语言取用，英文缺失时逐字段回退中文。
+//   - AIGenerated 是站长在编辑器里显式勾选的标记，服务端不做任何推断（不根据
+//     内容猜、不根据来源猜）。前台据此显示「本文由 AI 生成」的提示条。
+//   - TagsEN 与 Tags **等长同序**，由 repository 在同一次 JOIN 里装配；某一项为空串
+//     表示该标签没有英文名。它不是表上的列（标签名住在 tags 表）。
 type Article struct {
 	ID           int64
 	Title        string
 	Content      string
+	TitleEN      string
+	ContentEN    string
+	AIGenerated  bool
 	CreatedAt    int64
 	UpdatedAt    int64
 	DeletedAt    *int64
 	CoverMediaID *int64
 	Tags         []string
+	TagsEN       []string
 }

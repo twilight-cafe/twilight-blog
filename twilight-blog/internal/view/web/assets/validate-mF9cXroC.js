@@ -1,1 +1,0 @@
-const A=24,s=24,E=/^[^\s@]+@[^\s@]+\.[^\s@]+$/,M=/^[A-Za-z][A-Za-z0-9_-]*$/;function N(n){return E.test(n.trim())?null:"请输入正确的邮箱"}function e(n){return n.length<3||n.length>24?"用户名需 3–24 个字符":M.test(n)?null:"用户名只能包含字母、数字、下划线和连字符，且以字母开头"}function o(n,r="昵称"){const t=n.trim();return t?t.length>24?`${r}不能超过 24 个字符`:null:`请输入${r}`}export{s as N,A as U,N as e,o as n,e as u};

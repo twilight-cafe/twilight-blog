@@ -60,7 +60,16 @@ func registerWeb(e *echo.Echo, cfg *config.Config) error {
 		// 每次都读一遍当前配置：站点描述与搜索开关都可以在运行期被改
 		// （PUT /api/admin/site / settings.json），值班到启动时渲染的副本上
 		// 就会得到「改完刷新还是旧的」。
-		body, err := renderIndex(indexTmpl, newIndexData(cfg.SiteDescriptionValue(), cfg.SearchEnabledValue(), cfg.HomePageSizeValue(), cfg.BorderRadiusValue(), stylesheets, scripts))
+		body, err := renderIndex(indexTmpl, newIndexData(
+			cfg.SiteDescriptionValue(),
+			cfg.SearchEnabledValue(),
+			cfg.MomentsEnabledValue(),
+			cfg.HomePageSizeValue(),
+			cfg.BorderRadiusValue(),
+			cfg.PostBannerHeightValue(),
+			stylesheets,
+			scripts,
+		))
 		if err != nil {
 			return err
 		}

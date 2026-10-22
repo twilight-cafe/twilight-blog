@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	_ "golang.org/x/image/bmp"
 	_ "golang.org/x/image/tiff"
@@ -594,6 +595,86 @@ func (s *MediaService) Get(ctx context.Context, id int64) (*model.Media, error) 
 func (s *MediaService) List(ctx context.Context, p model.Pagination) ([]model.Media, int64, error) {
 	logging.Debugf("[media] list page=%d page_size=%d", p.Page, p.PageSize)
 	return s.repo.List(ctx, p)
+}
+
+// Rename 只改媒体的展示名（original_name），磁盘文件、类型与大小一概不动。
+//
+// 名字的规则集中在 normalizeMediaName（含「扩展名跟随当前展示名」）。这里负责三步：
+// 取当前记录、规范化、落库。先 GetByID 有两个作用：未知 id 立刻返回
+// ErrMediaNotFound（而不是 UPDATE 影响 0 行之后再去猜），以及拿到**现有展示名的
+// 扩展名**——用户只改主名，后缀沿用原来的那一个（sunset.png 改完还是 .png，
+// 不会被自作主张换成磁盘上的 .webp；真实格式由 mime_type 单独记录）。
+//
+// 写库成功后直接回填内存里那份记录并返回，不再回查：本次只改了一列，而媒体其余
+// 列（storage_name / mime_type / size / converted）在改名路径上不可变。
+//
+// 引用方面**不需要任何额外动作**：头图、微语配图、站长头像指向的都是 media.id，
+// 改名后自动继续有效（与 upgrade-media 就地改 storage_name 同一条理由）。
+func (s *MediaService) Rename(ctx context.Context, id int64, rawName string) (*model.Media, error) {
+	logging.Debugf("[media] renaming id=%d", id)
+
+	media, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		logging.Errorf("[media] get for rename failed id=%d: %v", id, err)
+		return nil, err
+	}
+
+	name, err := normalizeMediaName(rawName, media.OriginalName)
+	if err != nil {
+		logging.Warnf("[media] refused to rename id=%d: %v", id, err)
+		return nil, err
+	}
+
+	if err := s.repo.Rename(ctx, id, name); err != nil {
+		logging.Errorf("[media] rename failed id=%d name=%q: %v", id, name, err)
+		return nil, err
+	}
+
+	media.OriginalName = name
+	logging.Infof("[media] renamed id=%d original_name=%q (storage_name=%s unchanged)", id, name, media.StorageName)
+	return media, nil
+}
+
+// normalizeMediaName 把用户输入整理成可以入库的展示名，规则按执行顺序：
+//
+//  1. 去掉首尾空白后不能为空；
+//  2. 不允许控制字符（<0x20、0x7f）与路径分隔符（`/`、`\`）。**这不是在防路径
+//     穿越**——展示名从不参与路径拼接（磁盘名是独立的 storage_name）。它防的是
+//     另外两件事：换行/制表符会把日志与界面撑断，而带分隔符的名字会让人以为
+//     它能当路径用；
+//  3. **扩展名跟随当前展示名**：先剥掉用户自己写的扩展名，再接上这条记录现有
+//     original_name 的后缀。于是 `猫咪`、`猫咪.png`、`猫咪.jpg` 三种输入结果都是
+//     `猫咪.<现有后缀>`——一次改名只换主名，不会顺手把后缀也换掉（用户上传时叫
+//     sunset.png，改完仍然是 .png，而不是被自作主张改成磁盘上的 .webp）。
+//     真实格式另有 mime_type 记录，前端也按 media_type/mime_type 判断怎么渲染，
+//     从不靠文件名猜；
+//  4. 结果（含扩展名）不超过 MaxMediaOriginalNameLength 个**字符**。按字符而不是
+//     字节：一个中文名占 3 字节，按字节判会让中文用户莫名其妙地超限。
+//
+// 允许与别的媒体重名：original_name 不是标识（表上没有唯一约束），它只是给人看的
+// 名字，两张图同名不会顶掉任何东西。
+func normalizeMediaName(raw, currentOriginalName string) (string, error) {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return "", model.ErrInvalidMediaName
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || r == '/' || r == '\\' {
+			return "", model.ErrInvalidMediaName
+		}
+	}
+
+	// 只保留主名：用户写下的扩展名一律丢掉，换成当前记录的那一个。
+	base := strings.TrimSuffix(name, filepath.Ext(name))
+	if base == "" || base == "." || base == ".." {
+		return "", model.ErrInvalidMediaName
+	}
+
+	final := base + filepath.Ext(currentOriginalName)
+	if utf8.RuneCountInString(final) > model.MaxMediaOriginalNameLength {
+		return "", model.ErrInvalidMediaName
+	}
+	return final, nil
 }
 
 // Delete 删除媒体记录与磁盘文件。

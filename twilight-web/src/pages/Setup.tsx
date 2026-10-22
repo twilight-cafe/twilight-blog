@@ -9,9 +9,11 @@ import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button, Input } from 'ink-design'
 import { blog, getErrorMessage, setCurrentUser } from '../lib/client'
-import { PASSWORD_RULE_TEXT, validatePassword } from '../lib/password'
+import { passwordRuleText, validatePassword } from '../lib/password'
 import { useToast } from '../lib/toast'
 import { useCanonicalPath, usePageHead } from '../lib/head'
+import { useI18n } from '../lib/i18n'
+import LanguageSwitcher from '../components/LanguageSwitcher'
 
 interface SetupProps {
   onInstalled?: () => void
@@ -21,12 +23,13 @@ interface SetupProps {
 const INITIAL_ADMIN_NAME = 'admin'
 
 export default function Setup({ onInstalled }: SetupProps) {
+  const { t } = useI18n()
   const navigate = useNavigate()
   const toast = useToast()
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   // 安装页是「站点还不存在」时的入口，同样不该被收录。
-  usePageHead({ path: useCanonicalPath(), title: '安装', robots: 'noindex, nofollow' })
+  usePageHead({ path: useCanonicalPath(), title: t('安装', 'Install'), robots: 'noindex, nofollow' })
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -40,7 +43,7 @@ export default function Setup({ onInstalled }: SetupProps) {
     try {
       const result = await blog.install({ password: password.trim() })
       if (!result.installed) {
-        toast('安装未完成，请稍后重试')
+        toast(t('安装未完成，请稍后重试', 'Installation did not finish. Try again shortly.'))
         return
       }
 
@@ -51,12 +54,12 @@ export default function Setup({ onInstalled }: SetupProps) {
       const me = await blog.login({ username: INITIAL_ADMIN_NAME, password: password.trim() })
       setCurrentUser(me)
       onInstalled?.()
-      toast('安装完成，已自动登录')
+      toast(t('安装完成，已自动登录', 'Installation complete — you are signed in'))
       navigate('/admin', { replace: true })
     } catch (error) {
       // The password is already saved at this point, so a failed sign-in must not
       // read as a failed install: the operator can simply log in manually.
-      toast(getErrorMessage(error, '安装失败'))
+      toast(getErrorMessage(error, t('安装失败', 'Installation failed')))
     } finally {
       setBusy(false)
     }
@@ -64,21 +67,22 @@ export default function Setup({ onInstalled }: SetupProps) {
 
   return (
     <div className="login-bg">
+      <LanguageSwitcher className="auth-lang" />
       <form className="login" style={{ width: 460 }} onSubmit={submit}>
         <div className="lg">
           <span className="sq">T</span>
-          <h1>安装 Twilight</h1>
+          <h1>{t('安装 Twilight', 'Install Twilight')}</h1>
         </div>
         <p className="sub">FIRST RUN · SET ADMIN PASSWORD</p>
         <div className="fld">
-          <label>管理员密码 *</label>
+          <label>{t('管理员密码 *', 'Administrator password *')}</label>
           <Input variant="login" type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
         </div>
-        <p className="policy">密码要求：{PASSWORD_RULE_TEXT}。</p>
+        <p className="policy">{t('密码要求：', 'Password requirements: ')}{passwordRuleText()}{t('。', '.')}</p>
         <Button primary type="submit" style={{ width: '100%', justifyContent: 'center' }} disabled={busy}>
-          {busy ? '正在安装…' : '设置密码并进入后台 →'}
+          {busy ? t('正在安装…', 'Installing…') : t('设置密码并进入后台 →', 'Set password and enter the console →')}
         </Button>
-        <p className="sec">登录用户名默认为 <b>{INITIAL_ADMIN_NAME}</b>，配置写入服务端后即可使用。</p>
+        <p className="sec">{t('登录用户名默认为', 'The default login name is')} <b>{INITIAL_ADMIN_NAME}</b>{t('，配置写入服务端后即可使用。', ' — it is usable as soon as the configuration is saved.')}</p>
       </form>
     </div>
   )

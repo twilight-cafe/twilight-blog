@@ -26,7 +26,7 @@ import (
 // implementations by default.
 var (
 	registerWebFn     = registerWeb
-	newMailer         = mail.New
+	newMailer         = func(cfg mail.Config) (mail.Mailer, error) { return mail.New(cfg) }
 	retrySearchSyncFn = retrySearchSync
 	sleep             = time.Sleep
 	pruneExpired      = database.PruneExpired
@@ -180,6 +180,10 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 	// 三个仓储在这里收敛成一张 target_type → 查询函数 的表。
 	commentTargets := service.NewCommentTargetLookups(articleRepo, momentRepo, pageRepo)
 	commentService := service.NewCommentService(commentRepo, userRepo, commentTargets)
+	// 评论通知复用一个独立的接口（只要求 Send），但实现仍是 EmailService：
+	// 通知同样要进 emails 留痕，并受每日配额约束。收件人用函数读取，
+	// 站长在设置页改完立即生效，不必重启。
+	commentNotifier := service.NewCommentNotifier(emailService, cfg.CommentNotifyToValue)
 
 	authHandler := handler.NewAuthHandler(cfg, sessionStore, userService, adminAuth, trustForwarded)
 	articleHandler := handler.NewArticleHandler(articleService)
@@ -191,7 +195,7 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 	// 管理员发表的评论要标注为其展示名，因此把取名字的函数注入进去。
 	// 与旧版不同，这个函数现在每次都会查一次库（展示名住在 users 表里）：
 	// 刻意不做缓存——缓存会带来「改了昵称前台没变」这类 bug，而评论写入频率很低。
-	commentHandler := handler.NewCommentHandler(commentService, authHandler.AdminName)
+	commentHandler := handler.NewCommentHandler(commentService, authHandler.AdminName, commentNotifier)
 
 	mediaHandler := handler.NewMediaHandler(mediaService)
 	emailHandler := handler.NewEmailHandler(emailService)
@@ -271,8 +275,13 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 	e.GET("/api/tags", tagHandler.List)
 	e.GET("/api/tags/:id/articles", tagHandler.ListArticles)
 	e.GET("/api/tags/:id/count", tagHandler.Count)
-	e.GET("/api/moments", momentHandler.List)
-	e.GET("/api/moments/:id", momentHandler.Get)
+	// 微语关闭时公开路由不注册：「关闭」应当让探测者以为它从来不存在（404），
+	// 而不是 503。管理端写接口保留，内容不会因此不可达，重新开启即可恢复。
+	momentsEnabled := cfg.MomentsEnabledValue()
+	if momentsEnabled {
+		e.GET("/api/moments", momentHandler.List)
+		e.GET("/api/moments/:id", momentHandler.Get)
+	}
 	e.GET("/api/pages", pageHandler.List)
 	e.GET("/api/pages/:id", pageHandler.Get)
 	// 搜索是公开只读的，但它每处理一个请求就要外呼一次 Meilisearch：
@@ -305,6 +314,9 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 	admin.PUT("/profile", authHandler.UpdateAdminProfile)
 	// 站点设置：只允许管理员改，因为描述会出现在所有读者的首页与页脚上。
 	admin.PUT("/site", siteHandler.Update)
+	// 管理端读接口比公开的 GET /api/site 多一个评论通知收件地址。
+	// 那个字段是站长的私人联系方式，不能随公开快照下发。
+	admin.GET("/site", siteHandler.GetAdmin)
 	admin.GET("/users", userHandler.List)
 	admin.PUT("/users/:id", userHandler.Update)
 
@@ -318,15 +330,17 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 	admin.DELETE("/articles/:id", articleHandler.Delete)
 	admin.DELETE("/articles", articleHandler.BatchDelete)
 	admin.PUT("/tags/:id", tagHandler.Rename)
-	admin.POST("/moments", momentHandler.Create)
-	admin.PUT("/moments/:id", momentHandler.Update)
-	admin.GET("/trash/moments", momentHandler.ListDeleted)
-	admin.POST("/moments/:id/restore", momentHandler.Restore)
-	admin.POST("/moments/batch-restore", momentHandler.BatchRestore)
-	admin.DELETE("/moments/:id/permanent", momentHandler.PermanentDelete)
-	admin.DELETE("/moments/batch-permanent", momentHandler.BatchPermanentDelete)
-	admin.DELETE("/moments/:id", momentHandler.Delete)
-	admin.DELETE("/moments", momentHandler.BatchDelete)
+	if momentsEnabled {
+		admin.POST("/moments", momentHandler.Create)
+		admin.PUT("/moments/:id", momentHandler.Update)
+		admin.GET("/trash/moments", momentHandler.ListDeleted)
+		admin.POST("/moments/:id/restore", momentHandler.Restore)
+		admin.POST("/moments/batch-restore", momentHandler.BatchRestore)
+		admin.DELETE("/moments/:id/permanent", momentHandler.PermanentDelete)
+		admin.DELETE("/moments/batch-permanent", momentHandler.BatchPermanentDelete)
+		admin.DELETE("/moments/:id", momentHandler.Delete)
+		admin.DELETE("/moments", momentHandler.BatchDelete)
+	}
 	admin.POST("/pages", pageHandler.Create)
 	admin.PUT("/pages/:id", pageHandler.Update)
 	admin.GET("/trash/pages", pageHandler.ListDeleted)
@@ -338,6 +352,10 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 	admin.DELETE("/pages", pageHandler.BatchDelete)
 	admin.POST("/media", mediaHandler.Upload)
 	admin.GET("/media", mediaHandler.List)
+	// 改名用 PATCH：只更新展示名一个字段，媒体本体（文件、类型、大小）不动。
+	// 它与其他写端点受同一套保护——RequireCSRF 与 OriginCheck 都按「非安全方法
+	// 一律校验」处理，不认具体动词，所以 PATCH 不需要额外的豁免或登记。
+	admin.PATCH("/media/:id", mediaHandler.Rename)
 	admin.DELETE("/media/:id", mediaHandler.Delete)
 	admin.GET("/emails", emailHandler.List)
 	admin.GET("/emails/:id", emailHandler.Get)

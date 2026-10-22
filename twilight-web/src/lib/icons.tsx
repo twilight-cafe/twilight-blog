@@ -24,7 +24,11 @@ const paths: Record<string, ReactNode> = {
   eye: <><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" /><circle cx="12" cy="12" r="2.8" /></>,
   clock: <><circle cx="12" cy="12" r="8.5" /><path d="M12 7v5l3.5 2" /></>,
   out: <><path d="M10 4H4v16h6M14 8l4 4-4 4M18 12H9" /></>,
+  // 上箭头：「回到顶部」按钮。从下往上收笔，和 out 的「向外走」相反。
+  up: <><path d="M12 19V5M6 11l6-6 6 6" /></>,
   user: <><circle cx="12" cy="8" r="3.6" /><path d="M5 20a7 7 0 0114 0" /></>,
+  // 铅笔：媒体库的「重命名」动作（改的是展示名，不是文件本身）。
+  edit: <><path d="M4 20h4L20 8l-4-4L4 16zM14 6l4 4" /></>,
 }
 
 export default function Icon({

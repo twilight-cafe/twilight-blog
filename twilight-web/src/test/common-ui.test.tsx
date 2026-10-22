@@ -1,21 +1,23 @@
 // common-ui.test.tsx —— 通用展示组件 / 亮暗切换 / 错误边界
 import { describe, expect, it, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
-import { Avatar, Empty, Loading, PageHero, Reveal } from '../components/common'
+import { Reveal } from 'ink-design'
+import { Avatar, Empty, Loading, PageHero } from '../components/common'
 import ModeToggle from '../components/ModeToggle'
 import ErrorBoundary from '../components/ErrorBoundary'
 
 describe('common.tsx', () => {
-  it('Reveal：IntersectionObserver 命中后加 in 类并停止观察', () => {
+  it('Reveal：进视口前隐藏，命中后加 ink-reveal-in 并停止观察', () => {
     const { container, unmount } = render(
-      <Reveal as="article" delay={0.3} className="extra">
+      <Reveal as="article" delay={300} className="extra">
         <span>内容</span>
       </Reveal>,
     )
     const element = container.firstElementChild as HTMLElement
     expect(element.tagName).toBe('ARTICLE')
-    expect(element.className).toBe('rv  extra')
-    expect(element.style.getPropertyValue('--d')).toBe('0.3s')
+    expect(element.className).toBe('ink-reveal extra')
+    // 延迟单位是毫秒（ink-design 的契约），由 CSS 变量表达，不走 JS 定时器。
+    expect(element.style.getPropertyValue('--ink-reveal-delay')).toBe('300ms')
 
     // 从 setup 暴露的静态数组里拿最近的实例
     const observers = (globalThis as unknown as { IntersectionObserver: { instances: unknown[] } }).IntersectionObserver.instances
@@ -28,7 +30,7 @@ describe('common.tsx', () => {
     act(() => {
       observer.callback([{ isIntersecting: true, target: element }])
     })
-    expect(element.className).toBe('rv in extra')
+    expect(element.className).toBe('ink-reveal ink-reveal-in extra')
     expect(observer.unobserve).toHaveBeenCalledWith(element)
 
     // 未进入视口不播放；卸载断开观察
@@ -39,13 +41,25 @@ describe('common.tsx', () => {
       disconnect: ReturnType<typeof vi.fn>
     }
     secondObserver.callback([{ isIntersecting: false }])
-    expect(secondElement.className).toBe('rv')
+    expect(secondElement.className).toBe('ink-reveal')
     unmount()
   })
 
-  it('Reveal：无 delay 不写 CSS 变量；ref 为空安全', () => {
+  it('Reveal：没有 delay 时延迟变量为 0ms；减少动态效果时直接可见', () => {
     const { container } = render(<Reveal><i>x</i></Reveal>)
-    expect((container.firstElementChild as HTMLElement).style.getPropertyValue('--d')).toBe('')
+    const element = container.firstElementChild as HTMLElement
+    expect(element.style.getPropertyValue('--ink-reveal-delay')).toBe('0ms')
+
+    // 系统要求减少动态效果：不挂观察器，首帧就是可见态（Reveal 内部直接返回）。
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query.includes('reduced-motion'),
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }))
+    const reduced = render(<Reveal>y</Reveal>)
+    expect((reduced.container.firstElementChild as HTMLElement).className).toBe('ink-reveal ink-reveal-in')
+    vi.unstubAllGlobals()
   })
 
   it('Loading / Empty / Avatar / PageHero', () => {
@@ -76,6 +90,9 @@ describe('ModeToggle', () => {
   afterEach(() => {
     window.localStorage.clear()
     delete document.documentElement.dataset.mode
+    // lib.dom 把 startViewTransition 标成必有，所以删除时要把类型退成可选。
+    delete (document as { startViewTransition?: unknown }).startViewTransition
+    vi.unstubAllGlobals()
   })
 
   it('初次渲染按系统偏好落 mode；点击切换并持久化', () => {
@@ -97,6 +114,44 @@ describe('ModeToggle', () => {
     expect(document.documentElement.dataset.mode).toBe('dark')
     second.unmount()
     unmount()
+  })
+
+  it('支持 View Transitions 时在回调里换色（整页交叉淡入）', () => {
+    let inside = false
+    const startViewTransition = vi.fn((callback: () => void) => {
+      // 真浏览器的回调在快照之后才执行：这里同样延后到「调用栈之外」不可能，
+      // 但要验证的是「换色发生在这个回调里」，不是时序。
+      callback()
+      inside = document.documentElement.dataset.mode === 'dark'
+      return {}
+    })
+    Object.defineProperty(document, 'startViewTransition', { configurable: true, value: startViewTransition })
+
+    render(<ModeToggle />)
+    fireEvent.click(document.querySelector('button') as HTMLButtonElement)
+
+    expect(startViewTransition).toHaveBeenCalledTimes(1)
+    expect(inside).toBe(true)
+    expect(document.documentElement.dataset.mode).toBe('dark')
+    expect(window.localStorage.getItem('tw_mode')).toBe('dark')
+  })
+
+  it('系统要求减少动态效果时退回直接切换，不做整页交叉淡入', () => {
+    const startViewTransition = vi.fn()
+    Object.defineProperty(document, 'startViewTransition', { configurable: true, value: startViewTransition })
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: true,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }))
+
+    render(<ModeToggle />)
+    fireEvent.click(document.querySelector('button') as HTMLButtonElement)
+
+    expect(startViewTransition).not.toHaveBeenCalled()
+    // matches 恒 true 也意味着 prefers-color-scheme 命中 → 初始为暗色，点击后变亮。
+    expect(document.documentElement.dataset.mode).toBe('light')
   })
 })
 

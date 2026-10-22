@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "highlight.js": "^11.12.0",
-    "ink-design": "file:../../InkUI",
+    "ink-design": "^0.1.4",
     "katex": "^0.16.47",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

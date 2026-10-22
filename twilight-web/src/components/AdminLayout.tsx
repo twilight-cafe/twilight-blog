@@ -14,22 +14,28 @@ import { Link, Navigate, Outlet, useLocation, useNavigate } from 'react-router-d
 import { AdminNav, IconButton } from 'ink-design'
 import { blog, logout, useCurrentUser } from '../lib/client'
 import { useDocumentTitle, useSiteAvatar } from '../lib/site'
+import { isMomentsEnabled } from '../lib/flags'
+import { useI18n } from '../lib/i18n'
+import LanguageSwitcher from './LanguageSwitcher'
 import { useCanonicalPath, usePageHead } from '../lib/head'
+import { useRouteMotion } from '../lib/motion'
+import { useRouteTransition } from './RouteTransition'
 import { useToast } from '../lib/toast'
 import Icon from '../lib/icons'
 import ModeToggle from './ModeToggle'
+import ProgressiveImage from './ProgressiveImage'
 import { Loading } from './common'
 
 const ADMIN_MENU = [
-  { key: 'posts', to: '/admin/posts', icon: 'doc', label: '文章' },
-  { key: 'pages', to: '/admin/pages', icon: 'page', label: '页面' },
-  { key: 'tags', to: '/admin/tags', icon: 'tag', label: '标签' },
-  { key: 'moments', to: '/admin/moments', icon: 'zap', label: '微语' },
-  { key: 'comments', to: '/admin/comments', icon: 'msg', label: '评论' },
-  { key: 'media', to: '/admin/media', icon: 'img', label: '媒体' },
-  { key: 'users', to: '/admin/users', icon: 'set', label: '用户' },
-  { key: 'site', to: '/admin/site-settings', icon: 'pal', label: '站点' },
-  { key: 'profile', to: '/admin/profile', icon: 'user', label: '账号' },
+  { key: 'posts', to: '/admin/posts', icon: 'doc', zh: '文章', en: 'Posts' },
+  { key: 'pages', to: '/admin/pages', icon: 'page', zh: '页面', en: 'Pages' },
+  { key: 'tags', to: '/admin/tags', icon: 'tag', zh: '标签', en: 'Tags' },
+  { key: 'moments', to: '/admin/moments', icon: 'zap', zh: '微语', en: 'Moments' },
+  { key: 'comments', to: '/admin/comments', icon: 'msg', zh: '评论', en: 'Comments' },
+  { key: 'media', to: '/admin/media', icon: 'img', zh: '媒体', en: 'Media' },
+  { key: 'users', to: '/admin/users', icon: 'set', zh: '用户', en: 'Users' },
+  { key: 'site', to: '/admin/site-settings', icon: 'pal', zh: '站点', en: 'Site' },
+  { key: 'profile', to: '/admin/profile', icon: 'user', zh: '账号', en: 'Account' },
 ]
 
 /**
@@ -37,7 +43,7 @@ const ADMIN_MENU = [
  * single page. The server enforces the same split; this only avoids rendering
  * navigation that would answer 403.
  */
-const USER_MENU = [{ key: 'profile', to: '/admin/profile', icon: 'user', label: '我的资料' }]
+const USER_MENU = [{ key: 'profile', to: '/admin/profile', icon: 'user', zh: '我的资料', en: 'My profile' }]
 
 const USER_HOME = '/admin/profile'
 
@@ -96,6 +102,7 @@ function fetchCounts(): Promise<Record<string, number>> {
 }
 
 export default function AdminLayout() {
+  const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const toast = useToast()
@@ -107,6 +114,13 @@ export default function AdminLayout() {
   // Remembers that a console was rendered, so losing the identity mid-session
   // can be reported as an expiry rather than as a fresh visit by a stranger.
   const hadSession = useRef(false)
+  // 内容区在路由切换时先退场再入场；侧栏与顶栏不动，与公开站同一个观感
+  // （方向、高度接力与滚动位置见 lib/motion.ts 的 useRouteMotion，
+  // 三阶段编排见 components/RouteTransition.tsx）。
+  // 钩子必须在下面的守卫早退之前调用（早退会让 hook 数量变化）。
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const { phase } = useRouteTransition()
+  useRouteMotion(panelRef, phase)
 
   useEffect(() => {
     if (user) {
@@ -116,7 +130,7 @@ export default function AdminLayout() {
     if (hadSession.current) {
       hadSession.current = false
       countsCache = null
-      toast('登录已过期，请重新登录')
+      toast(t('登录已过期，请重新登录', 'Your session expired. Please sign in again.'))
     }
   }, [user, toast])
 
@@ -145,7 +159,7 @@ export default function AdminLayout() {
       await logout()
       countsCache = null
       hadSession.current = false
-      toast('已退出登录')
+      toast(t('已退出登录', 'Signed out'))
       navigate('/admin/login', { replace: true })
     } finally {
       setLoggingOut(false)
@@ -156,9 +170,13 @@ export default function AdminLayout() {
   // 菜单标签就是使用者对这一页最自然的称呼，比在每个页面里各写一次可靠。
   // 后台各页面**不要**再自行设置 document.title：React 的子 effect 先于父 effect
   // 执行，这里会把它覆盖掉，只会留下一条看起来生效、其实永远看不到的语句。
-  const menu = isAdmin ? ADMIN_MENU : USER_MENU
+  // 微语关闭时后台菜单也一并隐藏：那个入口打开的是一个所有接口都返回 404 的页面。
+  // 路由本身仍保留，直接输入地址时会由页面内的「未启用」提示兜住。
+  const menu = (isAdmin ? ADMIN_MENU : USER_MENU)
+    .filter((item) => item.key !== 'moments' || isMomentsEnabled())
+    .map((item) => ({ ...item, label: t(item.zh, item.en) }))
   const current = menu.find((item) => item.to === location.pathname)?.label
-    || (location.pathname === '/admin' ? '概览' : (isAdmin ? '管理' : '账号'))
+    || (location.pathname === '/admin' ? t('概览', 'Overview') : (isAdmin ? t('管理', 'Manage') : t('账号', 'Account')))
   useDocumentTitle(current)
   // 控制台整体 noindex, nofollow：这些页面本身要求登录，没有任何被收录的理由，
   // 而 nufollow 也让「/admin/* 下的链接」不再被抓取器顺着走。
@@ -179,8 +197,8 @@ export default function AdminLayout() {
     return <Navigate to={USER_HOME} replace />
   }
 
-  const displayName = isAdmin ? (user.name || '管理员') : (user.user?.nickname || '用户')
-  const roleLabel = isAdmin ? '管理员' : (user.user?.email || '普通用户')
+  const displayName = isAdmin ? (user.name || t('管理员', 'Admin')) : (user.user?.nickname || t('用户', 'User'))
+  const roleLabel = isAdmin ? t('管理员', 'Administrator') : (user.user?.email || t('普通用户', 'Visitor'))
 
   return (
     <div className="shell">
@@ -203,24 +221,28 @@ export default function AdminLayout() {
               有头像就显示头像，没有才回退首字母占位——之前这里永远只渲染占位块，
               站长换了头像后台也看不到（本次修复的缺陷）。 */}
           {avatarUrl
-            ? <img className="avatar" src={avatarUrl} alt={displayName} />
+            // 与前台的作者卡同一个组件：同一张图在两处都走骨架 → 淡入。
+            ? <ProgressiveImage className="avatar" frameClassName="round" src={avatarUrl} alt={displayName} />
             : <span className="cav">{displayName.slice(0, 1).toUpperCase()}</span>}
           <div className="info"><b>{displayName}</b><span>{roleLabel}</span></div>
-          <IconButton size="sm" title="退出登录" disabled={loggingOut} onClick={() => void signOut()}>
+          <IconButton size="sm" title={t('退出登录', 'Sign out')} disabled={loggingOut} onClick={() => void signOut()}>
             <Icon name="out" size={14} />
           </IconButton>
         </div>
       </aside>
       <div className="main">
         <header className="topbar">
-          <span className="bc">{isAdmin ? '后台' : '账号'} / <b>{current}</b></span>
+          {/* 面包屑后半段随路由变化：key 绑在当前页名上，换页时它重新挂载，
+              淡入一次——侧栏与顶栏原地不动，只有这一个词跟着内容换。 */}
+          <span className="bc">{isAdmin ? t('后台', 'Console') : t('账号', 'Account')} / <b key={current}>{current}</b></span>
           <span className="sp" />
           <Link className="sbtn" to="/" target="_blank" rel="noreferrer">
-            <Icon name="eye" size={13} />查看网页
+            <Icon name="eye" size={13} />{t('查看网页', 'View site')}
           </Link>
+          <LanguageSwitcher />
           <ModeToggle />
         </header>
-        <div className="panel">
+        <div className="panel" ref={panelRef}>
           {/* 后台页面按路由懒加载（见 App.tsx）。边界放在这一层而不是整个 Routes
               外面：加载期间侧栏与顶栏保持挂载，只有内容区显示加载态，不会整屏闪。 */}
           <Suspense fallback={<Loading height={300} />}>

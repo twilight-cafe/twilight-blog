@@ -1,12 +1,21 @@
 // Package main 是博客后端的进程入口。启动遵循固定顺序：日志 → 配置 →
 // 数据库迁移 → 启动内嵌 Meilisearch → 注册路由 → 监听 HTTP。前几步任一
-// 失败都会使进程以非零状态退出（logging.Fatalf），因为缺少其中任何一项
-// 都无法安全对外服务；唯独“配置未安装”（settings.json 缺少 password_hash）
-// 不算失败——进程照常启动，以便提供 /install 引导页让用户设置管理员密码。
+// 失败都会使进程以非零状态退出，因为缺少其中任何一项都无法安全对外服务；
+// 唯独“配置未安装”（settings.json 缺少 password_hash）不算失败——进程照常
+// 启动，以便提供 /install 引导页让用户设置管理员密码。
+//
+// # 为什么启动链是可注入的
+//
+// 这条链上每一步都可能失败，而每一步的失败都是**启动即退出**——也就是说，
+// 它们在任何测试里都跑不到，除非它们能单独替换。于是 runServe 的每一步都
+// 收在一个 boot 结构里（见 serve.go 的 bootHooks），默认值指向真实实现。
+// 代价是多一层间接；回报是「漏装 cwebp」「数据库打不开」「代理配置写错」
+// 这些故障各自有了用例，而不再只能靠「装好环境跑一次」来验证。
 package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -40,9 +49,12 @@ import (
 // 掷一次骰子，而重启间隔通常长到让日志里只剩「起不来」）。
 //
 // 只重试固定次数、只在启动阶段生效：真正的配置类故障（二进制缺失、数据目录
-// 不可写、端口全被占）会在三次内全部失败，仍然以 Fatalf 收场，
+// 不可写、端口全被占）会在三次内全部失败，仍然以非零状态退出，
 // 不会把明确的错误拖成静默等待。
-const (
+// searchStartAttempts 是固定的尝试次数；searchStartBackoff 是 var 而非 const：
+// 它是整套测试里唯一「本该很慢」的时间参数，测试把它降到毫秒级，
+// 从而在毫秒内验证「试三次再失败」而不必真的睡一秒半。
+var (
 	searchStartAttempts = 3
 	searchStartBackoff  = 500 * time.Millisecond
 )
@@ -69,39 +81,142 @@ func startWithRetries(attempts int, backoff time.Duration, start func() (*search
 	return nil, lastErr
 }
 
-// main 是进程入口：先处理 email / admin / backup / restore / upgrade-media 子命令，
-// 否则走启动 HTTP 服务的主路径。启动顺序与失败策略见包注释；
-// 任何一步失败都以非零状态退出。
-func main() {
-	if len(os.Args) > 1 && os.Args[1] == "email" {
-		if err := runEmailCommand(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	// admin / backup / restore / upgrade-media 四个子命令自己决定退出码
-	// （2 = 用法或校验失败，1 = 运行失败），所以这里直接用它返回的值。
-	if len(os.Args) > 1 && os.Args[1] == "admin" {
-		os.Exit(runAdminCommand(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == "backup" {
-		os.Exit(runBackupCommand(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == "restore" {
-		os.Exit(runRestoreCommand(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == "upgrade-media" {
-		os.Exit(runUpgradeMediaCommand(os.Args[2:]))
-	}
+// run 是 main 的可测本体：派发子命令，否则启动 HTTP 服务。
+//
+// 返回值就是进程退出码。子命令自己决定（2 = 用法或校验失败，1 = 运行失败），
+// 服务启动路径上任何一步失败都返回 1。
+// commands 是各个子命令的实现。抽出这一层只有一个理由：run 里「email 子命令
+// 成功」这条分支在真实世界里的含义是「真的发出去一封邮件」，没有测试会去
+// 真的发一封。命令实现作为参数传入之后，这条分支就有了不依赖外网的用例。
+type commands struct {
+	email        func(args []string) error
+	admin        func(args []string) int
+	backup       func(args []string) int
+	restore      func(args []string) int
+	upgradeMedia func(args []string) int
+}
 
-	const settingsPath = "settings.json"
-	const databasePath = "blog.db"
+func defaultCommands() commands {
+	return commands{
+		email:        runEmailCommand,
+		admin:        runAdminCommand,
+		backup:       runBackupCommand,
+		restore:      runRestoreCommand,
+		upgradeMedia: runUpgradeMediaCommand,
+	}
+}
+
+func run(args []string, hooks bootHooks, cli commands) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "email":
+			if err := cli.email(args[1:]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			return 0
+		case "admin":
+			return cli.admin(args[1:])
+		case "backup":
+			return cli.backup(args[1:])
+		case "restore":
+			return cli.restore(args[1:])
+		case "upgrade-media":
+			return cli.upgradeMedia(args[1:])
+		}
+	}
+	if err := serve(hooks); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+// exitFunc 让 main() 可以在测试里被执行而不结束测试进程：真机上它是 os.Exit。
+var exitFunc = os.Exit
+
+func main() {
+	exitFunc(run(os.Args[1:], bootHooksProvider(), defaultCommands()))
+}
+
+// bootHooks 是启动链上每一步的实现。默认值指向真实实现，测试按需替换其中的
+// 某几步来制造故障。
+type bootHooks struct {
+	configureLogging func(level string) error
+	acquireLock      func() (func(), error)
+	loadSettings     func(path string) (*config.Config, error)
+	saveSettings     func(cfg *config.Config, path string) error
+	detectMedia      func(webpTool, webmTool string) (*mediaconv.Converter, error)
+	openDatabase     func(path string) (*sql.DB, error)
+	migrateAdmin     func(ctx context.Context, db *sql.DB, cfg *config.Config) error
+	revokeSessions   func(ctx context.Context, db *sql.DB) (int64, error)
+	installed        func(ctx context.Context, db *sql.DB) (bool, error)
+	startSearch      func(ctx context.Context, dataDir string) (*search.Manager, error)
+	parseProxies     func(entries []string) (middleware.TrustedProxies, error)
+	registerRoutes   func(*echo.Echo, *config.Config, *sql.DB, string, *search.Client, *mediaconv.Converter) error
+	newEcho          func() *echo.Echo
+	listen           func(e *echo.Echo, addr string) error
+	sleep            func(time.Duration)
+	exit             func(code int)
+	nowSignal        func() <-chan os.Signal
+}
+
+// searchStarter 是 search.Start 的间接层：默认值是真实启动，而「Meilisearch
+// 拉不起来」这条分支的测试不能真的去下载一个二进制。
+var searchStarter = search.Start
+
+// bootHooksProvider 是一个变量（而不是函数）：main() 要能在测试里被整体替换掉，
+// 否则「main 执行了什么」就只能靠真的起一个服务来观察。
+var bootHooksProvider = defaultBootHooks
+
+func defaultBootHooks() bootHooks {
+	return bootHooks{
+		configureLogging: logging.Configure,
+		acquireLock: func() (func(), error) {
+			handle, err := pidfile.Acquire(pidfile.FileName)
+			if err != nil {
+				return nil, err
+			}
+			return func() { handle.Release() }, nil
+		},
+		loadSettings: config.Load,
+		saveSettings: func(cfg *config.Config, path string) error { return cfg.Save(path) },
+		detectMedia:  mediaconv.Detect,
+		openDatabase: database.Open,
+		migrateAdmin: model.MigrateAdminCredentials,
+		revokeSessions: func(ctx context.Context, db *sql.DB) (int64, error) {
+			return session.NewStore(db).RevokeLegacySessions(ctx)
+		},
+		installed: func(ctx context.Context, db *sql.DB) (bool, error) {
+			return model.NewSQLiteAdminRepository(db).Exists(ctx)
+		},
+		startSearch: func(ctx context.Context, dataDir string) (*search.Manager, error) {
+			return searchStarter(ctx, dataDir)
+		},
+		parseProxies:   middleware.ParseTrustedProxies,
+		registerRoutes: view.Register,
+		newEcho:        echo.New,
+		listen:         func(e *echo.Echo, addr string) error { return e.Start(addr) },
+		sleep:          time.Sleep,
+		exit:           func(code int) { exitFunc(code) },
+		nowSignal: func() <-chan os.Signal {
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+			return sigCh
+		},
+	}
+}
+
+// serve 执行完整的启动链，任一步失败即返回错误（调用方据此以非零码退出）。
+//
+// 顺序是硬约束，见各步骤上方的注释；这里只把它们排成一条可测的链。
+func serve(hooks bootHooks) error {
+	ctx := context.Background()
 
 	// 在读取配置**之前**就打开默认日志文件，这样连最早期的配置错误
 	// 也能落到 log.txt，而不是只在控制台上闪一下。
-	if err := logging.Configure(""); err != nil {
-		logging.Fatalf("configure default logging: %v", err)
+	if err := hooks.configureLogging(""); err != nil {
+		return fmt.Errorf("configure default logging: %w", err)
 	}
 	logging.Debugf("[main] default log file opened")
 
@@ -114,27 +229,27 @@ func main() {
 	//
 	// 写失败只告警、不中断启动：磁盘满或目录只读时站点仍然该能对外服务，
 	// 代价仅仅是还原命令退回到「没有锁文件」那条路（它仍会告警）。
-	lock, lockErr := pidfile.Acquire(pidfile.FileName)
+	release, lockErr := hooks.acquireLock()
 	if lockErr != nil {
 		logging.Warnf("[main] could not write %s: %v; "+
 			"`restore` will not be able to tell that this instance is running", pidfile.FileName, lockErr)
 	} else {
-		defer lock.Release()
+		defer release()
 	}
 
 	// 是否已安装取决于 settings.json 是否存在且含非空 password_hash：
 	// 只有 settings.json 而没有密码哈希，只是一个默认模板，不算装好。
 	// 注意数据库不在这里打开——由下面的 database.Open 负责建库与迁移。
 	logging.Debugf("[main] loading settings from %s", settingsPath)
-	cfg, err := config.Load(settingsPath)
-	if err != nil && !errors.Is(err, config.ErrNotInstalled) {
-		logging.Fatalf("load settings: %v", err)
+	cfg, err := hooks.loadSettings(settingsPath)
+	if err != nil && !isNotInstalled(err) {
+		return fmt.Errorf("load settings: %w", err)
 	}
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	if err := logging.Configure(cfg.LogLevel); err != nil {
-		logging.Fatalf("configure log level: %v", err)
+	if err := hooks.configureLogging(cfg.LogLevel); err != nil {
+		return fmt.Errorf("configure log level: %w", err)
 	}
 	logging.Infof("log level set to %s", logging.CurrentLevel())
 
@@ -148,25 +263,26 @@ func main() {
 	// （settings.json 里钉着另一台机器的 webp_tool 绝对路径时就会这样）。
 	//
 	// 探测结果同时交给 view.Register，避免同一次判断在启动路径上出现两份。
-	mediaConv, err := mediaconv.Detect(cfg.WebPTool, cfg.WebMTool)
+	mediaConv, err := hooks.detectMedia(cfg.WebPTool, cfg.WebMTool)
 	if err != nil {
-		logging.Fatalf("media conversion is required: %v", err)
+		return fmt.Errorf("media conversion is required: %w", err)
 	}
 	logging.Infof("[media] WebP conversion enabled: using %s (%s)", mediaConv.WebPTool, mediaConv.WebPKind)
+
 	// 读完配置立刻回写一次，让 settings.json 始终包含完整的键：
 	// 已有的值原样保留，缺的补默认值。这样用户打开文件就能看到全部可选项。
 	//
 	// 这一步**不能**顺手把管理员凭据从文件里抹掉：下面的 MigrateAdminCredentials
 	// 正是从文件里把它们读出来的（见 config.LegacyAdminCredentials）。凭据的清除
 	// 发生在迁移成功之后的第二次 Save。
-	if err := cfg.Save(settingsPath); err != nil {
-		logging.Fatalf("update settings: %v", err)
+	if err := hooks.saveSettings(cfg, settingsPath); err != nil {
+		return fmt.Errorf("update settings: %w", err)
 	}
 
 	logging.Debugf("[main] opening database %s", databasePath)
-	db, err := database.Open(databasePath)
+	db, err := hooks.openDatabase(databasePath)
 	if err != nil {
-		logging.Fatalf("open database: %v", err)
+		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
 	logging.Debugf("[main] database opened: %s", databasePath)
@@ -179,10 +295,10 @@ func main() {
 	// 第一个到达的请求会看到「未安装」，于是未鉴权的 /install 重新开放——
 	// 任何能访问站点的人都能设一个新的管理员密码。那是一个真实的接管窗口。
 	//
-	// 因此这里是 main 里唯一正确的位置：database.Open 之后（表已建好）、
+	// 因此这里是启动链里唯一正确的位置：database.Open 之后（表已建好）、
 	// view.Register 之前（还没开始服务）。
-	if err := model.MigrateAdminCredentials(context.Background(), db, cfg); err != nil {
-		logging.Fatalf("migrate administrator credentials: %v", err)
+	if err := hooks.migrateAdmin(ctx, db, cfg); err != nil {
+		return fmt.Errorf("migrate administrator credentials: %w", err)
 	}
 
 	// 凭据已经进库，现在把它们从配置与文件里抹掉。
@@ -190,8 +306,8 @@ func main() {
 	// 也一并清空——管理员的登录名与展示名从此只从 users 表读。
 	// 注意仍在 view.Register 之前：管理员的登录名不能在配置文件里"多活"一会儿。
 	cfg.ClearLegacyCredentials()
-	if err := cfg.Save(settingsPath); err != nil {
-		logging.Fatalf("remove migrated administrator credentials from settings: %v", err)
+	if err := hooks.saveSettings(cfg, settingsPath); err != nil {
+		return fmt.Errorf("remove migrated administrator credentials from settings: %w", err)
 	}
 
 	// 凭据轮换必须让旧会话一并失效。
@@ -202,17 +318,19 @@ func main() {
 	// 有效的管理员凭证，而且事后改密码也吊销不掉它。
 	//
 	// 位置与迁移同样严格：必须在开始对外服务之前。
-	if revoked, err := session.NewStore(db).RevokeLegacySessions(context.Background()); err != nil {
-		logging.Fatalf("revoke pre-migration sessions: %v", err)
-	} else if revoked > 0 {
+	revoked, err := hooks.revokeSessions(ctx, db)
+	if err != nil {
+		return fmt.Errorf("revoke pre-migration sessions: %w", err)
+	}
+	if revoked > 0 {
 		logging.Infof("[main] revoked %d pre-migration session(s)", revoked)
 	}
 
 	// 「是否已安装」的权威答案在数据库里（users 表有没有 is_admin = 1 的行）。
 	// 这里只是把状态写进日志，好让运维一眼看出该去 /install 还是该去登录页。
-	installed, err := model.NewSQLiteAdminRepository(db).Exists(context.Background())
+	installed, err := hooks.installed(ctx, db)
 	if err != nil {
-		logging.Fatalf("check installation state: %v", err)
+		return fmt.Errorf("check installation state: %w", err)
 	}
 	if !installed {
 		logging.Infof("not installed yet; open /install to set the admin password")
@@ -224,13 +342,13 @@ func main() {
 	var meili *search.Manager
 	if cfg.SearchEnabledValue() {
 		logging.Debugf("[main] starting embedded meilisearch")
-		var err error
-		meili, err = startWithRetries(searchStartAttempts, searchStartBackoff, func() (*search.Manager, error) {
-			return search.Start(context.Background(), "")
+		manager, err := startWithRetries(searchStartAttempts, searchStartBackoff, func() (*search.Manager, error) {
+			return hooks.startSearch(ctx, "")
 		})
 		if err != nil {
-			logging.Fatalf("start meilisearch: %v", err)
+			return fmt.Errorf("start meilisearch: %w", err)
 		}
+		meili = manager
 		defer meili.Stop()
 		logging.Debugf("[main] embedded meilisearch started")
 	} else {
@@ -243,19 +361,17 @@ func main() {
 	// 之所以要**显式**调用，是因为这里走的是 os.Exit，它不执行 defer，
 	// 上面的 defer meili.Stop() / defer db.Close() 在这条路径上都不生效。
 	// 代价是退出不等待在途请求完成，属于偏简单的关闭策略。
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
-		<-sigCh
+		<-hooks.nowSignal()
 		logging.Infof("received shutdown signal, stopping meilisearch")
 		if meili != nil {
 			meili.Stop()
 		}
 		_ = db.Close()
-		os.Exit(0)
+		hooks.exit(0)
 	}()
 
-	e := echo.New()
+	e := hooks.newEcho()
 	e.HideBanner = true
 	logWriter := logging.Writer()
 	e.Logger.SetOutput(logWriter)
@@ -267,9 +383,9 @@ func main() {
 	// 解析一次、两处共用：IP 提取与 OriginCheck 都要回答「本次请求的对端是不是
 	// 我们配置的代理」，各写一份判断迟早会漂移（改动前 OriginCheck 用的就是
 	// 「配置里有没有代理」这个全局布尔量，与按请求判定的口径并不一致）。
-	trustedProxies, err := middleware.ParseTrustedProxies(cfg.TrustedProxies)
+	trustedProxies, err := hooks.parseProxies(cfg.TrustedProxies)
 	if err != nil {
-		logging.Fatalf("configure trusted proxies: %v", err)
+		return fmt.Errorf("configure trusted proxies: %w", err)
 	}
 	e.IPExtractor = middleware.BuildIPExtractor(trustedProxies)
 
@@ -306,11 +422,11 @@ func main() {
 	if meili != nil {
 		searchClient = meili.Client()
 	}
-	if err := view.Register(e, cfg, db, settingsPath, searchClient, mediaConv); err != nil {
+	if err := hooks.registerRoutes(e, cfg, db, settingsPath, searchClient, mediaConv); err != nil {
 		if meili != nil {
 			meili.Stop()
 		}
-		logging.Fatalf("register routes: %v", err)
+		return fmt.Errorf("register routes: %w", err)
 	}
 	logging.Debugf("[main] HTTP routes registered")
 
@@ -328,8 +444,16 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", serverName, port)
 	logging.Infof("blog engine listening on %s", addr)
 	logging.Debugf("[main] starting HTTP server")
-	if err := e.Start(addr); err != nil {
-		meili.Stop()
-		logging.Fatalf("server stopped: %v", err)
+	if err := hooks.listen(e, addr); err != nil {
+		if meili != nil {
+			meili.Stop()
+		}
+		return fmt.Errorf("server stopped: %w", err)
 	}
+	return nil
+}
+
+// isNotInstalled 把「还没装过」这一种非致命错误单独认出来，其余一律致命。
+func isNotInstalled(err error) bool {
+	return err != nil && errors.Is(err, config.ErrNotInstalled)
 }

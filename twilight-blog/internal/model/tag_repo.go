@@ -19,7 +19,8 @@ type TagRepository interface {
 	GetByID(ctx context.Context, id int64) (*Tag, error)
 	ListArticlesByTag(ctx context.Context, tagID int64, p Pagination) ([]Article, int64, error)
 	CountByTag(ctx context.Context, tagID int64) (int64, error)
-	Rename(ctx context.Context, tagID int64, newName string) error
+	// Rename 同时更新中文名与英文名。英文名允许为空（表示不提供译名）。
+	Rename(ctx context.Context, tagID int64, newName, newNameEN string) error
 }
 
 type SQLiteTagRepository struct {
@@ -50,11 +51,11 @@ FROM tags
 		}
 
 		rows, err := q.QueryContext(ctx, `
-SELECT t.id, t.name, COUNT(a.id)
+SELECT t.id, t.name, t.name_en, COUNT(a.id)
 FROM tags t
 LEFT JOIN article_tags at ON at.tag_id = t.id
 LEFT JOIN articles a ON a.id = at.article_id AND a.deleted_at IS NULL
-GROUP BY t.id, t.name
+GROUP BY t.id, t.name, t.name_en
 ORDER BY t.name COLLATE NOCASE
 LIMIT ? OFFSET ?
 `, p.Limit(), p.Offset())
@@ -65,7 +66,7 @@ LIMIT ? OFFSET ?
 
 		for rows.Next() {
 			var tag Tag
-			if err := rows.Scan(&tag.ID, &tag.Name, &tag.ArticleCount); err != nil {
+			if err := rows.Scan(&tag.ID, &tag.Name, &tag.NameEN, &tag.ArticleCount); err != nil {
 				return fmt.Errorf("scan tag: %w", err)
 			}
 			tags = append(tags, tag)
@@ -91,13 +92,13 @@ func (r *SQLiteTagRepository) GetByID(ctx context.Context, id int64) (*Tag, erro
 func getTagByID(ctx context.Context, q queryRunner, id int64) (*Tag, error) {
 	var tag Tag
 	err := q.QueryRowContext(ctx, `
-SELECT t.id, t.name, COUNT(a.id)
+SELECT t.id, t.name, t.name_en, COUNT(a.id)
 FROM tags t
 LEFT JOIN article_tags at ON at.tag_id = t.id
 LEFT JOIN articles a ON a.id = at.article_id AND a.deleted_at IS NULL
 WHERE t.id = ?
-GROUP BY t.id, t.name
-`, id).Scan(&tag.ID, &tag.Name, &tag.ArticleCount)
+GROUP BY t.id, t.name, t.name_en
+`, id).Scan(&tag.ID, &tag.Name, &tag.NameEN, &tag.ArticleCount)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrTagNotFound
@@ -137,7 +138,7 @@ WHERE at.tag_id = ?
 		}
 
 		rows, err := q.QueryContext(ctx, `
-SELECT a.id, a.title, a.content, a.created_at, a.updated_at, a.cover_media_id, a.deleted_at
+SELECT a.id, a.title, a.content, a.title_en, a.content_en, a.ai_generated, a.created_at, a.updated_at, a.cover_media_id, a.deleted_at
 FROM articles a
 JOIN article_tags at ON at.article_id = a.id
 WHERE at.tag_id = ? AND a.deleted_at IS NULL
@@ -194,7 +195,7 @@ WHERE at.tag_id = ?
 //     反映到所有引用它的文章上」是天然成立的，不需要批量更新关联表；
 //  3. 检查与更新之间没有包事务，存在竞态窗口：两个并发改名理论上可能互相覆盖
 //     或绕过重名检查。单连接池（SetMaxOpenConns(1)）把窗口压得很小，但并非不存在。
-func (r *SQLiteTagRepository) Rename(ctx context.Context, tagID int64, newName string) error {
+func (r *SQLiteTagRepository) Rename(ctx context.Context, tagID int64, newName, newNameEN string) error {
 	logging.Debugf("[tag-repo] Rename called")
 	var currentName string
 	err := r.db.QueryRowContext(ctx, `
@@ -225,9 +226,9 @@ LIMIT 1
 
 	if _, err := r.db.ExecContext(ctx, `
 UPDATE tags
-SET name = ?
+SET name = ?, name_en = ?
 WHERE id = ?
-`, newName, tagID); err != nil {
+`, newName, newNameEN, tagID); err != nil {
 		return fmt.Errorf("rename tag: %w", err)
 	}
 	return nil

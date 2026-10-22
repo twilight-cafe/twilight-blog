@@ -33,10 +33,20 @@ type CommentHandler struct {
 	// 那个昵称，而不是写死的字面量。以函数而非字符串注入，改名后立即生效；
 	// 它接受 context，因为展示名现在住在 users 表里，需要查一次库。
 	adminName func(ctx context.Context) string
+	// notifier 是可选的新评论通知。为 nil 时表示未接线（测试或旧构造点），
+	// 创建评论照常成功。
+	notifier CommentNotifier
 }
 
-func NewCommentHandler(svc *service.CommentService, adminName func(ctx context.Context) string) *CommentHandler {
-	return &CommentHandler{service: svc, adminName: adminName}
+// CommentNotifier 是评论创建后的可选通知钩子。
+// 用接口而不是具体类型，是为了让 handler 的测试可以观察「是否通知」而不必
+// 拉起真实的邮件服务。
+type CommentNotifier interface {
+	Notify(comment *model.Comment)
+}
+
+func NewCommentHandler(svc *service.CommentService, adminName func(ctx context.Context) string, notifier CommentNotifier) *CommentHandler {
+	return &CommentHandler{service: svc, adminName: adminName, notifier: notifier}
 }
 
 // isAdminRequest 判断请求是否携带了有效的管理员会话。
@@ -188,6 +198,11 @@ func (h *CommentHandler) Create(c echo.Context) error {
 		comment, err = h.service.CreateAsAdmin(c.Request().Context(), adminName, req.TargetType, req.TargetID, req.ParentID, req.Content)
 	} else if sess.UserID != nil {
 		comment, err = h.service.CreateAsUser(c.Request().Context(), *sess.UserID, req.TargetType, req.TargetID, req.ParentID, req.Content)
+		// 只有访客评论才通知站长：管理员自己刚写下的评论不需要再收一封邮件。
+		// 通知失败在 notifier 内部被吞掉，绝不影响这次 201。
+		if err == nil && h.notifier != nil {
+			h.notifier.Notify(comment)
+		}
 	} else {
 		return echo.NewHTTPError(http.StatusUnauthorized, "unauthorized")
 	}

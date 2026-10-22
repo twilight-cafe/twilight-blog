@@ -20,7 +20,7 @@
 // 界面会出现两个互相覆盖的保存时刻（保存描述把行数打回旧值，或反之）。
 
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Input } from 'ink-design'
+import { Button, Input, Switch } from 'ink-design'
 import { getErrorMessage } from '../../lib/client'
 import {
   DEFAULT_BORDER_RADIUS,
@@ -28,12 +28,15 @@ import {
   DEFAULT_HOME_PAGE_SIZE,
   DESCRIPTION_MAX,
   FALLBACK_DESCRIPTION,
+  loadAdminSiteSettings,
   loadSiteMeta,
   saveSiteSettings,
 } from '../../lib/site'
 import { useToast } from '../../lib/toast'
 import { Loading } from '../../components/common'
+import { useDelayedLoading } from '../../lib/loading'
 import AuthorAvatar from '../../components/AuthorAvatar'
+import { useI18n } from '../../lib/i18n'
 
 /**
  * 与后端 normalizeSiteDescription 镜像：换行/制表符折成空格，再压缩连续空白。
@@ -71,7 +74,19 @@ const HOME_PAGE_MAX = 12
 const RADIUS_MIN = 0
 const RADIUS_MAX = 24
 
+/**
+ * 与后端 viewmodel 的 Min/MaxPostBannerHeight 镜像；改一处必须改另一处。
+ * 0 在这里**不是**合法值：它只表示旧配置里的「未设置」。
+ */
+const BANNER_MIN = 120
+const BANNER_MAX = 800
+const BANNER_DEFAULT = 400
+
+/** 只做「看起来像邮箱」的前端提示；真正的校验在服务端。 */
+const EMAIL_PATTERN = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/
+
 export default function SiteSettings() {
+  const { t } = useI18n()
   const toast = useToast()
   const [value, setValue] = useState('')
   const [saved, setSaved] = useState('')
@@ -85,14 +100,28 @@ export default function SiteSettings() {
   // 圆角同样是文本态：允许输入中途为空。
   const [radiusText, setRadiusText] = useState(String(DEFAULT_BORDER_RADIUS))
   const [savedRadius, setSavedRadius] = useState(DEFAULT_BORDER_RADIUS)
+  // 头图高度同样用文本态：允许输入中途为空。
+  const [bannerText, setBannerText] = useState(String(BANNER_DEFAULT))
+  const [savedBanner, setSavedBanner] = useState(BANNER_DEFAULT)
+  const [moments, setMoments] = useState(true)
+  const [savedMoments, setSavedMoments] = useState(true)
+  // 评论通知地址：空串表示关闭通知。
+  const [notifyText, setNotifyText] = useState('')
+  const [savedNotify, setSavedNotify] = useState('')
   const [loading, setLoading] = useState(true)
+  // 站点设置通常一次返回；LOADING 只在超过阈值时显示。
+  const pending = useDelayedLoading(loading)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     let alive = true
-    // loadSiteMeta 内部已兜住失败（回退到内置值），这里不需要 catch。
-    void loadSiteMeta()
-      .then((meta) => {
+    // loadSiteMeta 内部已兜住失败（回退到内置值）；管理端快照单独失败时
+    // 只把通知地址留空，不影响其余设置的回显。
+    void Promise.all([
+      loadSiteMeta(),
+      loadAdminSiteSettings().catch(() => null),
+    ])
+      .then(([meta, admin]) => {
         if (!alive) return
         setValue(meta.description)
         setSaved(meta.description)
@@ -102,6 +131,13 @@ export default function SiteSettings() {
         setSavedPageSize(meta.homePageSize)
         setRadiusText(String(meta.borderRadius))
         setSavedRadius(meta.borderRadius)
+        setBannerText(String(meta.postBannerHeight))
+        setSavedBanner(meta.postBannerHeight)
+        setMoments(meta.momentsEnabled)
+        setSavedMoments(meta.momentsEnabled)
+        const notify = admin?.comment_notify_to ?? ''
+        setNotifyText(notify)
+        setSavedNotify(notify)
       })
       .finally(() => {
         if (alive) setLoading(false)
@@ -125,27 +161,42 @@ export default function SiteSettings() {
   // 注意这里没有「0 视为无效」的判断：0 是合法的直角。
   const radius = Number.parseInt(radiusText, 10)
   const radiusValid = Number.isInteger(radius) && radius >= RADIUS_MIN && radius <= RADIUS_MAX
+  const banner = Number.parseInt(bannerText, 10)
+  const bannerValid = Number.isInteger(banner) && banner >= BANNER_MIN && banner <= BANNER_MAX
+  const trimmedNotify = notifyText.trim()
+  const notifyValid = trimmedNotify === '' || EMAIL_PATTERN.test(trimmedNotify)
   const dirty =
     normalized !== saved ||
     (linesValid && lines !== savedLines) ||
     (pageSizeValid && pageSize !== savedPageSize) ||
-    (radiusValid && radius !== savedRadius)
+    (radiusValid && radius !== savedRadius) ||
+    (bannerValid && banner !== savedBanner) ||
+    moments !== savedMoments ||
+    trimmedNotify !== savedNotify
 
   const submit = async () => {
     if (tooLong) {
-      toast(`网站描述不能超过 ${DESCRIPTION_MAX} 个字符`)
+      toast(t(`网站描述不能超过 ${DESCRIPTION_MAX} 个字符`, `The site description must be at most ${DESCRIPTION_MAX} characters`))
       return
     }
     if (!linesValid) {
-      toast(`代码块行数必须是 ${CODE_LINES_MIN} 到 ${CODE_LINES_MAX} 之间的整数`)
+      toast(t(`代码块行数必须是 ${CODE_LINES_MIN} 到 ${CODE_LINES_MAX} 之间的整数`, `Code lines must be an integer between ${CODE_LINES_MIN} and ${CODE_LINES_MAX}`))
       return
     }
     if (!pageSizeValid) {
-      toast(`首页每页文章数必须是 ${HOME_PAGE_MIN} 到 ${HOME_PAGE_MAX} 之间的整数`)
+      toast(t(`首页每页文章数必须是 ${HOME_PAGE_MIN} 到 ${HOME_PAGE_MAX} 之间的整数`, `Posts per page must be an integer between ${HOME_PAGE_MIN} and ${HOME_PAGE_MAX}`))
       return
     }
     if (!radiusValid) {
-      toast(`圆角必须是 ${RADIUS_MIN} 到 ${RADIUS_MAX} 之间的整数`)
+      toast(t(`圆角必须是 ${RADIUS_MIN} 到 ${RADIUS_MAX} 之间的整数`, `The radius must be an integer between ${RADIUS_MIN} and ${RADIUS_MAX}`))
+      return
+    }
+    if (!bannerValid) {
+      toast(t(`头图高度必须是 ${BANNER_MIN} 到 ${BANNER_MAX} 之间的整数`, `Banner height must be an integer between ${BANNER_MIN} and ${BANNER_MAX}`))
+      return
+    }
+    if (!notifyValid) {
+      toast(t('评论通知邮箱格式不正确', 'The notification email address is not valid'))
       return
     }
     setBusy(true)
@@ -157,6 +208,9 @@ export default function SiteSettings() {
         codeBlockMaxLines: lines,
         homePageSize: pageSize,
         borderRadius: radius,
+        postBannerHeight: banner,
+        momentsEnabled: moments,
+        commentNotifyTo: trimmedNotify,
       })
       setValue(meta.description)
       setSaved(meta.description)
@@ -166,25 +220,30 @@ export default function SiteSettings() {
       setSavedPageSize(meta.homePageSize)
       setRadiusText(String(meta.borderRadius))
       setSavedRadius(meta.borderRadius)
-      toast(meta.description ? '站点设置已更新' : '已清空网站描述，前台将使用内置文案')
+      setBannerText(String(meta.postBannerHeight))
+      setSavedBanner(meta.postBannerHeight)
+      setMoments(meta.momentsEnabled)
+      setSavedMoments(meta.momentsEnabled)
+      setNotifyText(trimmedNotify)
+      setSavedNotify(trimmedNotify)
+      toast(meta.description ? t('站点设置已更新', 'Site settings updated') : t('已清空网站描述，前台将使用内置文案', 'Description cleared — the built-in copy will be used'))
     } catch (error) {
-      toast(getErrorMessage(error, '保存失败'))
+      toast(getErrorMessage(error, t('保存失败', 'Save failed')))
     } finally {
       setBusy(false)
     }
   }
 
-  if (loading) return <Loading height={220} />
+  if (loading) return <Loading height={220} visible={pending} />
 
   return (
     <>
       <div className="ph">
-        <h2>站点设置</h2>
+        <h2>{t('站点设置', 'Site settings')}</h2>
         <span className="kicker" style={{ marginTop: 6 }}>SITE SETTINGS · ADMIN</span>
       </div>
       <p className="hint" style={{ marginBottom: 16 }}>
-        这里的文案面向所有读者。它同时用于首页标语、页脚简介、侧栏作者卡、首页标签页标题与搜索引擎摘要；
-        留空则回退到内置文案「{FALLBACK_DESCRIPTION}」。
+        {t('这里的文案面向所有读者。它同时用于首页标语、页脚简介、侧栏作者卡、首页标签页标题与搜索引擎摘要；留空则回退到内置文案。', 'This copy is shown to every reader: home slogan, footer intro, author card, home page title and search snippet. Leave it empty to fall back to the built-in copy.')}
       </p>
 
       <div className="set-grid">
@@ -196,7 +255,7 @@ export default function SiteSettings() {
           }}
         >
           <div className="ph2">
-            <b>站点参数</b>
+            <b>{t('站点参数', 'Site parameters')}</b>
             <span className="sp" />
             <span className={`set-count${tooLong ? ' over' : ''}`}>{count} / {DESCRIPTION_MAX}</span>
           </div>
@@ -212,10 +271,10 @@ export default function SiteSettings() {
               />
             </div>
             <p className="hint" style={{ marginTop: 8 }}>
-              换行与连续空格会被自动折叠成一个空格；上限 {DESCRIPTION_MAX} 字（按字符数，不是字节数）。
+              {t(`换行与连续空格会被自动折叠成一个空格；上限 ${DESCRIPTION_MAX} 字（按字符数，不是字节数）。`, `Line breaks and repeated spaces collapse into one space; the limit is ${DESCRIPTION_MAX} characters (not bytes).`)}
             </p>
             <div className="fld" style={{ marginTop: 14 }}>
-              <label>代码块最大显示行数</label>
+              <label>{t('代码块最大显示行数', 'Max code block lines')}</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Input
                   variant="box"
@@ -228,12 +287,12 @@ export default function SiteSettings() {
                   style={{ width: 110 }}
                 />
                 <span className="hint" style={{ margin: 0 }}>
-                  文章里的块级代码框超过这个行数后，在代码框内上下滚动（{CODE_LINES_MIN}–{CODE_LINES_MAX} 行）。
+                  {t(`文章里的块级代码框超过这个行数后，在代码框内上下滚动（${CODE_LINES_MIN}–${CODE_LINES_MAX} 行）。`, `Code blocks longer than this scroll inside their box (${CODE_LINES_MIN}–${CODE_LINES_MAX} lines).`)}
                 </span>
               </div>
             </div>
             <div className="fld" style={{ marginTop: 14 }}>
-              <label>首页每页文章数</label>
+              <label>{t('首页每页文章数', 'Posts per home page')}</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Input
                   variant="box"
@@ -246,12 +305,12 @@ export default function SiteSettings() {
                   style={{ width: 110 }}
                 />
                 <span className="hint" style={{ margin: 0 }}>
-                  首页每页展示的文章数，超出的分页展示（{HOME_PAGE_MIN}–{HOME_PAGE_MAX} 篇）。
+                  {t(`首页每页展示的文章数，超出的分页展示（${HOME_PAGE_MIN}–${HOME_PAGE_MAX} 篇）。`, `How many posts each home page shows; the rest are paginated (${HOME_PAGE_MIN}–${HOME_PAGE_MAX}).`)}
                 </span>
               </div>
             </div>
             <div className="fld" style={{ marginTop: 14 }}>
-              <label>圆角</label>
+              <label>{t('圆角', 'Corner radius')}</label>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Input
                   variant="box"
@@ -264,9 +323,7 @@ export default function SiteSettings() {
                   style={{ width: 110 }}
                 />
                 <span className="hint" style={{ margin: 0 }}>
-                  卡片、按钮、输入框等方形排版件的统一圆角，单位 px
-                  （{RADIUS_MIN}–{RADIUS_MAX}，0 为直角）。头像等圆形元素、
-                  标签徽章与代码框不跟随。
+                  {t(`卡片、按钮、输入框等方形排版件的统一圆角，单位 px（${RADIUS_MIN}–${RADIUS_MAX}，0 为直角）。头像等圆形元素、标签徽章与代码框不跟随。`, `Unified radius for cards, buttons and inputs, in px (${RADIUS_MIN}–${RADIUS_MAX}; 0 means square). Avatars, badges and code boxes keep their shape.`)}
                 </span>
               </div>
               {/* 圆角是「看一眼就懂」的参数，给一排实时预览比文字描述省事得多。
@@ -277,16 +334,57 @@ export default function SiteSettings() {
                   className="radius-preview-item"
                   style={{ borderRadius: `${radiusValid ? radius : savedRadius}px` }}
                 >
-                  卡片
+                  {t('卡片', 'Card')}
                 </span>
                 <span
                   className="radius-preview-btn"
                   style={{ borderRadius: `${radiusValid ? radius : savedRadius}px` }}
                 >
-                  按钮
+                  {t('按钮', 'Button')}
                 </span>
-                <span className="radius-preview-avatar">头像不跟随</span>
+                <span className="radius-preview-avatar">{t('头像不跟随', 'Avatars keep their shape')}</span>
               </div>
+            </div>
+            <div className="fld" style={{ marginTop: 14 }}>
+              <label>{t('文章头图高度', 'Post banner height')}</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Input
+                  variant="box"
+                  type="number"
+                  min={BANNER_MIN}
+                  max={BANNER_MAX}
+                  step={1}
+                  value={bannerText}
+                  onChange={(event) => setBannerText(event.target.value)}
+                  style={{ width: 110 }}
+                />
+                <span className="hint" style={{ margin: 0 }}>
+                  {t(`文章页头图的最大显示高度，单位 px（${BANNER_MIN}–${BANNER_MAX}）。竖版长图会被裁掉边缘，不会把标题推出首屏。`, `Maximum cover height on post pages, in px (${BANNER_MIN}–${BANNER_MAX}). Tall images are cropped instead of pushing the title off-screen.`)}
+                </span>
+              </div>
+            </div>
+            <div className="fld" style={{ marginTop: 14 }}>
+              <label>{t('微语', 'Moments')}</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Switch checked={moments} onChange={(event) => setMoments(event.target.checked)} />
+                <span className="hint" style={{ margin: 0 }}>
+                  {moments ? t('已启用：前台显示微语入口。', 'Enabled: the public site shows Moments.') : t('已关闭：前台隐藏入口，公开接口返回 404。', 'Disabled: the public entry is hidden and the public API returns 404.')}
+                  {t('已发布的内容不会被删除，重新开启即可恢复。', 'Published content is not deleted; re-enabling restores it.')}
+                </span>
+              </div>
+            </div>
+            <div className="fld" style={{ marginTop: 14 }}>
+              <label>{t('评论通知邮箱', 'Comment notification email')}</label>
+              <Input
+                variant="box"
+                type="email"
+                placeholder="owner@example.com"
+                value={notifyText}
+                onChange={(event) => setNotifyText(event.target.value)}
+              />
+              <p className="hint" style={{ marginTop: 8 }}>
+                {t('有新的访客评论时发一封纯文本通知到这里。留空表示关闭通知；站长自己发表的评论不会触发通知。', 'A plain-text notice is sent here when a visitor comments. Leave empty to disable; the owner’s own comments never trigger it.')}
+              </p>
             </div>
             <div className="act-row" style={{ marginTop: 14 }}>
               <Button
@@ -296,37 +394,39 @@ export default function SiteSettings() {
                 disabled={busy || (value === '' && saved === '')}
                 onClick={() => setValue('')}
               >
-                清空描述
+                {t('清空描述', 'Clear description')}
               </Button>
               <span className="sp" />
               <span className="set-state">
-                {dirty ? '有未保存的修改' : '已保存'}
+                {/* key 绑在状态上：文字换掉时那一小块重挂载，CSS 的淡入才会重播
+                    ——否则「已保存 / 有未保存的修改」只是瞬间换了个词。 */}
+                <span className="swap-text" key={String(dirty)}>{dirty ? t('有未保存的修改', 'Unsaved changes') : t('已保存', 'Saved')}</span>
               </span>
               <Button
                 primary
                 small
                 type="submit"
-                disabled={busy || tooLong || !linesValid || !pageSizeValid || !radiusValid || !dirty}
+                disabled={busy || tooLong || !linesValid || !pageSizeValid || !radiusValid || !bannerValid || !notifyValid || !dirty}
               >
-                {busy ? '保存中…' : '保存'}
+                {busy ? t('保存中…', 'Saving…') : t('保存', 'Save')}
               </Button>
             </div>
           </div>
         </form>
 
         <div className="pcard rv">
-          <div className="ph2"><b>预览</b><span className="sp" /><span className="set-state">前台实际效果</span></div>
+          <div className="ph2"><b>{t('预览', 'Preview')}</b><span className="sp" /><span className="set-state">{t('前台实际效果', 'As seen by readers')}</span></div>
           <div className="bd2 set-preview">
             <div className="set-preview-block">
-              <span className="kicker">首页标语</span>
+              <span className="kicker">{t('首页标语', 'Home slogan')}</span>
               <div className="set-slogan">{normalized || FALLBACK_DESCRIPTION}</div>
             </div>
             <div className="set-preview-block">
-              <span className="kicker">页脚简介</span>
+              <span className="kicker">{t('页脚简介', 'Footer intro')}</span>
               <p className="set-footer">{normalized || FALLBACK_DESCRIPTION}</p>
             </div>
             <div className="set-preview-block">
-              <span className="kicker">侧栏作者卡</span>
+              <span className="kicker">{t('侧栏作者卡', 'Author card')}</span>
               {/* 与 PublicSidebar 的作者卡同款标记：预览要是另一套排版，
                   它就只是在描述一个不会发生的事情。头像也是真的那一张
                   （在「账号」页设置），这里只预览描述，不预览头像。 */}
@@ -343,7 +443,7 @@ export default function SiteSettings() {
               </div>
             </div>
             <div className="set-preview-block">
-              <span className="kicker">首页标签页标题</span>
+              <span className="kicker">{t('首页标签页标题', 'Home page title')}</span>
               <div className="set-title">Twilight · {normalized || FALLBACK_DESCRIPTION}</div>
             </div>
           </div>

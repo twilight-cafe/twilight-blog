@@ -9,4 +9,4 @@ packageImportMethod: copy
 allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
-  - ink-design@0.1.0
+  - ink-design@0.1.4

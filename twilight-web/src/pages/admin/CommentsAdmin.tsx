@@ -12,15 +12,17 @@ import type { Comment } from 'twilight-blog-api'
 import { useDialog } from '../../lib/dialog'
 import { useToast } from '../../lib/toast'
 import { Avatar, Empty, Loading } from '../../components/common'
+import { useDelayedLoading } from '../../lib/loading'
+import { t, useI18n } from '../../lib/i18n'
 
 type Tab = 'all' | 'trash'
 
 function authorLabel(comment: Comment): string {
-  if (comment.author.type === 'admin') return comment.author.name || '管理员'
+  if (comment.author.type === 'admin') return comment.author.name || t('管理员', 'Admin')
   // Never derive the display name from the address; `nickname` is the public
   // name and `email` is only sent to admin-authenticated callers.
   const nickname = (comment.author.nickname || '').trim()
-  return nickname || '访客'
+  return nickname || t('访客', 'Guest')
 }
 
 function authorEmail(comment: Comment): string {
@@ -28,6 +30,7 @@ function authorEmail(comment: Comment): string {
 }
 
 export default function CommentsAdmin() {
+  const { t } = useI18n()
   const toast = useToast()
   const { confirm } = useDialog()
   const [tab, setTab] = useState<Tab>('all')
@@ -35,6 +38,8 @@ export default function CommentsAdmin() {
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [loading, setLoading] = useState(true)
+  // 首屏加载超过阈值才显示等待提示（见 lib/loading.ts）。
+  const pending = useDelayedLoading(loading)
   const [reloadKey, setReloadKey] = useState(0)
 
   // One effect owns the fetch: changing the tab resets the page in the click
@@ -55,7 +60,7 @@ export default function CommentsAdmin() {
         if (!alive) return
         setList([])
         setTotalPages(1)
-        toast(getErrorMessage(error, '加载评论失败'))
+        toast(getErrorMessage(error, t('加载评论失败', 'Failed to load comments')))
       } finally {
         if (alive) setLoading(false)
       }
@@ -76,10 +81,10 @@ export default function CommentsAdmin() {
   }
 
   const remove = async (comment: Comment) => {
-    if (!(await confirm('删除评论', '确定将这条评论移入回收站？'))) return
+    if (!(await confirm(t('删除评论', 'Delete comment'), t('确定将这条评论移入回收站？', 'Move this comment to the recycle bin?')))) return
     try {
       await blog.deleteComment(comment.id)
-      toast('已移入回收站')
+      toast(t('已移入回收站', 'Moved to the recycle bin'))
       reload()
     } catch (error) {
       toast(getErrorMessage(error))
@@ -89,7 +94,7 @@ export default function CommentsAdmin() {
   const restore = async (comment: Comment) => {
     try {
       await blog.restoreComment(comment.id)
-      toast('已恢复')
+      toast(t('已恢复', 'Restored'))
       reload()
     } catch (error) {
       toast(getErrorMessage(error))
@@ -97,10 +102,10 @@ export default function CommentsAdmin() {
   }
 
   const permanent = async (comment: Comment) => {
-    if (!(await confirm('彻底删除评论', '确定彻底删除这条评论？此操作不可撤销。'))) return
+    if (!(await confirm(t('彻底删除评论', 'Delete comment permanently'), t('确定彻底删除这条评论？此操作不可撤销。', 'Permanently delete this comment? This cannot be undone.')))) return
     try {
       await blog.permanentlyDeleteComment(comment.id)
-      toast('已彻底删除')
+      toast(t('已彻底删除', 'Permanently deleted'))
       reload()
     } catch (error) {
       toast(getErrorMessage(error))
@@ -108,49 +113,56 @@ export default function CommentsAdmin() {
   }
 
   const targetLabel = (comment: Comment) => {
-    const map = { article: '文章', moment: '微语', page: '页面' } as const
+    const map = { article: t('文章', 'Post'), moment: t('微语', 'Moment'), page: t('页面', 'Page') } as const
     return `${map[comment.target_type]} #${comment.target_id}`
   }
 
   return (
     <>
       <div className="ph">
-        <h2>评论</h2>
+        <h2>{t('评论', 'Comments')}</h2>
         <span className="kicker" style={{ marginTop: 6 }}>COMMENTS · {list.length}</span>
       </div>
       <div className="atabs">
-        <Chip solid={tab === 'all'} onClick={() => changeTab('all')}>全部</Chip>
-        <Chip solid={tab === 'trash'} onClick={() => changeTab('trash')}>回收站</Chip>
+        <Chip solid={tab === 'all'} onClick={() => changeTab('all')}>{t('全部', 'All')}</Chip>
+        <Chip solid={tab === 'trash'} onClick={() => changeTab('trash')}>{t('回收站', 'Recycle bin')}</Chip>
       </div>
-      {loading ? <Loading height={160} /> : list.length === 0 ? <Empty text="当前列表没有评论" /> : list.map((comment) => (
-        <div key={comment.id} className="pcard rv" style={{ marginBottom: 14 }}>
-          <div className="ph2">
-            <Avatar letter={authorLabel(comment).slice(0, 1).toUpperCase()} alt={comment.author.type !== 'admin'} />
-            <div>
-              <b>{authorLabel(comment)}</b>
-              <br />
-              <span className="mono" style={{ fontSize: 10.5, color: 'var(--faint)' }}>
-                {authorEmail(comment) ? `${authorEmail(comment)} · ` : ''}{targetLabel(comment)} · {fmtRelative(comment.created_at)}
-              </span>
+      {list.length === 0 ? (
+        loading ? <Loading height={160} visible={pending} /> : <Empty text={t('当前列表没有评论', 'No comments in this list')} />
+      ) : (
+        // 刷新时旧列表原地变暗，新数据到达后替换（见 app.css 的 [data-busy]）。
+        <div aria-busy={loading} data-busy={String(loading)}>
+          {list.map((comment) => (
+            <div key={comment.id} className="pcard rv" style={{ marginBottom: 14 }}>
+              <div className="ph2">
+                <Avatar letter={authorLabel(comment).slice(0, 1).toUpperCase()} alt={comment.author.type !== 'admin'} />
+                <div>
+                  <b>{authorLabel(comment)}</b>
+                  <br />
+                  <span className="mono" style={{ fontSize: 10.5, color: 'var(--faint)' }}>
+                    {authorEmail(comment) ? `${authorEmail(comment)} · ` : ''}{targetLabel(comment)} · {fmtRelative(comment.created_at)}
+                  </span>
+                </div>
+                <span style={{ flex: 1 }} />
+                {comment.parent_id ? <span className="chip">{t('回复', 'Reply')}</span> : null}
+              </div>
+              <div className="bd2" style={{ paddingTop: 4 }}>
+                <div style={{ fontSize: 14, whiteSpace: 'pre-wrap' }}>{comment.content}</div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                  {tab === 'all'
+                    ? <Button ghost small onClick={() => void remove(comment)}>{t('删除', 'Delete')}</Button>
+                    : (
+                      <>
+                        <Button ghost small onClick={() => void restore(comment)}>{t('恢复', 'Restore')}</Button>
+                        <Button ghost small onClick={() => void permanent(comment)}>{t('彻底删除', 'Delete permanently')}</Button>
+                      </>
+                    )}
+                </div>
+              </div>
             </div>
-            <span style={{ flex: 1 }} />
-            {comment.parent_id ? <span className="chip">回复</span> : null}
-          </div>
-          <div className="bd2" style={{ paddingTop: 4 }}>
-            <div style={{ fontSize: 14, whiteSpace: 'pre-wrap' }}>{comment.content}</div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-              {tab === 'all'
-                ? <Button ghost small onClick={() => void remove(comment)}>删除</Button>
-                : (
-                  <>
-                    <Button ghost small onClick={() => void restore(comment)}>恢复</Button>
-                    <Button ghost small onClick={() => void permanent(comment)}>彻底删除</Button>
-                  </>
-                )}
-            </div>
-          </div>
+          ))}
         </div>
-      ))}
+      )}
       <Pagination align="center" current={page} total={totalPages} pageSize={1} onChange={setPage} />
     </>
   )

@@ -13,13 +13,17 @@ import type { MediaItem, Moment } from 'twilight-blog-api'
 import { useDialog } from '../../lib/dialog'
 import { useToast } from '../../lib/toast'
 import ContentView from '../../components/ContentView'
+import { ImageGroup } from '../../lib/imageGroup'
 import MediaPicker from '../../components/media/MediaPicker'
 import MediaGallery from '../../components/media/MediaGallery'
 import { Empty, Loading } from '../../components/common'
+import { useDelayedLoading } from '../../lib/loading'
+import { useI18n } from '../../lib/i18n'
 
 type Tab = 'active' | 'trash'
 
 export default function MomentsAdmin() {
+  const { t } = useI18n()
   const toast = useToast()
   const { confirm } = useDialog()
   const [tab, setTab] = useState<Tab>('active')
@@ -29,6 +33,8 @@ export default function MomentsAdmin() {
   const [uploadingMedia, setUploadingMedia] = useState(false)
   const [publishing, setPublishing] = useState(false)
   const [loading, setLoading] = useState(true)
+  // 首屏加载超过阈值才显示等待提示（见 lib/loading.ts）。
+  const pending = useDelayedLoading(loading)
   const [reloadKey, setReloadKey] = useState(0)
 
   // One effect owns the fetch; a stale response (tab switched, unmounted) is
@@ -47,7 +53,7 @@ export default function MomentsAdmin() {
       } catch (error) {
         if (!alive) return
         setList([])
-        toast(getErrorMessage(error, '加载微语失败'))
+        toast(getErrorMessage(error, t('加载微语失败', 'Failed to load moments')))
       } finally {
         if (alive) setLoading(false)
       }
@@ -63,7 +69,7 @@ export default function MomentsAdmin() {
 
   const publish = async () => {
     if (!content.trim()) {
-      toast('内容不能为空')
+      toast(t('内容不能为空', 'The content cannot be empty'))
       return
     }
     const mediaIds = mediaItems.map((item) => item.id)
@@ -74,7 +80,7 @@ export default function MomentsAdmin() {
     } as Parameters<typeof blog.createMoment>[0]
     try {
       await blog.createMoment(input)
-      toast('微语已发布')
+      toast(t('微语已发布', 'Moment posted'))
       setContent('')
       setMediaItems([])
       reload()
@@ -86,10 +92,10 @@ export default function MomentsAdmin() {
   }
 
   const remove = async (item: Moment) => {
-    if (!(await confirm('删除微语', '确定删除这条微语？'))) return
+    if (!(await confirm(t('删除微语', 'Delete moment'), t('确定删除这条微语？', 'Delete this moment?')))) return
     try {
       await blog.deleteMoment(item.id)
-      toast('已删除')
+      toast(t('已删除', 'Deleted'))
       reload()
     } catch (error) {
       toast(getErrorMessage(error))
@@ -99,7 +105,7 @@ export default function MomentsAdmin() {
   const restore = async (item: Moment) => {
     try {
       await blog.restoreMoment(item.id)
-      toast('已恢复')
+      toast(t('已恢复', 'Restored'))
       reload()
     } catch (error) {
       toast(getErrorMessage(error))
@@ -107,10 +113,10 @@ export default function MomentsAdmin() {
   }
 
   const permanent = async (item: Moment) => {
-    if (!(await confirm('彻底删除微语', '确定彻底删除？此操作不可撤销。'))) return
+    if (!(await confirm(t('彻底删除微语', 'Delete moment permanently'), t('确定彻底删除？此操作不可撤销。', 'Permanently delete this moment? This cannot be undone.')))) return
     try {
       await blog.permanentlyDeleteMoment(item.id)
-      toast('已彻底删除')
+      toast(t('已彻底删除', 'Permanently deleted'))
       reload()
     } catch (error) {
       toast(getErrorMessage(error))
@@ -120,14 +126,14 @@ export default function MomentsAdmin() {
   return (
     <>
       <div className="ph">
-        <h2>微语</h2>
+        <h2>{t('微语', 'Moments')}</h2>
         <span className="kicker" style={{ marginTop: 6 }}>MOMENTS · {list.length}</span>
       </div>
       {tab === 'active' ? (
         <div className="pcard rv" style={{ marginBottom: 18 }}>
-          <div className="ph2"><b>发布微语</b></div>
+          <div className="ph2"><b>{t('发布微语', 'Post a moment')}</b></div>
           <div style={{ padding: '14px 20px 18px' }}>
-            <Input variant="box" multiline placeholder="写点什么…" value={content} onChange={(event) => setContent(event.target.value)} />
+            <Input variant="box" multiline placeholder={t('写点什么…', 'Write something…')} value={content} onChange={(event) => setContent(event.target.value)} />
             <div style={{ marginTop: 12 }}>
               <MediaPicker
                 items={mediaItems}
@@ -137,36 +143,46 @@ export default function MomentsAdmin() {
               />
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
-              <Button primary small disabled={uploadingMedia || publishing} onClick={() => void publish()}>{publishing ? '发布中…' : '发布'}</Button>
+              <Button primary small disabled={uploadingMedia || publishing} onClick={() => void publish()}>{publishing ? t('发布中…', 'Posting…') : t('发布', 'Post')}</Button>
             </div>
           </div>
         </div>
       ) : null}
       <div className="atabs">
-        <Chip solid={tab === 'active'} onClick={() => setTab('active')}>微语</Chip>
-        <Chip solid={tab === 'trash'} onClick={() => setTab('trash')}>回收站</Chip>
+        <Chip solid={tab === 'active'} onClick={() => setTab('active')}>{t('微语', 'Moments')}</Chip>
+        <Chip solid={tab === 'trash'} onClick={() => setTab('trash')}>{t('回收站', 'Recycle bin')}</Chip>
       </div>
-      {loading ? <Loading height={160} /> : list.length === 0 ? <Empty text="还没有微语" /> : list.map((item) => (
-        <div key={item.id} className="pcard rv" style={{ marginBottom: 12 }}>
-          <div className="ph2">
-            <b style={{ fontFamily: 'var(--serif)', fontSize: 15 }}>微语</b>
-            <span className="mono" style={{ fontSize: 10.5, color: 'var(--faint)' }}>{fmtDateTime(item.created_at)}</span>
-            <span style={{ flex: 1 }} />
-            {tab === 'active'
-              ? <Button ghost small onClick={() => void remove(item)}>删除</Button>
-              : (
-                <>
-                  <Button ghost small onClick={() => void restore(item)}>恢复</Button>
-                  <Button ghost small onClick={() => void permanent(item)}>彻底删除</Button>
-                </>
-              )}
-          </div>
-          <div className="bd2" style={{ paddingTop: 6 }}>
-            <ContentView text={item.content} trusted />
-            {item.media_items && item.media_items.length > 0 ? <MediaGallery items={item.media_items} /> : null}
-          </div>
+      {list.length === 0 ? (
+        loading ? <Loading height={160} visible={pending} /> : <Empty text={t('还没有微语', 'No moments yet')} />
+      ) : (
+        // 发布 / 删除 / 切标签后的刷新：旧列表原地变暗，新数据到达后替换。
+        <div aria-busy={loading} data-busy={String(loading)}>
+          {list.map((item) => (
+            <div key={item.id} className="pcard rv" style={{ marginBottom: 12 }}>
+              <div className="ph2">
+                <b style={{ fontFamily: 'var(--serif)', fontSize: 15 }}>{t('微语', 'Moment')}</b>
+                <span className="mono" style={{ fontSize: 10.5, color: 'var(--faint)' }}>{fmtDateTime(item.created_at)}</span>
+                <span style={{ flex: 1 }} />
+                {tab === 'active'
+                  ? <Button ghost small onClick={() => void remove(item)}>{t('删除', 'Delete')}</Button>
+                  : (
+                    <>
+                      <Button ghost small onClick={() => void restore(item)}>{t('恢复', 'Restore')}</Button>
+                      <Button ghost small onClick={() => void permanent(item)}>{t('彻底删除', 'Delete permanently')}</Button>
+                    </>
+                  )}
+              </div>
+              <div className="bd2" style={{ paddingTop: 6 }}>
+                {/* 一条微语一张卡：正文图与配图行下载完再一起出现。 */}
+                <ImageGroup>
+                  <ContentView text={item.content} trusted />
+                  {item.media_items && item.media_items.length > 0 ? <MediaGallery items={item.media_items} /> : null}
+                </ImageGroup>
+              </div>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
     </>
   )
 }

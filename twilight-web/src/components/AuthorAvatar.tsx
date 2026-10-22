@@ -15,6 +15,7 @@
 // 说出去了，图片再报一次只会让读屏软件把同一个名字念两遍。
 
 import { useSiteAvatar } from '../lib/site'
+import ProgressiveImage from './ProgressiveImage'
 
 export default function AuthorAvatar() {
   const avatarUrl = useSiteAvatar()
@@ -22,5 +23,7 @@ export default function AuthorAvatar() {
   if (!avatarUrl) {
     return <span className="avatar" aria-hidden="true">T</span>
   }
-  return <img className="avatar" src={avatarUrl} alt="" />
+  // 头像是最容易「先空一块、再弹出一张脸」的位置：它固定 54px，占位动画不会
+  // 改变任何布局，只是把等待画成骨架。round 让骨架与外框都跟着圆形走。
+  return <ProgressiveImage className="avatar" frameClassName="round" src={avatarUrl} alt="" />
 }

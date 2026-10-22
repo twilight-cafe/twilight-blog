@@ -15,8 +15,11 @@ import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { Button, Input } from 'ink-design'
 import { blog, getErrorMessage, setCurrentUser, useCurrentUser } from '../../lib/client'
 import { useToast } from '../../lib/toast'
+import { useI18n } from '../../lib/i18n'
+import LanguageSwitcher from '../../components/LanguageSwitcher'
 
 export default function SignIn() {
+  const { t } = useI18n()
   const navigate = useNavigate()
   const toast = useToast()
   const signedIn = useCurrentUser()
@@ -28,11 +31,11 @@ export default function SignIn() {
     event.preventDefault()
 
     if (!username.trim()) {
-      toast('请输入用户名（或注册邮箱）')
+      toast(t('请输入用户名（或注册邮箱）', 'Enter your username (or registered email)'))
       return
     }
     if (!password) {
-      toast('请输入密码')
+      toast(t('请输入密码', 'Enter your password'))
       return
     }
 
@@ -40,12 +43,12 @@ export default function SignIn() {
     try {
       const me = await blog.login({ username: username.trim(), password })
       setCurrentUser(me)
-      toast('登录成功')
+      toast(t('登录成功', 'Signed in'))
       // The administrator gets the full console; a visitor account only owns a
       // profile, so send it straight there.
       navigate(me.role === 'admin' ? '/admin' : '/admin/profile', { replace: true })
     } catch (error) {
-      toast(getErrorMessage(error, '登录失败'))
+      toast(getErrorMessage(error, t('登录失败', 'Sign-in failed')))
     } finally {
       setBusy(false)
     }
@@ -59,26 +62,27 @@ export default function SignIn() {
 
   return (
     <div className="login-bg">
+      <LanguageSwitcher className="auth-lang" />
       <form className="login" onSubmit={submit}>
         <div className="lg">
           <span className="sq">T</span>
-          <h1>Twilight · 登录</h1>
+          <h1>Twilight · {t('登录', 'Sign in')}</h1>
         </div>
         <p className="sub">TWILIGHT · SIGN IN</p>
 
         <div className="fld">
-          <label>用户名 Username</label>
+          <label>{t('用户名', 'Username')}</label>
           <Input
             variant="login"
             autoComplete="username"
-            placeholder="用户名或注册邮箱"
+            placeholder={t('用户名或注册邮箱', 'Username or email')}
             value={username}
             onChange={(event) => setUsername(event.target.value)}
           />
         </div>
 
         <div className="fld">
-          <label>密码 Password</label>
+          <label>{t('密码', 'Password')}</label>
           <Input
             variant="login"
             type="password"
@@ -89,16 +93,16 @@ export default function SignIn() {
         </div>
 
         <Button primary type="submit" style={{ width: '100%', justifyContent: 'center' }} disabled={busy}>
-          {busy ? '登录中…' : '登录 →'}
+          {busy ? t('登录中…', 'Signing in…') : t('登录 →', 'Sign in →')}
         </Button>
 
         <div className="login-links">
-          <Link to="/admin/register">注册新账号</Link>
+          <Link to="/admin/register">{t('注册新账号', 'Create an account')}</Link>
           <span>·</span>
-          <Link to="/admin/forgot">忘记密码</Link>
+          <Link to="/admin/forgot">{t('忘记密码', 'Forgot password')}</Link>
         </div>
 
-        <p className="sec">站长与访客共用这一个入口：填谁的账号，就以谁的身份登入。登录失败次数受限（3 次/分钟），请稍后再试。</p>
+        <p className="sec">{t('站长与访客共用这一个入口：填谁的账号，就以谁的身份登入。登录失败次数受限（3 次/分钟），请稍后再试。', 'The owner and visitors share this one entry point: whoever’s account you enter is who you sign in as. Failed attempts are rate-limited (3 per minute).')}</p>
       </form>
     </div>
   )

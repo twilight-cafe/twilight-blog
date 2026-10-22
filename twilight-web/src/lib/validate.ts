@@ -11,6 +11,8 @@
 //
 // 约定：返回 null 表示合法，否则返回可直接展示给用户的文案。
 
+import { t } from './i18n'
+
 /** 用户名与昵称的长度上限，同时用作输入框的 maxLength。 */
 export const USERNAME_MIN = 3
 export const USERNAME_MAX = 24
@@ -21,16 +23,16 @@ const USERNAME_RE = /^[A-Za-z][A-Za-z0-9_-]*$/
 
 /** 校验邮箱形状。只挡明显写错的输入，不试图实现 RFC 5322。 */
 export function emailError(value: string): string | null {
-  return EMAIL_RE.test(value.trim()) ? null : '请输入正确的邮箱'
+  return EMAIL_RE.test(value.trim()) ? null : t('请输入正确的邮箱', 'Enter a valid email address')
 }
 
 /** 校验登录名的形状（长度 + 字符集），与后端 service 层规则镜像。 */
 export function usernameError(value: string): string | null {
   if (value.length < USERNAME_MIN || value.length > USERNAME_MAX) {
-    return `用户名需 ${USERNAME_MIN}–${USERNAME_MAX} 个字符`
+    return t(`用户名需 ${USERNAME_MIN}–${USERNAME_MAX} 个字符`, `The username must be ${USERNAME_MIN}–${USERNAME_MAX} characters long`)
   }
   if (!USERNAME_RE.test(value)) {
-    return '用户名只能包含字母、数字、下划线和连字符，且以字母开头'
+    return t('用户名只能包含字母、数字、下划线和连字符，且以字母开头', 'The username may only contain letters, digits, underscores and hyphens, and must start with a letter')
   }
   return null
 }
@@ -40,11 +42,11 @@ export function usernameError(value: string): string | null {
  * 也用在站长的「显示名称」上，文案里的称呼得跟着走——否则管理员会看到
  * 一句让他去改「昵称」的提示，而页面上根本没有叫昵称的输入框。
  */
-export function nicknameError(value: string, label = '昵称'): string | null {
+export function nicknameError(value: string, label = '昵称', labelEn = 'nickname'): string | null {
   const trimmed = value.trim()
-  if (!trimmed) return `请输入${label}`
+  if (!trimmed) return t(`请输入${label}`, `Please enter your ${labelEn}`)
   if (trimmed.length > NICKNAME_MAX) {
-    return `${label}不能超过 ${NICKNAME_MAX} 个字符`
+    return t(`${label}不能超过 ${NICKNAME_MAX} 个字符`, `The ${labelEn} must be at most ${NICKNAME_MAX} characters long`)
   }
   return null
 }

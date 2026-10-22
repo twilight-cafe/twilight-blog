@@ -358,6 +358,9 @@ describe('SiteSettings 分支', () => {
       code_block_max_lines: 20,
       home_page_size: 12,
       border_radius: 4,
+      post_banner_height: 400,
+      moments_enabled: true,
+      comment_notify_to: '',
     }))
     await waitFor(() => expect(screen.getAllByText('保存失败').length).toBeGreaterThan(0))
   })

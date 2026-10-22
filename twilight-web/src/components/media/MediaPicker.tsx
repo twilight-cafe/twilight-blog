@@ -8,7 +8,9 @@
 import { useRef, useState, type ChangeEvent } from 'react'
 import type { MediaItem } from 'twilight-blog-api'
 import { blog, getErrorMessage } from '../../lib/client'
+import type { ZoomRect } from '../../lib/motion'
 import { useToast } from '../../lib/toast'
+import { useI18n } from '../../lib/i18n'
 import MediaLightbox from './MediaLightbox'
 import MediaThumb from './MediaThumb'
 
@@ -25,10 +27,13 @@ export default function MediaPicker({
   onBusyChange,
   disabled = false,
 }: MediaPickerProps) {
+  const { t } = useI18n()
   const toast = useToast()
   const inputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
   const [previewIndex, setPreviewIndex] = useState<number | null>(null)
+  // 与 MediaGallery 同一套：点中的缩略图位置（灯箱共享元素放大的起点）。
+  const [origin, setOrigin] = useState<ZoomRect | null>(null)
 
   const setBusy = (busy: boolean) => {
     setUploading(busy)
@@ -72,7 +77,10 @@ export default function MediaPicker({
           <MediaThumb
             key={item.id}
             item={item}
-            onOpen={() => setPreviewIndex(index)}
+            onOpen={(event) => {
+              setOrigin(event.currentTarget.getBoundingClientRect())
+              setPreviewIndex(index)
+            }}
             onRemove={() => removeItem(item.id)}
           />
         ))}
@@ -81,8 +89,8 @@ export default function MediaPicker({
           className="media-picker-add"
           onClick={() => inputRef.current?.click()}
           disabled={!canAdd}
-          title="添加图片或视频"
-          aria-label="添加图片或视频"
+          title={t('添加图片或视频', 'Add images or videos')}
+          aria-label={t('添加图片或视频', 'Add images or videos')}
         >
           {uploading ? (
             <span className="media-picker-loading" aria-hidden="true" />
@@ -94,6 +102,7 @@ export default function MediaPicker({
       <MediaLightbox
         items={items}
         index={previewIndex}
+        origin={origin}
         onClose={() => setPreviewIndex(null)}
       />
     </div>

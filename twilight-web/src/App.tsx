@@ -20,16 +20,22 @@
 // 打包策略：公开区**静态**导入（首屏就要用到），admin 区全部 React.lazy。
 // 实测「仅公开区」与「全部路由」相差 81.7 KB，而匿名访客一行 admin 代码都用不到。
 // AdminLayout 保持静态——它是守门的，不能等自己的 chunk 加载完才开始守。
+//
+// 换页：整棵路由树包在 RouteTransition 下——它负责「先让旧页面退场，再提交新
+// 地址」的编排（见 components/RouteTransition.tsx）。App 自己读到的仍是真实
+// location：安装状态与登录态守卫不能等退场动画播完才生效。
 
 import { Suspense, lazy, useEffect, useState, type ReactNode } from 'react'
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { Navigate, Route, useLocation } from 'react-router-dom'
 import { Button } from 'ink-design'
 import { blog, getErrorMessage, refreshAuth } from './lib/client'
 import { DialogProvider } from './lib/dialog'
 import { ToastProvider } from './lib/toast'
 import PublicShell from './components/PublicShell'
 import AdminLayout from './components/AdminLayout'
+import RouteTransition from './components/RouteTransition'
 import { Loading } from './components/common'
+import { useI18n } from './lib/i18n'
 import Home from './pages/public/Home'
 import Post from './pages/public/Post'
 import Archive from './pages/public/Archive'
@@ -74,6 +80,7 @@ function AuthRoute({ children }: { children: ReactNode }) {
 }
 
 export default function App() {
+  const { t } = useI18n()
   const [state, setState] = useState<InstallState>('loading')
   const [error, setError] = useState('')
   const [probeKey, setProbeKey] = useState(0)
@@ -98,7 +105,7 @@ export default function App() {
       .catch((reason) => {
         // Never guess: an unreachable API is its own state, with a retry.
         if (!alive) return
-        setError(getErrorMessage(reason, '无法连接后台服务'))
+        setError(getErrorMessage(reason, t('无法连接后台服务', 'Cannot reach the API')))
         setState('error')
       })
 
@@ -140,13 +147,13 @@ export default function App() {
         <div className="login">
           <div className="lg">
             <span className="sq">T</span>
-            <h1>Twilight · 无法启动</h1>
+            <h1>Twilight · {t('无法启动', 'Cannot start')}</h1>
           </div>
           <p className="sub">API UNREACHABLE</p>
-          <p className="sec">无法连接后台服务，站点状态未知。请确认后端已启动后重试。</p>
+          <p className="sec">{t('无法连接后台服务，站点状态未知。请确认后端已启动后重试。', 'The API is unreachable, so the site state is unknown. Make sure the backend is running and try again.')}</p>
           <p className="sec" style={{ color: 'var(--fg)', wordBreak: 'break-word' }}>{error}</p>
           <Button primary type="button" style={{ width: '100%', justifyContent: 'center' }} onClick={() => setProbeKey((value) => value + 1)}>
-            重试
+            {t('重试', 'Retry')}
           </Button>
         </div>
       </div>
@@ -174,7 +181,7 @@ export default function App() {
   return (
     <DialogProvider>
       <ToastProvider>
-        <Routes>
+        <RouteTransition>
           <Route path="/install" element={<Setup onInstalled={() => setState('installed')} />} />
           <Route element={<PublicShell />}>
             <Route path="/" element={<Home />} />
@@ -208,7 +215,7 @@ export default function App() {
             <Route path="/admin/profile" element={<Profile />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        </RouteTransition>
       </ToastProvider>
     </DialogProvider>
   )

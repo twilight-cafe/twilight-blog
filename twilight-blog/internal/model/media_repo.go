@@ -9,6 +9,16 @@ import (
 	"blog-engine/internal/logging"
 )
 
+// rowsAffectedFn 是 (sql.Result).RowsAffected 的一层间接。
+//
+// 它存在的唯一理由是**可测**：真实的 modernc.org/sqlite 驱动不会在这里报错，
+// 于是「取影响行数失败」这条分支在渲染路径上永远走不到——而三个单行写入
+// （Delete / UpdateStorage / Rename）都要靠它区分「改到了」与「这一行不存在」，
+// 一旦真的取不到行数，处置方式必须是对的（当作没找到，而不是当成成功）。
+// config 包的 writeFileAtomicFn 是同一先例：把外部世界不可控的一步收成一个可替换的
+// 函数值，让失败路径有测试可写。生产代码里它永远指向真正的那个实现。
+var rowsAffectedFn = func(res sql.Result) (int64, error) { return res.RowsAffected() }
+
 // MediaRepository 是媒体记录的持久化契约。
 //
 // 与文章/页面/动态不同，媒体目前只有 Delete（硬删），没有软删与回收站：
@@ -21,6 +31,7 @@ type MediaRepository interface {
 	List(ctx context.Context, p Pagination) ([]Media, int64, error)
 	Delete(ctx context.Context, id int64) error
 	UpdateStorage(ctx context.Context, id int64, storageName, mimeType string, size int64, converted bool) error
+	Rename(ctx context.Context, id int64, originalName string) error
 }
 
 type SQLiteMediaRepository struct {
@@ -133,7 +144,43 @@ WHERE id = ?
 		return fmt.Errorf("delete media: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrMediaNotFound
+	}
+	return nil
+}
+
+// Rename 只改写展示名（original_name）这一列。
+//
+// 它**不动** storage_name / mime_type / size / converted，因此：
+//   - 磁盘文件与 GET /api/media/<id> 的响应完全不变，浏览器缓存、外链、
+//     备份都照旧；
+//   - 所有引用（articles.cover_media_id、users.avatar_media_id、
+//     moment_media.media_id）指向的是 media.id，改名后自动继续有效，一处都不用
+//     改写——与 UpdateStorage 就地升级 WebP 是同一条理由。
+//
+// 允许重名：original_name 不是标识（表上没有唯一约束），它只是给人看的名字；
+// 标签那种「重名 409」的语义在这里不成立，两张图同名不会有任何东西被顶掉。
+//
+// 找不到行时返回 ErrMediaNotFound（条件里的 deleted_at IS NULL 与查询口径一致），
+// 与 Delete / UpdateStorage 同款：静默成功会让调用方以为改到了东西。
+func (r *SQLiteMediaRepository) Rename(ctx context.Context, id int64, originalName string) error {
+	logging.Debugf("[media-repo] Rename called id=%d", id)
+
+	res, err := r.db.ExecContext(ctx, `
+UPDATE media
+SET original_name = ?
+WHERE id = ? AND deleted_at IS NULL
+`, originalName, id)
+	if err != nil {
+		return fmt.Errorf("rename media: %w", err)
+	}
+
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
 	}
@@ -174,7 +221,7 @@ WHERE id = ? AND deleted_at IS NULL
 		return fmt.Errorf("update media storage: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
 	}

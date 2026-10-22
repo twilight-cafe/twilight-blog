@@ -1,35 +1,28 @@
 // ModeToggle.tsx —— 亮 / 暗模式切换
-// 模式持久化在 localStorage 的 'tw_mode'；首次访问读不到时用系统
-// prefers-color-scheme 兜底。切换只改 <html data-mode> 这一个属性，真正的配色
-// 由 CSS 变量按该属性分支，所以这里不涉及任何样式逻辑。
+//
+// 状态与持久化整块交给 ink-design 的 `useColorMode`：它读 localStorage 的
+// 'tw_mode'、写 `<html data-mode>`、没有存储值时跟随系统偏好，并在切换时用
+// View Transitions 做整页交叉淡入（不支持该 API 或系统要求减少动态效果时直接切）。
+//
+// 这正是 iOS「外观」切换的那一下：换的是一整套配色，逐条给颜色加 transition
+// 又贵又容易漏，交给浏览器截两帧交叉淡入最干净。
+//
+// 本组件只负责外观：一个 IconButton + 一枚随模式重挂的图标（key 让 CSS 的
+// 旋转 + 缩放 + 淡入有东西可触发，否则同一棵 <svg> 只换 path，什么都不会动）。
 
-import { useEffect, useState } from 'react'
-import { IconButton } from 'ink-design'
+import { IconButton, useColorMode } from 'ink-design'
 import Icon from '../lib/icons'
-
-const MODE_KEY = 'tw_mode'
-
-function currentMode(): 'light' | 'dark' {
-  const stored = localStorage.getItem(MODE_KEY)
-  if (stored === 'light' || stored === 'dark') return stored
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-}
-
-function applyMode(mode: 'light' | 'dark') {
-  document.documentElement.dataset.mode = mode
-}
+import { useI18n } from '../lib/i18n'
 
 export default function ModeToggle() {
-  const [dark, setDark] = useState(() => currentMode() === 'dark')
-
-  useEffect(() => {
-    applyMode(dark ? 'dark' : 'light')
-    localStorage.setItem(MODE_KEY, dark ? 'dark' : 'light')
-  }, [dark])
+  const { t } = useI18n()
+  const { mode, toggle } = useColorMode({ storageKey: 'tw_mode' })
 
   return (
-    <IconButton onClick={() => setDark((value) => !value)} title="亮 / 暗模式">
-      {dark ? <Icon name="sun" size={15} /> : <Icon name="moon" size={15} />}
+    <IconButton onClick={toggle} title={t('亮 / 暗模式', 'Light / dark mode')}>
+      <span className="mode-icon" key={mode}>
+        {mode === 'dark' ? <Icon name="sun" size={15} /> : <Icon name="moon" size={15} />}
+      </span>
     </IconButton>
   )
 }

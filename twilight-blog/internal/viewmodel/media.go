@@ -2,6 +2,8 @@ package viewmodel
 
 import (
 	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	"blog-engine/internal/model"
 
@@ -54,4 +56,29 @@ func NewMediaResponseList(media []model.Media) []MediaResponse {
 		result = append(result, NewMediaResponse(&media[i]))
 	}
 	return result
+}
+
+// RenameMediaRequest 是媒体改名请求（PATCH /api/admin/media/:id）。
+//
+// 只有展示名一个字段：磁盘文件名（storage_name）由服务层生成且与引用无关，
+// 不允许客户端指定——放开它等于让调用方决定服务端往哪个文件写/读。
+type RenameMediaRequest struct {
+	OriginalName string `json:"original_name"`
+}
+
+// Validate 做 HTTP 边界上能做的检查：去空白、非空、长度上限。
+//
+// 「扩展名沿用现有展示名」与非法字符的判定**不在这里**：前者需要这条记录当前的
+// 名字（只有服务层查得到），后者与服务层共用同一份权威规则
+// （见 service.normalizeMediaName）。两处各写一份迟早会漂移，而漂移的表现是
+// 「界面说合法、服务端拒绝」或反过来。
+func (r *RenameMediaRequest) Validate() error {
+	r.OriginalName = strings.TrimSpace(r.OriginalName)
+	if r.OriginalName == "" {
+		return fmt.Errorf("original_name is required")
+	}
+	if utf8.RuneCountInString(r.OriginalName) > model.MaxMediaOriginalNameLength {
+		return fmt.Errorf("original_name must be at most %d characters", model.MaxMediaOriginalNameLength)
+	}
+	return nil
 }

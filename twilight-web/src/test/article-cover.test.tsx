@@ -301,6 +301,9 @@ describe('Editor 头图与发布时间', () => {
     await waitFor(() => expect(client.blog.updateArticle).toHaveBeenCalledWith(7, {
       title: '旧文',
       content: '旧正文',
+      titleEn: '',
+      contentEn: '',
+      aiGenerated: false,
       tags: ['Go'],
       coverMediaId: 42,
       publishedAt: expected,
@@ -327,6 +330,9 @@ describe('Editor 头图与发布时间', () => {
     await waitFor(() => expect(client.blog.updateArticle).toHaveBeenCalledWith(7, {
       title: '旧文',
       content: '这是正文内容。',
+      titleEn: '',
+      contentEn: '',
+      aiGenerated: false,
       tags: ['Go'],
       coverMediaId: null,
     }))
@@ -360,6 +366,9 @@ describe('Editor 头图与发布时间', () => {
     await waitFor(() => expect(client.blog.createArticle).toHaveBeenCalledWith({
       title: '带头图的新文',
       content: '',
+      titleEn: '',
+      contentEn: '',
+      aiGenerated: false,
       tags: [],
       coverMediaId: 55,
     }))
@@ -378,6 +387,9 @@ describe('Editor 头图与发布时间', () => {
     await waitFor(() => expect(client.blog.createArticle).toHaveBeenCalledWith({
       title: '补录的旧文',
       content: '',
+      titleEn: '',
+      contentEn: '',
+      aiGenerated: false,
       tags: [],
       coverMediaId: null,
       publishedAt: expected,
@@ -411,8 +423,40 @@ describe('头图在公开页的呈现', () => {
     expect(img.getAttribute('src')).toBe('/api/media/31')
     // alt 留空是刻意的：标题就在旁边，写 alt 会让读屏把同一件事念两遍。
     expect(img.getAttribute('alt')).toBe('')
-    expect(img.getAttribute('loading')).toBe('lazy')
+    // 卡片头图现在落在 ImageGroup 里：组内一律 eager（懒加载的图在视口外
+    // 不会开始下载，整组就永远等不齐，见 lib/imageGroup.tsx）。
+    expect(img.getAttribute('loading')).toBe('eager')
     expect(cards[1].querySelector('.cover')).toBeNull()
+  })
+
+  it('首页两张头图：都到齐才一起出现（整组同步）', async () => {
+    client.blog.listArticles.mockResolvedValueOnce(paged([
+      makeArticle({ id: 1, title: '第一张', cover_media_id: 31 }),
+      makeArticle({ id: 2, title: '第二张', cover_media_id: 32 }),
+    ]))
+
+    const { container } = render(
+      <MemoryRouter>
+        <ToastProvider>
+          <Home />
+        </ToastProvider>
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.getByText('第一张')).toBeTruthy())
+
+    const frames = Array.from(container.querySelectorAll<HTMLElement>('.cover .img-frame'))
+    expect(frames).toHaveLength(2)
+    const imgs = Array.from(container.querySelectorAll<HTMLImageElement>('.cover img'))
+
+    fireEvent.load(imgs[0])
+    // 第二张还没到：第一张也只画骨架——整组要一起出现。
+    expect(frames[0].classList.contains('loading')).toBe(true)
+
+    fireEvent.load(imgs[1])
+    await waitFor(() => {
+      expect(frames[0].classList.contains('loaded')).toBe(true)
+      expect(frames[1].classList.contains('loaded')).toBe(true)
+    })
   })
 
   it('文章页：头图渲染在标签/标题之上，没有头图时整个容器不出现', async () => {

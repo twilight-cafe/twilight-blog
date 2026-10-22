@@ -56,6 +56,11 @@ type ArticleWrite struct {
 	Title string
 	// Content 为 nil：Create 视为空正文；Update 视为「不改正文」。
 	Content *string
+	// TitleEN / ContentEN 与 Content 同一条规则：nil = Create 视为空 / Update 不改。
+	TitleEN   *string
+	ContentEN *string
+	// AIGenerated 为 nil：Create 视为 false；Update 视为「不改标记」。
+	AIGenerated *bool
 	// Tags 为 nil：Create 视为无标签；Update 视为「不改标签」。
 	Tags *[]string
 	// PublishedAt 为 nil：Create 用当前时间；Update 保持原值。
@@ -132,6 +137,18 @@ func (s *ArticleService) Create(ctx context.Context, in ArticleWrite) (*model.Ar
 	if in.Content != nil {
 		content = *in.Content
 	}
+	titleEN := ""
+	if in.TitleEN != nil {
+		titleEN = *in.TitleEN
+	}
+	contentEN := ""
+	if in.ContentEN != nil {
+		contentEN = *in.ContentEN
+	}
+	aiGenerated := false
+	if in.AIGenerated != nil {
+		aiGenerated = *in.AIGenerated
+	}
 
 	cover, err := s.usableCoverID(ctx, in.CoverMediaID)
 	if err != nil {
@@ -149,6 +166,9 @@ func (s *ArticleService) Create(ctx context.Context, in ArticleWrite) (*model.Ar
 	article := &model.Article{
 		Title:        in.Title,
 		Content:      content,
+		TitleEN:      titleEN,
+		ContentEN:    contentEN,
+		AIGenerated:  aiGenerated,
 		CreatedAt:    publishedAt,
 		UpdatedAt:    now,
 		CoverMediaID: cover,
@@ -193,6 +213,15 @@ func (s *ArticleService) Update(ctx context.Context, id int64, in ArticleWrite) 
 	article.Title = in.Title
 	if in.Content != nil {
 		article.Content = *in.Content
+	}
+	if in.TitleEN != nil {
+		article.TitleEN = *in.TitleEN
+	}
+	if in.ContentEN != nil {
+		article.ContentEN = *in.ContentEN
+	}
+	if in.AIGenerated != nil {
+		article.AIGenerated = *in.AIGenerated
 	}
 	if in.Tags != nil {
 		article.Tags = normalizeTags(*in.Tags)

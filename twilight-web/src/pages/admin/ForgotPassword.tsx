@@ -8,12 +8,15 @@ import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Button, Input } from 'ink-design'
 import { blog, getErrorMessage, setCurrentUser } from '../../lib/client'
-import { PASSWORD_RULE_TEXT, validatePassword } from '../../lib/password'
+import { passwordRuleText, validatePassword } from '../../lib/password'
 import { emailError } from '../../lib/validate'
 import { isRateLimited, startEmailCodeCooldown, useEmailCodeCooldown } from '../../lib/email-code-cooldown'
 import { useToast } from '../../lib/toast'
+import { useI18n } from '../../lib/i18n'
+import LanguageSwitcher from '../../components/LanguageSwitcher'
 
 export default function ForgotPassword() {
+  const { t } = useI18n()
   const navigate = useNavigate()
   const toast = useToast()
   const [email, setEmail] = useState('')
@@ -35,12 +38,12 @@ export default function ForgotPassword() {
       await blog.requestEmailCode({ email: email.trim() })
       setCodeSent(true)
       startEmailCodeCooldown(email)
-      toast('验证码已发送，请查收邮箱')
+      toast(t('验证码已发送，请查收邮箱', 'Verification code sent — check your inbox'))
     } catch (error) {
       // 被限流（429）时锁住按钮：让前端的节奏与服务端的记录重新对齐，
       // 否则用户会继续点、继续被拒。
       if (isRateLimited(error)) startEmailCodeCooldown(email)
-      toast(getErrorMessage(error, '发送验证码失败'))
+      toast(getErrorMessage(error, t('发送验证码失败', 'Failed to send the code')))
     } finally {
       setSending(false)
     }
@@ -55,7 +58,7 @@ export default function ForgotPassword() {
       return
     }
     if (!code.trim()) {
-      toast('请输入验证码')
+      toast(t('请输入验证码', 'Enter the verification code'))
       return
     }
     const passwordError = validatePassword(password)
@@ -74,10 +77,10 @@ export default function ForgotPassword() {
       // The server revokes every session for the account and clears the cookies,
       // so the only thing left to do is sign in again.
       setCurrentUser(null)
-      toast('密码已重置，请使用新密码登录')
+      toast(t('密码已重置，请使用新密码登录', 'Password reset — sign in with the new one'))
       navigate('/admin/login', { replace: true })
     } catch (error) {
-      toast(getErrorMessage(error, '重置失败'))
+      toast(getErrorMessage(error, t('重置失败', 'Reset failed')))
     } finally {
       setBusy(false)
     }
@@ -85,15 +88,16 @@ export default function ForgotPassword() {
 
   return (
     <div className="login-bg">
+      <LanguageSwitcher className="auth-lang" />
       <form className="login" onSubmit={submit}>
         <div className="lg">
           <span className="sq">T</span>
-          <h1>Twilight · 重置密码</h1>
+          <h1>Twilight · {t('重置密码', 'Reset password')}</h1>
         </div>
         <p className="sub">RESET PASSWORD</p>
 
         <div className="fld">
-          <label>邮箱 Email</label>
+          <label>{t('邮箱', 'Email')}</label>
           <Input
             variant="login"
             type="email"
@@ -106,7 +110,7 @@ export default function ForgotPassword() {
         <div className="cmt-code-row">
           {codeSent ? (
             <>
-              <Input variant="login" placeholder="验证码" value={code} onChange={(event) => setCode(event.target.value)} />
+              <Input variant="login" placeholder={t('验证码', 'Verification code')} value={code} onChange={(event) => setCode(event.target.value)} />
               <Button
                 small
                 ghost
@@ -114,7 +118,7 @@ export default function ForgotPassword() {
                 disabled={sending || cooldown > 0}
                 onClick={() => void requestCode()}
               >
-                {cooldown > 0 ? `${cooldown} 秒后可重发` : '重新发送'}
+                {cooldown > 0 ? t(`${cooldown} 秒后可重发`, `Resend in ${cooldown}s`) : t('重新发送', 'Resend')}
               </Button>
             </>
           ) : (
@@ -124,13 +128,13 @@ export default function ForgotPassword() {
               disabled={sending || cooldown > 0}
               onClick={() => void requestCode()}
             >
-              {sending ? '发送中…' : cooldown > 0 ? `${cooldown} 秒后可重发` : '发送验证码'}
+              {sending ? t('发送中…', 'Sending…') : cooldown > 0 ? t(`${cooldown} 秒后可重发`, `Resend in ${cooldown}s`) : t('发送验证码', 'Send code')}
             </Button>
           )}
         </div>
 
         <div className="fld">
-          <label>新密码 New password</label>
+          <label>{t('新密码', 'New password')}</label>
           <Input
             variant="login"
             type="password"
@@ -140,16 +144,16 @@ export default function ForgotPassword() {
           />
         </div>
 
-        <p className="policy">密码要求：{PASSWORD_RULE_TEXT}。</p>
+        <p className="policy">{t('密码要求：', 'Password requirements: ')}{passwordRuleText()}{t('。', '.')}</p>
 
         <Button primary type="submit" style={{ width: '100%', justifyContent: 'center' }} disabled={busy}>
-          {busy ? '提交中…' : '重置密码 →'}
+          {busy ? t('提交中…', 'Submitting…') : t('重置密码 →', 'Reset password →')}
         </Button>
 
         <div className="login-links">
-          <Link to="/admin/login">返回登录</Link>
+          <Link to="/admin/login">{t('返回登录', 'Back to sign in')}</Link>
           <span>·</span>
-          <Link to="/admin/register">注册新账号</Link>
+          <Link to="/admin/register">{t('注册新账号', 'Create an account')}</Link>
         </div>
       </form>
     </div>

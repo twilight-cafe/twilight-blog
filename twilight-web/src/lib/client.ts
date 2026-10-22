@@ -10,6 +10,7 @@
 //   清空（会话过期/被吊销），但原错误仍向上抛出；403 不在此处理（已登录但权限不足）。
 
 import { useSyncExternalStore } from 'react'
+import { t } from './i18n'
 import {
   BlogApiError,
   createClient,
@@ -170,7 +171,7 @@ export async function logout(): Promise<void> {
  * SDK 侧已经把 5xx 的 message 降级成固定文案，这里是第二道——两边各自成立，
  * 谁被单独改动都不会让原文重新出现在界面上。原文仍在 error.body 里可供排查。
  */
-export function getErrorMessage(error: unknown, fallback = '操作失败'): string {
+export function getErrorMessage(error: unknown, fallback = t('操作失败', 'Action failed')): string {
   if (error instanceof BlogApiError || isBlogApiError(error)) {
     if (typeof error.status === 'number' && error.status >= 500) return fallback
     return error.message || fallback

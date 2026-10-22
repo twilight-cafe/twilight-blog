@@ -14,6 +14,7 @@ import react from '@vitejs/plugin-react'
 // 取值形状在 shell-flags.test.ts 里断言）。改 flags.ts 那两个常量时同步改这里。
 const DEV_FALLBACK_HOME_PAGE_SIZE = 12
 const DEV_FALLBACK_BORDER_RADIUS = 4
+const DEV_FALLBACK_POST_BANNER_HEIGHT = 400
 
 // 公开站点的 HTML 外壳**不在本工程里**——它由 Go 后端持有并渲染
 // （twilight-blog/internal/view/template/index.html），因为 `<meta name="description">`
@@ -101,6 +102,8 @@ function indexShellPlugin(): Plugin {
           // 脚本，站点的 `script-src 'self'` 会让浏览器直接拒绝执行
           // （详见 internal/view/template/index.html）。
           .replace(/\{\{\.SearchEnabled\}\}/g, 'true')
+          // 开发期微语开关也全开（理由同上）。
+          .replace(/\{\{\.MomentsEnabled\}\}/g, 'true')
           // 这两个是数字型属性，走同一通道。填**兜底值**而不是留空：
           // 前端对「属性缺失」与「属性是垃圾」都回落到同一个兜底常量
           // （flags.ts 的 FALLBACK_HOME_PAGE_SIZE / FALLBACK_BORDER_RADIUS），
@@ -108,6 +111,7 @@ function indexShellPlugin(): Plugin {
           // 数值必须与那两个常量一致，否则开发环境看到的默认值与测试里断言的不同。
           .replace(/\{\{\.HomePageSize\}\}/g, String(DEV_FALLBACK_HOME_PAGE_SIZE))
           .replace(/\{\{\.BorderRadius\}\}/g, String(DEV_FALLBACK_BORDER_RADIUS))
+          .replace(/\{\{\.PostBannerHeight\}\}/g, String(DEV_FALLBACK_POST_BANNER_HEIGHT))
         server
           .transformIndexHtml(pathname, html)
           .then((transformed) => {

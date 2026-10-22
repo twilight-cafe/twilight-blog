@@ -285,17 +285,17 @@ func TestTagRepositoryRename(t *testing.T) {
 	tagID := tags[0].ID
 	otherID := tags[1].ID
 
-	if err := tagRepo.Rename(ctx, 999, "missing"); !errors.Is(err, ErrTagNotFound) {
+	if err := tagRepo.Rename(ctx, 999, "missing", ""); !errors.Is(err, ErrTagNotFound) {
 		t.Fatalf("Rename(missing) error = %v, want ErrTagNotFound", err)
 	}
-	if err := tagRepo.Rename(ctx, tagID, tags[1].Name); !errors.Is(err, ErrTagNameExists) {
+	if err := tagRepo.Rename(ctx, tagID, tags[1].Name, ""); !errors.Is(err, ErrTagNameExists) {
 		t.Fatalf("Rename(duplicate) error = %v, want ErrTagNameExists", err)
 	}
-	if err := tagRepo.Rename(ctx, otherID, tags[1].Name); err != nil {
+	if err := tagRepo.Rename(ctx, otherID, tags[1].Name, ""); err != nil {
 		// Renaming to its own current name is allowed.
 		t.Fatalf("Rename(same name) error = %v", err)
 	}
-	if err := tagRepo.Rename(ctx, tagID, "Golang"); err != nil {
+	if err := tagRepo.Rename(ctx, tagID, "Golang", ""); err != nil {
 		t.Fatalf("Rename: %v", err)
 	}
 	renamed, err := tagRepo.GetByID(ctx, tagID)

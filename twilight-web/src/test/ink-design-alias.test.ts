@@ -20,7 +20,7 @@
 // 所以这里的断言全部打在**契约**上，而不是打在体积数字上：体积靠构建后实测
 // （见交付记录），契约靠本文件。每条断言都验证过「先改坏会红」。
 
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -70,10 +70,21 @@ function collectFiles(root: string, extensions: readonly string[], skip: readonl
   return found
 }
 
-/** 从源码里收集 `import { A, B } from 'ink-design'` 的具名导入。 */
+/**
+ * ink-design 自带的测试文件（`*.test.ts(x)`）不进包、也不进站点产物：扫描
+ * 依赖图时必须排除。0.1.4 新增的 `src/styles/css-imports.test.ts` 会 import
+ * `node:fs` / `node:path`，把它们算进「裸依赖」会让下面那条断言误报。
+ */
+function isInkTestFile(file: string): boolean {
+  return /\.test\.tsx?$/.test(file)
+}
+
+/** 从源码里收集 `import { A, B } from 'ink-design'` 的具名导入与再导出。 */
 function collectAppInkImports(): Set<string> {
   const names = new Set<string>()
-  const pattern = /import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['"]ink-design['"]/g
+  // 新版本组件既可能被直接 import，也可能被站点层再导出（见 lib/dialog.tsx 与
+  // lib/motion.ts），两种都算「用到了这个符号」。
+  const pattern = /(?:import|export)\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['"]ink-design['"]/g
   for (const file of collectFiles(APP_SRC, ['.ts', '.tsx'], ['test'])) {
     for (const match of readFileSync(file, 'utf8').matchAll(pattern)) {
       for (const raw of match[1].split(',')) {
@@ -189,7 +200,7 @@ describe('ink-design tree-shaking：安全前提', () => {
     // （说明片段拆分丢了，或者又装回了不带 parts 的注册表副本）。
     // 更细的守卫（路径可解析、深度一致、app.css 在最后）见 inkui-css-parts.test.ts。
     const consumers: string[] = []
-    for (const file of collectFiles(INK_SRC, ['.ts', '.tsx'])) {
+    for (const file of collectFiles(INK_SRC, ['.ts', '.tsx']).filter((item) => !isInkTestFile(item))) {
       const source = readFileSync(file, 'utf8')
       // 只认「不带 from 的裸导入」：`import './x.css'`。
       if (/(?:^|\n)\s*import\s+['"][^'"]+\.css['"]/.test(source)) consumers.push(file)
@@ -199,7 +210,7 @@ describe('ink-design tree-shaking：安全前提', () => {
 
   it('源码的裸依赖只有 react / react-dom（别名指过来必须能解析到）', () => {
     const bare = new Set<string>()
-    for (const file of collectFiles(INK_SRC, ['.ts', '.tsx'])) {
+    for (const file of collectFiles(INK_SRC, ['.ts', '.tsx']).filter((item) => !isInkTestFile(item))) {
       const source = readFileSync(file, 'utf8')
       for (const match of source.matchAll(/(?:from|import)\s+['"]([^'".][^'"]*)['"]/g)) {
         const specifier = match[1]
@@ -207,8 +218,9 @@ describe('ink-design tree-shaking：安全前提', () => {
         bare.add(specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0])
       }
     }
-    // 测试文件里的 vitest / @testing-library 不在入口的依赖图上，故只断言「不在名单外的」。
-    expect([...bare].sort()).toEqual(['@testing-library/react', 'react', 'react-dom', 'vitest'])
+    // 库自带的测试文件已被排除（见 isInkTestFile），剩下就是真正会被打进站点
+    // 产物的裸依赖：只允许包的 peerDependencies 这两个。
+    expect([...bare].sort()).toEqual(['react', 'react-dom'])
   })
 
   it('moduleSideEffects 只对 ink-design 源码返回 false，其余一律 true（= Rollup 默认）', () => {
@@ -234,6 +246,9 @@ describe('ink-design tree-shaking：安全前提', () => {
   })
 })
 
+const INK_DIST_DTS = join(WEB_ROOT, 'node_modules/ink-design/dist/index.d.ts')
+const TYPE_PATCH = join(APP_SRC, 'types/ink-design.d.ts')
+
 describe('ink-design 契约：应用用到的导出必须在别名指向的入口里', () => {
   it('每个具名导入都能在 src/index.ts 找到', () => {
     const used = collectAppInkImports()
@@ -242,5 +257,25 @@ describe('ink-design 契约：应用用到的导出必须在别名指向的入�
     expect(used.size).toBeGreaterThan(0)
     expect(exported.size).toBeGreaterThan(0)
     expect([...used].filter((name) => !exported.has(name))).toEqual([])
+  })
+
+  // 0.1.3 的发布产物没重建：`dist/index.d.ts` 还是 0.1.2 的，站点当时靠
+  // src/types/ink-design.d.ts 这层本地补丁让 tsc 看到新组件（见
+  // INKDESIGN-0.1.3-FINDINGS.md 第 1 条）。0.1.4 已重建 dist，补丁随之删除。
+  // 这里守两件事：
+  //   ① dist 的声明覆盖站点在用的每一个符号——上游再次漏建时立刻红，而不是
+  //      等到某个页面在运行时拿到 `undefined`；
+  //   ② 本地补丁不再存在——它一旦回来，就说明类型层面又分叉出了一个 API。
+  it('dist/index.d.ts 覆盖站点用到的每一个具名导入', () => {
+    const dist = readFileSync(INK_DIST_DTS, 'utf8')
+    const missing = [...collectAppInkImports()].filter((name) => !new RegExp(`\\b${name}\\b`).test(dist))
+    expect(missing).toEqual([])
+  })
+
+  it('本地类型补丁已删除（0.1.4 重建 dist 后不再需要）', () => {
+    expect(
+      existsSync(TYPE_PATCH),
+      'src/types/ink-design.d.ts 又出现了：先确认上游 dist 是否真的漏了符号，别默认用它补',
+    ).toBe(false)
   })
 })

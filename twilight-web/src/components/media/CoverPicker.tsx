@@ -14,7 +14,9 @@ import { useRef, useState, type ChangeEvent } from 'react'
 import { mediaUrl } from 'twilight-blog-api'
 import { Button } from 'ink-design'
 import { blog, getErrorMessage } from '../../lib/client'
+import ProgressiveImage from '../ProgressiveImage'
 import { useToast } from '../../lib/toast'
+import { useI18n } from '../../lib/i18n'
 
 interface CoverPickerProps {
   /** 当前头图媒体 id；null 表示没有头图。 */
@@ -26,6 +28,7 @@ interface CoverPickerProps {
 }
 
 export default function CoverPicker({ value, onChange, onBusyChange, disabled = false }: CoverPickerProps) {
+  const { t } = useI18n()
   const toast = useToast()
   const inputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
@@ -59,7 +62,7 @@ export default function CoverPicker({ value, onChange, onBusyChange, disabled = 
       }
       onChange(uploaded.id)
     } catch (error) {
-      toast(getErrorMessage(error, '上传失败'))
+      toast(getErrorMessage(error, t('上传失败', 'Upload failed')))
     } finally {
       setBusy(false)
       // 重置 value，否则同一个文件第二次选中不会触发 change。
@@ -77,7 +80,7 @@ export default function CoverPicker({ value, onChange, onBusyChange, disabled = 
         accept="image/*"
         hidden
         onChange={(event) => void handleFile(event)}
-        aria-label="上传头图"
+        aria-label={t('上传头图', 'Upload cover')}
       />
       {value === null ? (
         <button
@@ -87,17 +90,17 @@ export default function CoverPicker({ value, onChange, onBusyChange, disabled = 
           disabled={busy}
         >
           {uploading ? <span className="media-picker-loading" aria-hidden="true" /> : <span aria-hidden="true">＋</span>}
-          <span>{uploading ? '上传中…' : '上传头图'}</span>
+          <span>{uploading ? t('上传中…', 'Uploading…') : t('上传头图', 'Upload cover')}</span>
         </button>
       ) : (
         <div className="cover-preview">
-          <img src={mediaUrl(value)} alt="文章头图" />
+          <ProgressiveImage src={mediaUrl(value)} alt={t('文章头图', 'Post cover')} />
           <div className="cover-actions">
             <Button small disabled={busy} onClick={() => inputRef.current?.click()}>
-              {uploading ? '上传中…' : '更换'}
+              {uploading ? t('上传中…', 'Uploading…') : t('更换', 'Change')}
             </Button>
             <Button small ghost disabled={busy} onClick={() => onChange(null)}>
-              移除
+              {t('移除', 'Remove')}
             </Button>
           </div>
         </div>

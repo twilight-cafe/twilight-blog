@@ -321,10 +321,94 @@ func TestMediaRepositorySurfacesQueryFailures(t *testing.T) {
 	if err := repo.Delete(ctx, id); err == nil {
 		t.Error("Delete() succeeded with no media table")
 	}
+	if err := repo.Rename(ctx, id, "new name"); err == nil {
+		t.Error("Rename() succeeded with no media table")
+	}
+}
+
+// TestMediaRenameOnlyRewritesTheDisplayName 钉住「改名只动 original_name」。
+//
+// 这是整个功能的承重墙：磁盘上的文件名（storage_name）、类型、大小、转码标记与
+// 创建时间都必须原封不动，否则一次改名就会让引用方拿到一张「名字变了、图也变了」
+// 或者库与磁盘不一致的记录。头图、微语配图、站长头像都按 media.id 引用，
+// 所以只要 id 与其余列不变，那些引用一处都不用改。
+func TestMediaRenameOnlyRewritesTheDisplayName(t *testing.T) {
+	repo, db := newTestMediaRepo(t)
+	ctx := context.Background()
+	id := seedMedia(t, db, "a1b2c3.webp", "old-name.png", MediaTypeImage, "image/webp", 1234, true, 7)
+
+	if err := repo.Rename(ctx, id, "猫咪.png"); err != nil {
+		t.Fatalf("Rename() error = %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetByID() after the rename error = %v", err)
+	}
+	if got.OriginalName != "猫咪.png" {
+		t.Fatalf("OriginalName = %q, want %q", got.OriginalName, "猫咪.png")
+	}
+	if got.StorageName != "a1b2c3.webp" {
+		t.Fatalf("StorageName = %q after the rename, want the on-disk name untouched", got.StorageName)
+	}
+	if got.MimeType != "image/webp" || got.Size != 1234 || !got.Converted || got.CreatedAt != 7 || got.MediaType != MediaTypeImage {
+		t.Fatalf("the rename touched columns it must not touch: %+v", got)
+	}
+}
+
+// TestMediaRenameReportsAMissingRow 覆盖两种「没有可改的行」：id 不存在，
+// 以及那一行已被软删（查询口径带 deleted_at IS NULL）。
+//
+// 两者都必须报 ErrMediaNotFound 而不是静默成功：静默成功会让调用方以为名字已经
+// 改好，并把一个不存在的名字回给用户。
+func TestMediaRenameReportsAMissingRow(t *testing.T) {
+	repo, db := newTestMediaRepo(t)
+	ctx := context.Background()
+
+	if err := repo.Rename(ctx, 4242, "随便.png"); !errors.Is(err, ErrMediaNotFound) {
+		t.Fatalf("Rename() on an unknown id error = %v, want ErrMediaNotFound", err)
+	}
+
+	id := seedMedia(t, db, "gone.webp", "gone.png", MediaTypeImage, "image/webp", 10, false, 1)
+	if _, err := db.Exec(`UPDATE media SET deleted_at = 1 WHERE id = ?`, id); err != nil {
+		t.Fatalf("mark the row as deleted: %v", err)
+	}
+	if err := repo.Rename(ctx, id, "不该改到.png"); !errors.Is(err, ErrMediaNotFound) {
+		t.Fatalf("Rename() on a soft-deleted row error = %v, want ErrMediaNotFound", err)
+	}
+}
+
+// TestMediaSingleRowWritersSurfaceARowsAffectedFailure 覆盖「取影响行数失败」。
+//
+// 真实驱动不会在这里报错（所以渲染路径上这条分支永远走不到），但三个单行写入
+// （Delete / UpdateStorage / Rename）都靠它区分「改到了」与「这一行不存在」：
+// 取不到行数时若当成成功，界面会显示一个数据库里并不存在的状态，而调用方永远
+// 不会知道。rowsAffectedFn 这层间接就是为它准备的（与 config 的
+// writeFileAtomicFn 同一先例）。
+func TestMediaSingleRowWritersSurfaceARowsAffectedFailure(t *testing.T) {
+	repo, db := newTestMediaRepo(t)
+	ctx := context.Background()
+	id := seedMedia(t, db, "a.png", "a.png", MediaTypeImage, "image/png", 10, false, 1)
+
+	original := rowsAffectedFn
+	rowsAffectedFn = func(sql.Result) (int64, error) {
+		return 0, errors.New("the driver cannot report affected rows")
+	}
+	t.Cleanup(func() { rowsAffectedFn = original })
+
+	// 三种失败都不是 ErrMediaNotFound：那是「这一行不存在」，而这里是「查不到」。
+	if err := repo.Delete(ctx, id); err == nil || errors.Is(err, ErrMediaNotFound) {
+		t.Errorf("Delete() error = %v, want the RowsAffected failure to surface", err)
+	}
+	if err := repo.UpdateStorage(ctx, id, "b.webp", "image/webp", 1, true); err == nil || errors.Is(err, ErrMediaNotFound) {
+		t.Errorf("UpdateStorage() error = %v, want the RowsAffected failure to surface", err)
+	}
+	if err := repo.Rename(ctx, id, "新的名字.png"); err == nil || errors.Is(err, ErrMediaNotFound) {
+		t.Errorf("Rename() error = %v, want the RowsAffected failure to surface", err)
+	}
 }
 
 // TestMediaScanReportsAValueThatDoesNotFitTheColumn 覆盖扫描失败。
-//
 // SQLite 是动态类型的：列上写着 INTEGER，往里放一段文本照样存得下。于是扫描到
 // int64 时失败——这正是「上一版写过别的形状、或者有人手工改过库」的症状，而它必须
 // 报出来，不能被当成「没有这一行」。

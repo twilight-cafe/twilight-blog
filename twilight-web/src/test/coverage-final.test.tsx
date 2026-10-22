@@ -2,10 +2,10 @@
 // 三类补法：
 //  1. 卸载后落地的响应（alive/requestId 守卫的「已失效」分支）：pending promise →
 //     unmount → resolve/reject；
-//  2. 探针直呼（markdown 清洗、enhanceCodeBlocks、observeReveal 等渲染路径
+//  2. 探针直呼（markdown 清洗、enhanceCodeBlocks 等渲染路径
 //     不可达的守卫，导出口见各源文件注释）；
 //  3. 常规交互分支（确认弹窗取消、错误 toast、标签多页拉取、计数缓存 TTL 等）。
-import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { readFileSync } from 'node:fs'
@@ -30,8 +30,7 @@ import Tags from '../pages/public/Tags'
 import Comments from '../components/Comments'
 import MediaPicker from '../components/media/MediaPicker'
 import MediaLightbox from '../components/media/MediaLightbox'
-import { enhanceCodeBlocks } from '../components/ContentView'
-import { observeReveal } from '../components/common'
+import { enhanceCodeBlocks, enhanceImages } from '../components/ContentView'
 import AdminLayout from '../components/AdminLayout'
 import { collectToc, extractToc, isSafeUrl, nodeText, rehypeCommentSanitize, rehypeHeadingIds, renderCommentMarkdown } from '../lib/markdown'
 import { saveSiteDescription, resetSiteCacheForTests } from '../lib/site'
@@ -284,10 +283,29 @@ describe('字体本地化（零外链守护）', () => {
   })
 })
 
-describe('common.observeReveal 探针', () => {
-  it('el 为空返回空清理函数，调用不炸', () => {
-    const cleanup = observeReveal(null, () => {})
-    expect(() => cleanup()).not.toThrow()
+// 搜索页回车后信息区的横向跳动：页面从不滚动变成可滚动时，经典滚动条占去
+// 10~15px 宽，居中的内容整体横移几个像素。这类变化不派发 resize（innerWidth
+// 没变），也没有 scroll 事件——0.1.3 时它顺带把 ink-design 的自绘光标留在旧
+// 视口坐标上（根因已在上游 0.1.4 修掉，见 INKDESIGN-0.1.3-FINDINGS.md 第 7 条）。
+// 站点侧的处置是让内容宽度恒定：给根元素预留滚动条槽位，连跳动本身也去掉。
+// 这段位移只有真浏览器能算（jsdom 不做布局），所以钉住的是 CSS 契约本身。
+describe('滚动条槽位（自绘光标等依赖视口坐标的浮层）', () => {
+  const appCss = readFileSync(resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+
+  function ruleBlock(selector: string): string {
+    const start = appCss.indexOf(`${selector} {`)
+    if (start === -1) return ''
+    return appCss.slice(start, appCss.indexOf('}', start))
+  }
+
+  it('根元素预留 scrollbar-gutter，内容宽度不随滚动条出现而变化', () => {
+    const htmlRule = ruleBlock('html')
+    expect(htmlRule, '找不到 html 规则').not.toBe('')
+    expect(htmlRule).toMatch(/scrollbar-gutter:\s*stable/)
+  })
+
+  it('槽位在根元素上：body 预留只影响 body 自己的盒子，挡不住视口宽度变化', () => {
+    expect(ruleBlock('body')).not.toMatch(/scrollbar-gutter/)
   })
 })
 
@@ -349,7 +367,7 @@ describe('App 启动补缺', () => {
         <App />
       </MemoryRouter>,
     )
-    await waitFor(() => expect(screen.getByRole('button')).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('button', { name: '设置密码并进入后台 →' })).toBeTruthy())
     // Setup 页有密码输入框
     expect(document.querySelector('input[type=password]')).toBeTruthy()
   })
@@ -703,7 +721,7 @@ describe('Editor 补缺', () => {
     fireEvent.change(container.querySelector('input.ed-title, .ed-title input, input') as HTMLInputElement, { target: { value: '标题T' } })
     client.blog.createArticle.mockResolvedValueOnce(makeArticle({ id: 3 }))
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() => expect(client.blog.createArticle).toHaveBeenCalledWith({ title: '标题T', content: '', tags: ['新标签'], coverMediaId: null }))
+    await waitFor(() => expect(client.blog.createArticle).toHaveBeenCalledWith({ title: '标题T', content: '', titleEn: '', contentEn: '', aiGenerated: false, tags: ['新标签'], coverMediaId: null }))
   })
 })
 
@@ -1421,5 +1439,70 @@ describe('MediaLightbox 非 Escape 键不关闭', () => {
     expect(onClose).not.toHaveBeenCalled()
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
+
+// enhanceImages 只在正文里真的出现 <img> 时才会走到包裹逻辑；正文图片不是 React
+// 元素，没有组件测试的入口——与 enhanceCodeBlocks 同一先例：探针直呼 + 手搓 DOM。
+// 缓存的两种情况靠改写原型上的 complete / naturalWidth 模拟，afterEach 原样还回。
+describe('ContentView enhanceImages 探针', () => {
+  const completeDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'complete')
+  const naturalWidthDescriptor = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'naturalWidth')
+
+  function stubImage(complete: boolean, naturalWidth: number): void {
+    Object.defineProperty(HTMLImageElement.prototype, 'complete', { configurable: true, get: () => complete })
+    Object.defineProperty(HTMLImageElement.prototype, 'naturalWidth', { configurable: true, get: () => naturalWidth })
+  }
+
+  afterEach(() => {
+    if (completeDescriptor) Object.defineProperty(HTMLImageElement.prototype, 'complete', completeDescriptor)
+    if (naturalWidthDescriptor) Object.defineProperty(HTMLImageElement.prototype, 'naturalWidth', naturalWidthDescriptor)
+  })
+
+  it('root 为空直接返回', () => {
+    expect(() => enhanceImages(null)).not.toThrow()
+  })
+
+  it('正文图片包进外框、挂上骨架并给出临时宽高比；重复执行不重复包裹', () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<p>文字<img src="/body.png" alt="正文图">文字</p>'
+    enhanceImages(root)
+
+    const frame = root.querySelector('.img-frame') as HTMLElement
+    expect(frame.className).toBe('img-frame loading')
+    expect(frame.style.aspectRatio).toBe('16 / 9')
+    expect(frame.querySelector('.img-skeleton')?.getAttribute('aria-hidden')).toBe('true')
+    expect(frame.querySelector('img')?.getAttribute('src')).toBe('/body.png')
+
+    enhanceImages(root)
+    expect(root.querySelectorAll('.img-frame').length).toBe(1)
+  })
+
+  it('load 落地并清空占位比例；error 判为失败', () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<img src="/a.png"><img src="/b.png">'
+    enhanceImages(root)
+    const frames = Array.from(root.querySelectorAll<HTMLElement>('.img-frame'))
+
+    fireEvent.load(frames[0].querySelector('img') as HTMLImageElement)
+    expect(frames[0].classList.contains('loaded')).toBe(true)
+    expect(frames[0].style.aspectRatio).toBe('')
+
+    fireEvent.error(frames[1].querySelector('img') as HTMLImageElement)
+    expect(frames[1].classList.contains('failed')).toBe(true)
+  })
+
+  it('已缓存：complete 且 naturalWidth > 0 立刻落地；坏图判失败', () => {
+    stubImage(true, 1024)
+    const good = document.createElement('div')
+    good.innerHTML = '<img src="/cached.png">'
+    enhanceImages(good)
+    expect(good.querySelector('.img-frame')?.classList.contains('loaded')).toBe(true)
+
+    stubImage(true, 0)
+    const broken = document.createElement('div')
+    broken.innerHTML = '<img src="/broken.png">'
+    enhanceImages(broken)
+    expect(broken.querySelector('.img-frame')?.classList.contains('failed')).toBe(true)
   })
 })

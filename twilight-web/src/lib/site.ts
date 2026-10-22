@@ -39,6 +39,9 @@ const DEFAULT_HOME_PAGE_SIZE = 12
 /** 与后端 config.DefaultBorderRadius 镜像；改一处必须改另一处。 */
 const DEFAULT_BORDER_RADIUS = 4
 
+/** 与后端 config.DefaultPostBannerHeight 镜像；改一处必须改另一处。 */
+const DEFAULT_POST_BANNER_HEIGHT = 400
+
 /** 站点公开信息的一份快照。两个字段都可能为空串（未设置 / 后端只回了其中一项）。 */
 export interface SiteMeta {
   description: string
@@ -56,6 +59,10 @@ export interface SiteMeta {
    * 设置页回显。两处若不一致，设置页会显示一个页面并未采用的数值。
    */
   borderRadius: number
+  /** 文章头图最大高度（px）；设置页回显，真正生效的值来自外壳属性。 */
+  postBannerHeight: number
+  /** 微语功能是否启用；设置页回显。前端首屏决策读外壳属性。 */
+  momentsEnabled: boolean
 }
 
 /** 请求失败时的快照。刻意不进缓存（见 loadMeta），只是给调用方一个可用的值。 */
@@ -65,6 +72,8 @@ const EMPTY_META: SiteMeta = {
   codeBlockMaxLines: DEFAULT_CODE_LINES,
   homePageSize: DEFAULT_HOME_PAGE_SIZE,
   borderRadius: DEFAULT_BORDER_RADIUS,
+  postBannerHeight: DEFAULT_POST_BANNER_HEIGHT,
+  momentsEnabled: true,
 }
 
 let cache: SiteMeta | null = null
@@ -86,6 +95,8 @@ function toMeta(settings: {
   code_block_max_lines?: number
   home_page_size?: number
   border_radius?: number
+  post_banner_height?: number
+  moments_enabled?: boolean
 }): SiteMeta {
   return {
     description: settings.description ?? '',
@@ -100,6 +111,9 @@ function toMeta(settings: {
     // 同理。注意这里**不能**写成 `?? DEFAULT` 之外再补 `|| DEFAULT`：
     // 0 是合法的直角，`|| ` 会把它当假值换成 4。
     borderRadius: settings.border_radius ?? DEFAULT_BORDER_RADIUS,
+    postBannerHeight: settings.post_banner_height ?? DEFAULT_POST_BANNER_HEIGHT,
+    // 字段缺席（更旧的服务端）按「启用」兜底，与外壳属性的缺省语义一致。
+    momentsEnabled: settings.moments_enabled ?? true,
   }
 }
 
@@ -152,6 +166,16 @@ export function loadSiteMeta(): Promise<SiteMeta> {
 }
 
 /**
+ * 拉取管理端站点设置（多一个评论通知收件地址）。
+ *
+ * 刻意**不进**模块级缓存：通知邮箱只在一个页面里用，缓存在模块级会让
+ * 「保存后刷新设置页仍看到旧地址」在别处出现；公开快照的缓存则要继续共享。
+ */
+export async function loadAdminSiteSettings() {
+  return blog.getAdminSite()
+}
+
+/**
  * 丢弃缓存并重新拉取。站长刚改完头像时调用——头像不是这次请求的返回值
  * （PUT /api/admin/profile 回的是会话身份），而侧栏作者卡正订阅着这份缓存，
  * 不主动刷新的话，用户会看到「保存成功但头像没变」。
@@ -175,12 +199,18 @@ export async function saveSiteSettings(input: {
   codeBlockMaxLines?: number
   homePageSize?: number
   borderRadius?: number
+  postBannerHeight?: number
+  momentsEnabled?: boolean
+  commentNotifyTo?: string
 }): Promise<SiteMeta> {
   const saved = await blog.updateSite({
     description: input.description,
     code_block_max_lines: input.codeBlockMaxLines,
     home_page_size: input.homePageSize,
     border_radius: input.borderRadius,
+    post_banner_height: input.postBannerHeight,
+    moments_enabled: input.momentsEnabled,
+    comment_notify_to: input.commentNotifyTo,
   })
   // 用服务端返回的整份快照覆盖：它同时带着头像，因此改描述不会把头像从缓存里抹掉。
   const meta = toMeta(saved)

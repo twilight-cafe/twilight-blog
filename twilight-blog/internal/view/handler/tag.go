@@ -102,7 +102,7 @@ func (h *TagHandler) Rename(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	tag, err := h.service.Rename(c.Request().Context(), id, req.Name)
+	tag, err := h.service.Rename(c.Request().Context(), id, req.Name, req.NameEN)
 	if err != nil {
 		switch {
 		case errors.Is(err, model.ErrInvalidTagName):

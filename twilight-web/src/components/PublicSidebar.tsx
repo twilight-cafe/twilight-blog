@@ -13,8 +13,11 @@
 // 作者卡的头像来自站长在我们后台「账号」页设置的那张图（见 AuthorAvatar），
 // 与描述同源、同一次请求。
 
+import { useMemo } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+import { useScrollSpy } from 'ink-design'
 import type { Page } from 'twilight-blog-api'
+import type { CSSProperties } from 'react'
 import type { TocItem } from '../lib/markdown'
 import { buildNav, isNavActive } from '../lib/nav'
 import { useSiteDescription } from '../lib/site'
@@ -25,6 +28,11 @@ export default function PublicSidebar({ pages, toc = [] }: { pages: Page[]; toc?
   const location = useLocation()
   const navItems = buildNav(pages)
   const description = useSiteDescription()
+  // 目录的 id 列表按 toc 记忆：useScrollSpy 的 effect 依赖这个数组，内联
+  // 新建的数组会让它每次渲染都重挂一遍监听。offset 用库的默认 96px（与
+  // 顶栏高度 + 一点余量对应），与这里原来的取值一致。
+  const ids = useMemo(() => toc.map((item) => item.id), [toc])
+  const activeId = useScrollSpy(ids)
 
   return (
     <aside className="public-sidebar" aria-label="侧边栏">
@@ -56,11 +64,16 @@ export default function PublicSidebar({ pages, toc = [] }: { pages: Page[]; toc?
             <span className="kicker">TOC</span>
           </div>
           <nav className="toc-list" aria-label="文章目录">
-            {toc.map((item) => (
+            {toc.map((item, index) => (
               <a
                 key={item.id}
                 href={`#${item.id}`}
-                style={{ paddingLeft: `${(item.level - 1) * 14}px` }}
+                className={activeId === item.id ? 'on' : ''}
+                style={{
+                  paddingLeft: `${(item.level - 1) * 14}px`,
+                  // 条目逐条入场的错峰序号（见 app.css 的 .toc-list a）。
+                  '--i': index,
+                } as CSSProperties}
               >
                 {item.text}
               </a>

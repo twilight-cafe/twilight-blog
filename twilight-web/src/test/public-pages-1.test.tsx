@@ -1,6 +1,6 @@
 // public-pages-1.test.tsx —— NotFound / Home / Archive / Moments / PageDetail
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import NotFound from '../pages/public/NotFound'
 import Home from '../pages/public/Home'
@@ -8,6 +8,7 @@ import Archive from '../pages/public/Archive'
 import Moments from '../pages/public/Moments'
 import PageDetail from '../pages/public/PageDetail'
 import { ToastProvider } from '../lib/toast'
+import { fmtDateTime } from '../lib/format'
 import { getSharedClientMock, NOW, makeArticle, makeComment, makeMedia, makeMoment, makePage } from './helpers'
 
 vi.mock('../lib/client', async () => {
@@ -125,7 +126,98 @@ describe('Home', () => {
     await waitFor(() => expect(client.blog.listArticles).toHaveBeenCalledWith({ page: 1, pageSize: 12 }))
     second.unmount()
   })
+
+  it('首次加载慢于阈值才显形骨架：位置先占住，且没有翻页变暗态', async () => {
+    // 假时钟：这里要验的正是「200ms 前后」的差别，真等会拖慢整个套件。
+    vi.useFakeTimers()
+    try {
+      const gate = deferred<{ items: ReturnType<typeof makeArticle>[]; total_pages: number }>()
+      client.blog.listArticles.mockReturnValueOnce(gate.promise as never)
+
+      const { container, unmount } = renderPage(<Home />)
+      const cards = container.querySelector('.acards') as HTMLElement
+      // 第一帧：骨架已经在树上占住整页卡片的位置（所以内容到达时不会跳版），
+      // 但还没到阈值，不可见。
+      expect(container.querySelector('.skl-cards')?.getAttribute('data-visible')).toBe('false')
+      expect(cards.getAttribute('aria-busy')).toBe('true')
+      // 翻页已改成「旧卡片滑走、新卡片滑入」，列表不再有变暗态：
+      // data-busy 这个标记被整条移除了（留着只会是一段永远不生效的样式）。
+      expect(cards.dataset.busy).toBeUndefined()
+
+      act(() => {
+        vi.advanceTimersByTime(220)
+      })
+      expect(container.querySelector('.skl-cards')?.getAttribute('data-visible')).toBe('true')
+
+      await act(async () => {
+        gate.resolve(paged([makeArticle({ id: 1, title: '迟到的文章' })]))
+      })
+      expect(screen.getByText('迟到的文章')).toBeTruthy()
+      // 数据到达：骨架整块撤掉，不留一个空壳占位。
+      expect(container.querySelector('.skl-cards')).toBeNull()
+      unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
+
+  it('翻页：旧列表在 180ms 退场期间保持，新页数据提前到达也等提交后才上屏', async () => {
+    vi.useFakeTimers()
+    try {
+      client.blog.listArticles
+        .mockResolvedValueOnce(paged([makeArticle({ id: 1, title: '第一页' })], 1, 2, 2))
+        .mockResolvedValueOnce(paged([makeArticle({ id: 2, title: '第二页' })], 2, 2, 2))
+
+      const { unmount } = renderPage(<Home />)
+      await act(async () => {})
+      expect(screen.getByText('第一页')).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Page 2' }))
+      await act(async () => {})
+      // 第二次请求已经回来了，但退场还没播完：新页不能抢在旧卡片滑走前上屏，
+      // 否则退场动画就播在了一张注定被替换的图上。
+      expect(screen.getByText('第一页')).toBeTruthy()
+      expect(screen.queryByText('第二页')).toBeNull()
+
+      act(() => { vi.advanceTimersByTime(180) })
+      expect(screen.queryByText('第一页')).toBeNull()
+      expect(screen.getByText('第二页')).toBeTruthy()
+      unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('翻页：新页数据没到时先显示骨架，分页器不消失', async () => {
+    vi.useFakeTimers()
+    try {
+      const gate = deferred<{ items: ReturnType<typeof makeArticle>[]; page: number; page_size: number; total: number; total_pages: number }>()
+      client.blog.listArticles
+        .mockResolvedValueOnce(paged([makeArticle({ id: 1, title: '第一页' })], 1, 2, 2))
+        .mockReturnValueOnce(gate.promise as never)
+
+      const { container, unmount } = renderPage(<Home />)
+      await act(async () => {})
+      fireEvent.click(screen.getByRole('button', { name: 'Page 2' }))
+      act(() => { vi.advanceTimersByTime(180) })
+
+      // 提交到第 2 页而数据未到：旧卡片整块撤掉，骨架先占住新增内容的位置。
+      expect(screen.queryByText('第一页')).toBeNull()
+      expect(container.querySelector('.skl-cards')).toBeTruthy()
+      // 分页器留在原地（已指向第 2 页）：它消失再出现等于把读者刚点的东西抽走。
+      expect(screen.getByRole('button', { name: 'Page 2' })).toBeTruthy()
+
+      await act(async () => {
+        gate.resolve(paged([makeArticle({ id: 2, title: '第二页' })], 2, 2, 2))
+      })
+      expect(screen.getByText('第二页')).toBeTruthy()
+      expect(container.querySelector('.skl-cards')).toBeNull()
+      unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 
 describe('Archive', () => {
   it('多页文章聚合按年分组；毫秒/秒时间戳同桶', async () => {
@@ -208,6 +300,21 @@ describe('Moments', () => {
     await waitFor(() => expect(document.querySelector('.media-lightbox')).toBeNull())
   })
 
+  it('每条微语在卡片右上角显示精确到分钟的发布时间', async () => {
+    client.blog.listMoments.mockResolvedValue(paged([makeMoment({ id: 3, content: '带时间的微语' })]))
+
+    const { container } = renderPage(<Moments />, '/moments', '/moments')
+    await waitFor(() => expect(screen.getByText('带时间的微语')).toBeTruthy())
+
+    const card = container.querySelector('.mom') as HTMLElement
+    // 时间在正文之前（卡片的第一个子元素），也就是右上角那一行。
+    expect(card.firstElementChild?.className).toBe('mom-meta')
+    const time = card.querySelector('.mom-time') as HTMLElement
+    // 精确到分钟：与 fmtDateTime 的格式逐字一致（多出秒或时区都是错的）。
+    expect(time.textContent).toBe(fmtDateTime(NOW))
+    expect(time.textContent).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
+  })
+
   it('点击「评论」才挂载评论区并请求评论；再点收起、不重复请求', async () => {
     client.blog.listMoments.mockResolvedValue(paged([makeMoment({ id: 5, content: '求评论' })]))
     client.blog.listComments.mockResolvedValue(paged([makeComment({ id: 1, content: '沙发' })]))
@@ -235,6 +342,35 @@ describe('Moments', () => {
     gate.resolve(paged([makeMoment()]))
     await gate.promise.catch(() => {})
     expect(true).toBe(true)
+  })
+
+  it('首次加载慢于阈值才显形骨架：位置先占住，且没有翻页变暗态', async () => {
+    vi.useFakeTimers()
+    try {
+      const gate = deferred<{ items: ReturnType<typeof makeMoment>[]; total_pages: number }>()
+      client.blog.listMoments.mockReturnValueOnce(gate.promise as never)
+
+      const { container, unmount } = renderPage(<Moments />, '/moments', '/moments')
+      const feed = container.querySelector('.momfeed') as HTMLElement
+      expect(container.querySelector('.skl-moments')?.getAttribute('data-visible')).toBe('false')
+      expect(feed.getAttribute('aria-busy')).toBe('true')
+      // 同 Home：翻页变暗态已随「滑走 → 滑入」一起移除。
+      expect(feed.dataset.busy).toBeUndefined()
+
+      act(() => {
+        vi.advanceTimersByTime(220)
+      })
+      expect(container.querySelector('.skl-moments')?.getAttribute('data-visible')).toBe('true')
+
+      await act(async () => {
+        gate.resolve(paged([makeMoment({ id: 2, content: '迟到的微语' })]))
+      })
+      expect(screen.getByText('迟到的微语')).toBeTruthy()
+      expect(container.querySelector('.skl-moments')).toBeNull()
+      unmount()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

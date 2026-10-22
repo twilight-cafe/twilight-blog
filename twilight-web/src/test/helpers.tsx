@@ -116,12 +116,16 @@ export function makeArticle(overrides: Partial<import('twilight-blog-api').Artic
     id: 1,
     title: '测试文章',
     content: '这是正文内容。',
+    title_en: '',
+    content_en: '',
+    ai_generated: false,
     created_at: NOW,
     updated_at: NOW,
     // 默认没有头图。它是**必填**字段（服务端恒输出 null），所以构造器也必须给出，
     // 否则每个用到 makeArticle 的用例都会缺一个字段。需要头图的用例显式覆盖它。
     cover_media_id: null,
     tags: ['Go'],
+    tags_en: [''],
     ...overrides,
   }
 }
@@ -138,7 +142,7 @@ export function makePage(overrides: Partial<import('twilight-blog-api').Page> = 
 }
 
 export function makeTag(overrides: Partial<import('twilight-blog-api').Tag> = {}): import('twilight-blog-api').Tag {
-  return { id: 1, name: 'Go', article_count: 3, ...overrides }
+  return { id: 1, name: 'Go', name_en: '', article_count: 3, ...overrides }
 }
 
 export function makeMoment(overrides: Partial<import('twilight-blog-api').Moment> = {}): import('twilight-blog-api').Moment {

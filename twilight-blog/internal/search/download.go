@@ -55,6 +55,38 @@ var githubReleaseSources = []releaseSource{
 	},
 }
 
+// 与 manager.go 同源的测试间接层：文件系统、网络与解包步骤各留一个变量。
+// 生产代码不感知它们，测试用它们构造「下载失败 / 校验文件读不出 / 解包失败」
+// 这类无法靠真实环境稳定复现的分支。
+var (
+	fetchReleaseFn   = fetchRelease
+	mkdtemp          = os.MkdirTemp
+	removeAll        = os.RemoveAll
+	downloadFileFn   = downloadFile
+	extractBinaryFn  = extractBinary
+	copyFileFn       = copyFile
+	sha256FileFn     = sha256File
+	fetchTextFn      = fetchText
+	latestAssetFn    = latestAsset
+	installReleaseFn = installRelease
+	httpGetText      = func(url string) (*http.Response, error) {
+		return (&http.Client{Timeout: 60 * time.Second}).Get(url)
+	}
+	httpDoRelease = func(req *http.Request) (*http.Response, error) {
+		return (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	}
+	httpDownload = func(url string) (*http.Response, error) {
+		return (&http.Client{Timeout: 10 * time.Minute}).Get(url)
+	}
+	createFile   = os.Create
+	openFile     = os.OpenFile
+	openSource   = os.Open
+	openZipEntry = func(file *zip.File) (io.ReadCloser, error) {
+		return file.Open()
+	}
+	walkDirPath = filepath.WalkDir
+)
+
 type githubRelease struct {
 	TagName string `json:"tag_name"`
 	// Assets 用的是下面的 releaseAsset 别名：它与这里逐字内联的匿名结构体
@@ -84,19 +116,19 @@ func ensureReleaseDownloadURL(rawURL string, source releaseSource) error {
 func installRelease(target string, release githubRelease, asset releaseAsset, source releaseSource) error {
 	logging.Debugf("[search] installing release asset name=%s url=%s", asset.Name, asset.BrowserDownloadURL)
 
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	if err := mkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("create target directory: %w", err)
 	}
 
-	tmpDir, err := os.MkdirTemp("", "meilisearch-download-*")
+	tmpDir, err := mkdtemp("", "meilisearch-download-*")
 	if err != nil {
 		return fmt.Errorf("create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer removeAll(tmpDir)
 
 	archivePath := filepath.Join(tmpDir, filepath.Base(asset.Name))
 	logging.Debugf("[search] downloading archive to %s", archivePath)
-	if err := downloadFile(asset.BrowserDownloadURL, archivePath); err != nil {
+	if err := downloadFileFn(asset.BrowserDownloadURL, archivePath); err != nil {
 		return fmt.Errorf("download %s: %w", asset.Name, err)
 	}
 	logging.Debugf("[search] downloaded archive asset=%s", asset.Name)
@@ -108,17 +140,17 @@ func installRelease(target string, release githubRelease, asset releaseAsset, so
 		return err
 	}
 
-	binaryPath, err := extractBinary(archivePath, asset.Name)
+	binaryPath, err := extractBinaryFn(archivePath, asset.Name)
 	if err != nil {
 		return fmt.Errorf("extract %s: %w", asset.Name, err)
 	}
 	logging.Debugf("[search] extracted binary %s", binaryPath)
 
-	if err := copyFile(binaryPath, target); err != nil {
+	if err := copyFileFn(binaryPath, target); err != nil {
 		return fmt.Errorf("install binary to %s: %w", target, err)
 	}
 	if runtime.GOOS != "windows" {
-		if err := os.Chmod(target, 0o755); err != nil {
+		if err := chmodFile(target, 0o755); err != nil {
 			return fmt.Errorf("mark %s executable: %w", target, err)
 		}
 	}
@@ -135,7 +167,7 @@ func verifyDownloadIntegrity(path string, asset releaseAsset, release githubRele
 		return err
 	}
 
-	actual, err := sha256File(path)
+	actual, err := sha256FileFn(path)
 	if err != nil {
 		return fmt.Errorf("hash downloaded file: %w", err)
 	}
@@ -198,7 +230,7 @@ func expectedDigest(release githubRelease, asset releaseAsset, source releaseSou
 			if err := ensureReleaseDownloadURL(candidate.BrowserDownloadURL, source); err != nil {
 				return "", "", err
 			}
-			content, fetchErr := fetchText(candidate.BrowserDownloadURL)
+			content, fetchErr := fetchTextFn(candidate.BrowserDownloadURL)
 			if fetchErr != nil {
 				return "", "", fmt.Errorf("fetch checksum file %s: %w", candidate.Name, fetchErr)
 			}
@@ -328,8 +360,7 @@ func sha256File(path string) (string, error) {
 // fetchText 把一份小的元数据文件（校验和清单）读进内存，读取上限 4MB。
 // 只接受 200，其他状态码一律视为失败。
 func fetchText(url string) (string, error) {
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Get(url)
+	resp, err := httpGetText(url)
 	if err != nil {
 		return "", err
 	}
@@ -354,7 +385,7 @@ func latestAsset() (githubRelease, releaseAsset, releaseSource, error) {
 	var lastErr error
 	for _, source := range githubReleaseSources {
 		logging.Debugf("[search] fetching release metadata from %s", source.metadataURL)
-		release, fetchErr := fetchRelease(source.metadataURL)
+		release, fetchErr := fetchReleaseFn(source.metadataURL)
 		if fetchErr != nil {
 			lastErr = fetchErr
 			logging.Warnf("[search] fetch release metadata failed: %v", fetchErr)
@@ -392,13 +423,12 @@ type releaseAsset = struct {
 // 显式带 Accept: application/vnd.github+json，避免 GitHub 回退到旧格式。
 func fetchRelease(releaseURL string) (githubRelease, error) {
 	var release githubRelease
-	client := &http.Client{Timeout: 60 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, releaseURL, nil)
 	if err != nil {
 		return release, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := client.Do(req)
+	resp, err := httpDoRelease(req)
 	if err != nil {
 		return release, err
 	}
@@ -548,10 +578,15 @@ func containsAny(s string, candidates []string) bool {
 // 100–150 MiB、包内条目只有 1–2 个。下面的上限留了数倍余量，
 // 既能容纳将来更大的版本，又能挡住数量级上的异常。
 const (
-	maxDownloadBytes = 512 << 20 // 512 MiB
 	// maxTextBytes 用于校验和之类的小文件：它们只有几十字节到几 KB。
 	maxTextBytes = 1 << 20 // 1 MiB
 )
+
+// maxDownloadBytes 是二进制下载的体积上限。它是 var 而不是 const：
+// 要验证「超过上限即失败」这条分支，唯一办法是真的传一个超过上限的流，
+// 而那意味着在测试里写出 512 MiB。改成 var 之后测试可以把它降到 KB 级，
+// 验证的是同一段代码。
+var maxDownloadBytes int64 = 512 << 20 // 512 MiB
 
 // 解包上限刻意声明为 var 而不是 const：测试需要把它们调小到几 KB 级别，
 // 才能在不写出上 GB 数据的前提下验证这道闸真的会拦。用 const 的话，
@@ -564,14 +599,13 @@ var (
 
 func downloadFile(url, target string) error {
 	logging.Debugf("[search] downloading %s", url)
-	out, err := os.Create(target)
+	out, err := createFile(target)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
-	client := &http.Client{Timeout: 10 * time.Minute}
-	resp, err := client.Get(url)
+	resp, err := httpDownload(url)
 	if err != nil {
 		return err
 	}
@@ -622,7 +656,7 @@ func extractBinary(archivePath, assetName string) (string, error) {
 	}
 
 	var matches []string
-	err := filepath.WalkDir(tmpDir, func(path string, d os.DirEntry, err error) error {
+	err := walkDirPath(tmpDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -671,19 +705,19 @@ func unzipTo(archivePath, dest string) error {
 			return fmt.Errorf("invalid zip entry path: %s", file.Name)
 		}
 		if file.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := mkdirAll(target, 0o755); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		if err := mkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		src, err := file.Open()
+		src, err := openZipEntry(file)
 		if err != nil {
 			return err
 		}
-		dst, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+		dst, err := openFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 		if err != nil {
 			src.Close()
 			return err
@@ -747,14 +781,14 @@ func untargzTo(archivePath, dest string) error {
 		}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := mkdirAll(target, 0o755); err != nil {
 				return err
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := mkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+			out, err := openFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
 			if err != nil {
 				return err
 			}
@@ -777,12 +811,12 @@ func untargzTo(archivePath, dest string) error {
 // 关闭输出文件时的错误也会被返回：写入成功但 close 失败，
 // 意味着数据未必真正落盘，不能当成功处理。
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
+	in, err := openSource(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	out, err := openFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
 		return err
 	}

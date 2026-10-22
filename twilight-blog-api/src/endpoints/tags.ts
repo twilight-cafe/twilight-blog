@@ -48,7 +48,7 @@ export function createTagsApi(http: HttpClient): TagsApi {
       return http.request<Tag>({
         method: 'PUT',
         path: `/api/admin/tags/${tagId}`,
-        json: { name: input.name },
+        json: { name: input.name, name_en: input.nameEn },
       });
     },
   };

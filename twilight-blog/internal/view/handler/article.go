@@ -91,6 +91,9 @@ func (h *ArticleHandler) Create(c echo.Context) error {
 	article, err := h.service.Create(c.Request().Context(), service.ArticleWrite{
 		Title:        req.Title,
 		Content:      &req.Content,
+		TitleEN:      &req.TitleEN,
+		ContentEN:    &req.ContentEN,
+		AIGenerated:  &req.AIGenerated,
 		Tags:         &req.Tags,
 		PublishedAt:  req.PublishedAt,
 		CoverSet:     true,
@@ -126,6 +129,9 @@ func (h *ArticleHandler) Update(c echo.Context) error {
 	article, err := h.service.Update(c.Request().Context(), id, service.ArticleWrite{
 		Title:        req.Title,
 		Content:      req.Content,
+		TitleEN:      req.TitleEN,
+		ContentEN:    req.ContentEN,
+		AIGenerated:  req.AIGenerated,
 		Tags:         req.Tags,
 		PublishedAt:  req.PublishedAt,
 		CoverSet:     req.CoverMediaID.Set,

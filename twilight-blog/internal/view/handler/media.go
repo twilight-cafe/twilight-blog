@@ -178,3 +178,48 @@ func (h *MediaHandler) Delete(c echo.Context) error {
 
 	return c.NoContent(http.StatusNoContent)
 }
+
+// Rename 对应 PATCH /api/admin/media/:id，只改媒体的展示名。
+//
+// 为什么是 PATCH 而不是 PUT：这里只更新一个字段，媒体本体（文件、类型、大小）
+// 一律不动，而 PUT 的语义是「用请求体整体替换该资源」。标签改名用 PUT 是因为
+// 标签本来就只有一个字段（name），媒体不是。
+//
+// 失败映射分三类：
+//   - 400：id 不是正整数、请求体不是 JSON、名字不合法（空/超长/含控制字符或
+//     路径分隔符）——重试同一个名字没有意义；
+//   - 404：这条媒体不存在（或已被硬删）；
+//   - 500：落库失败等真正的服务端故障。
+//
+// 成功返回 200 与更新后的媒体对象，形状与列表/上传完全一致：调用方可以直接拿它
+// 替换列表里的那一项。（本站后台目前与上传/删除走同一条路——重新拉一次列表，
+// 这样三种写入的刷新行为一致；返回值仍然完整给出，免得将来要就地更新时缺字段。）
+func (h *MediaHandler) Rename(c echo.Context) error {
+	logging.Debugf("[handler:media] Rename called method=%s path=%s", c.Request().Method, c.Request().URL.Path)
+	id, err := parseID(c.Param("id"))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid media id")
+	}
+
+	var req viewmodel.RenameMediaRequest
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid request")
+	}
+	if err := req.Validate(); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	media, err := h.service.Rename(c.Request().Context(), id, req.OriginalName)
+	if err != nil {
+		switch {
+		case errors.Is(err, model.ErrInvalidMediaName):
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid media name")
+		case errors.Is(err, model.ErrMediaNotFound):
+			return echo.NewHTTPError(http.StatusNotFound, "media not found")
+		default:
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to rename media")
+		}
+	}
+
+	return c.JSON(http.StatusOK, viewmodel.NewMediaResponse(media))
+}

@@ -5,23 +5,31 @@
 
 import type { Page } from 'twilight-blog-api'
 import { blog } from './client'
-import { isSearchEnabled } from './flags'
+import { isMomentsEnabled, isSearchEnabled } from './flags'
+import { getLocale, translate, type Locale } from './i18n'
 
 export interface NavItem {
   to: string
   label: string
 }
 
-const BASE_NAV: NavItem[] = [
-  { to: '/', label: '首页' },
-  { to: '/archive', label: '归档' },
-  { to: '/tags', label: '标签' },
-  { to: '/search', label: '搜索' },
-  { to: '/moments', label: '微语' },
+/** 每条导航同时给出中英文；locale 由调用方传入，纯函数本身不订阅状态。 */
+const BASE_NAV: Array<{ to: string; zh: string; en: string }> = [
+  { to: '/', zh: '首页', en: 'Home' },
+  { to: '/archive', zh: '归档', en: 'Archive' },
+  { to: '/tags', zh: '标签', en: 'Tags' },
+  { to: '/search', zh: '搜索', en: 'Search' },
+  { to: '/moments', zh: '微语', en: 'Moments' },
 ]
 
-export function buildNav(pages: Page[]): NavItem[] {
-  const nav = BASE_NAV.filter((item) => item.to !== '/search' || isSearchEnabled())
+export function buildNav(pages: Page[], locale: Locale = getLocale()): NavItem[] {
+  const nav = BASE_NAV.filter((item) => {
+    if (item.to === '/search') return isSearchEnabled()
+    // 微语关闭时导航里不再留一条点了就 404 的链接。页脚与侧栏都复用
+    // buildNav / isMomentsEnabled，三处保持一致。
+    if (item.to === '/moments') return isMomentsEnabled()
+    return true
+  }).map((item) => ({ to: item.to, label: translate(locale, item.zh, item.en) }))
   return [
     ...nav,
     ...pages.map((page) => ({

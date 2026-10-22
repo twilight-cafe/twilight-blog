@@ -2,6 +2,7 @@ package viewmodel
 
 import (
 	"fmt"
+	"net/mail"
 	"strings"
 	"unicode/utf8"
 )
@@ -69,6 +70,14 @@ const (
 // 回退到它自己的兜底值，服务端与客户端两份兜底值不一致时首屏会跳变。
 const DefaultBorderRadius = 4
 
+// 文章头图最大高度的合法区间（px），与 internal/config 的
+// Min/MaxPostBannerHeight 语义一致。0 表示「未设置」，由调用方兜底成默认值。
+const (
+	MinPostBannerHeight     = 120
+	MaxPostBannerHeight     = 800
+	DefaultPostBannerHeight = 400
+)
+
 // SiteDescription 返回可以直接上屏的站点描述：站长设置过就用它，
 // 否则回退到 DefaultSiteDescription。
 //
@@ -99,6 +108,15 @@ type SiteSettingsRequest struct {
 	// 用 int（零值即 0）会把「没发这个字段」误当成「要设成直角」，
 	// 于是任何只发 description 的旧客户端都会把站点的圆角悄悄改成 0。
 	BorderRadius *int `json:"border_radius,omitempty"`
+	// PostBannerHeight 是文章头图最大高度（px）；nil 表示本次请求不修改它。
+	// 0 不是合法输入（它只表示旧配置里的「未设置」），必须给出明确值。
+	PostBannerHeight *int `json:"post_banner_height,omitempty"`
+	// MomentsEnabled 是微语功能开关；nil 表示本次请求不修改它。
+	// 用指针是为了让「省略」与「显式 false」分得清。
+	MomentsEnabled *bool `json:"moments_enabled,omitempty"`
+	// CommentNotifyTo 是评论通知收件地址；nil 表示本次请求不修改它，
+	// 传空串表示关闭通知。它只出现在管理员请求里，公开响应绝不下发。
+	CommentNotifyTo *string `json:"comment_notify_to,omitempty"`
 }
 
 // SiteSettingsResponse 是站点设置的**公开**视图：任何人都能看到，
@@ -130,6 +148,21 @@ type SiteSettingsResponse struct {
 	// BorderRadius 是站点统一圆角（px），前台据此设置 --radius CSS 变量。
 	// 恒输出（不带 omitempty）：理由同 CodeBlockMaxLines。
 	BorderRadius int `json:"border_radius"`
+	// PostBannerHeight 是文章头图最大高度（px），前端据此设置
+	// --post-banner-height CSS 变量。恒输出（不带 omitempty）：理由同上。
+	PostBannerHeight int `json:"post_banner_height"`
+	// MomentsEnabled 是微语功能开关。它本来就会通过导航与页脚展示给所有读者，
+	// 因此放在公开响应里不构成信息泄露；前端的首屏决策仍走外壳属性。
+	MomentsEnabled bool `json:"moments_enabled"`
+}
+
+// AdminSiteSettingsResponse 是**仅管理员**可读的站点设置视图。
+//
+// 它在公开快照之上多一个评论通知收件地址。那个地址属于管理员的私人联系方式，
+// 绝不能出现在公开的 GET /api/site 里——这正是本类型单独存在的理由。
+type AdminSiteSettingsResponse struct {
+	SiteSettingsResponse
+	CommentNotifyTo string `json:"comment_notify_to"`
 }
 
 // Validate 清洗描述：折叠换行与连续空白，使它在页脚这种单行场景里不会撑破布局。
@@ -161,6 +194,40 @@ func (r *SiteSettingsRequest) Validate() error {
 		if radius < MinBorderRadius || radius > MaxBorderRadius {
 			return fmt.Errorf("border_radius must be between %d and %d", MinBorderRadius, MaxBorderRadius)
 		}
+	}
+	if r.PostBannerHeight != nil {
+		height := *r.PostBannerHeight
+		if height < MinPostBannerHeight || height > MaxPostBannerHeight {
+			return fmt.Errorf("post_banner_height must be between %d and %d", MinPostBannerHeight, MaxPostBannerHeight)
+		}
+	}
+	if r.CommentNotifyTo != nil {
+		address := strings.TrimSpace(*r.CommentNotifyTo)
+		if err := ValidateNotifyAddress(address); err != nil {
+			return err
+		}
+		r.CommentNotifyTo = &address
+	}
+	return nil
+}
+
+// ValidateNotifyAddress 校验评论通知收件地址（空串 = 关闭通知）。
+//
+// 规则与 config.ValidateEmailAddress 保持一致，但刻意不 import config：
+// viewmodel 是 HTTP 边界，config 是持久化层，两者不该为了一个字符串规则建立依赖。
+// 两边都要求「纯地址、不带显示名」——`Twilight <a@b>` 在邮件头里合法，
+// 但本站只接受一个地址，允许显示名只会让「保存了什么」与「发到哪」看起来不一致。
+func ValidateNotifyAddress(address string) error {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return nil
+	}
+	parsed, err := mail.ParseAddress(address)
+	if err != nil {
+		return fmt.Errorf("comment_notify_to must be a valid email address")
+	}
+	if parsed.Name != "" || parsed.Address != address {
+		return fmt.Errorf("comment_notify_to must be a bare address without a display name")
 	}
 	return nil
 }

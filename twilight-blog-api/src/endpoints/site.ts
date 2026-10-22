@@ -1,5 +1,5 @@
 import type { HttpClient } from '../http';
-import type { SiteSettingsInput, SiteSettingsResponse } from '../types';
+import type { AdminSiteSettingsResponse, SiteSettingsInput, SiteSettingsResponse } from '../types';
 
 /**
  * 站点级设置（网站描述、代码块行数、首页每页篇数、统一圆角）。
@@ -13,10 +13,16 @@ export interface SiteApi {
   /** 取站点设置；无需登录。description 为空串表示站长未设置，前端应回退到内置文案。 */
   getSite(): Promise<SiteSettingsResponse>;
   /**
+   * 取管理端站点设置；仅站长（GET /api/admin/site）。
+   *
+   * 比公开快照多一个 `comment_notify_to`——那是站长的私人联系方式，
+   * 不能随公开接口下发。设置页用它回显通知邮箱。
+   */
+  getAdminSite(): Promise<AdminSiteSettingsResponse>;
+  /**
    * 改站点设置；仅站长。返回保存后的最终值（服务端会折叠描述里的空白）。
    *
-   * 四个字段同一次提交：行数、每页篇数、圆角都省略时服务端保持现值，
-   * 描述是必填（传空串即清空并回退到内置文案）。
+   * 可选字段省略时服务端保持现值，描述是必填（传空串即清空并回退到内置文案）。
    */
   updateSite(input: SiteSettingsInput): Promise<SiteSettingsResponse>;
 }
@@ -26,6 +32,12 @@ export function createSiteApi(http: HttpClient): SiteApi {
     getSite() {
       return http.request<SiteSettingsResponse>({
         path: '/api/site',
+      });
+    },
+
+    getAdminSite() {
+      return http.request<AdminSiteSettingsResponse>({
+        path: '/api/admin/site',
       });
     },
 
@@ -44,6 +56,9 @@ export function createSiteApi(http: HttpClient): SiteApi {
           code_block_max_lines: input.code_block_max_lines,
           home_page_size: input.home_page_size,
           border_radius: input.border_radius,
+          post_banner_height: input.post_banner_height,
+          moments_enabled: input.moments_enabled,
+          comment_notify_to: input.comment_notify_to,
         },
       });
     },

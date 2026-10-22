@@ -273,7 +273,7 @@ describe('Editor', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
     // coverMediaId: null 必须出现：它是「这篇没有头图」的**指令**，缺了字段服务端
     // 会当成「别动头图」。新建时两者恰好等价，编辑时不等价（见下一条用例）。
-    await waitFor(() => expect(client.blog.createArticle).toHaveBeenCalledWith({ title: '标题X', content: '****', tags: [], coverMediaId: null }))
+    await waitFor(() => expect(client.blog.createArticle).toHaveBeenCalledWith({ title: '标题X', content: '****', titleEn: '', contentEn: '', aiGenerated: false, tags: [], coverMediaId: null }))
     await waitFor(() => expect(screen.getByText('EDITOR-REPLACED')).toBeTruthy(), { timeout: 3000 })
   })
 
@@ -293,7 +293,7 @@ describe('Editor', () => {
     //  - coverMediaId: null —— 这篇本来就没头图，保存后必须还是没头图；
     //  - publishedAt: NOW/1000 —— 编辑器把 created_at 回填进日期选择器，保存时按
     //    「所见即所存」原样送回，单位从毫秒收敛成秒（服务端 created_at 就是秒）。
-    await waitFor(() => expect(client.blog.updateArticle).toHaveBeenCalledWith(7, { title: '旧文', content: '旧正文', tags: ['Go'], coverMediaId: null, publishedAt: NOW / 1000 }))
+    await waitFor(() => expect(client.blog.updateArticle).toHaveBeenCalledWith(7, { title: '旧文', content: '旧正文', titleEn: '', contentEn: '', aiGenerated: false, tags: ['Go'], coverMediaId: null, publishedAt: NOW / 1000 }))
     first.unmount()
 
     renderRouted(<Editor />, '/admin/editor/404', '/admin/editor/:id')
@@ -376,6 +376,9 @@ describe('SiteSettings', () => {
       code_block_max_lines: 20,
       home_page_size: 12,
       border_radius: 4,
+      post_banner_height: 400,
+      moments_enabled: true,
+      comment_notify_to: '',
     }))
     await waitFor(() => expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('保存后的描述'))
     await waitFor(() => expect(screen.getAllByText('已保存').length).toBeGreaterThan(0))
@@ -395,6 +398,9 @@ describe('SiteSettings', () => {
       code_block_max_lines: 20,
       home_page_size: 12,
       border_radius: 4,
+      post_banner_height: 400,
+      moments_enabled: true,
+      comment_notify_to: '',
     }))
     await waitFor(() => expect(screen.getAllByText('已清空网站描述，前台将使用内置文案').length).toBeGreaterThan(0))
   })
@@ -416,6 +422,9 @@ describe('SiteSettings', () => {
       code_block_max_lines: 60,
       home_page_size: 12,
       border_radius: 4,
+      post_banner_height: 400,
+      moments_enabled: true,
+      comment_notify_to: '',
     }))
     // 服务端返回的最终值回填输入框（mock 返回 35）。
     await waitFor(() => expect(linesInput().value).toBe('35'))
@@ -450,6 +459,9 @@ describe('SiteSettings', () => {
       code_block_max_lines: 20,
       home_page_size: 9,
       border_radius: 4,
+      post_banner_height: 400,
+      moments_enabled: true,
+      comment_notify_to: '',
     }))
     // 服务端返回的最终值回填输入框（mock 返回 6）。
     await waitFor(() => expect(pageSizeInput().value).toBe('6'))
@@ -483,6 +495,9 @@ describe('SiteSettings', () => {
       code_block_max_lines: 20,
       home_page_size: 12,
       border_radius: 16,
+      post_banner_height: 400,
+      moments_enabled: true,
+      comment_notify_to: '',
     }))
     // 服务端返回 8 → 回填。
     await waitFor(() => expect(radiusInput().value).toBe('8'))
@@ -499,6 +514,9 @@ describe('SiteSettings', () => {
       code_block_max_lines: 20,
       home_page_size: 12,
       border_radius: 0,
+      post_banner_height: 400,
+      moments_enabled: true,
+      comment_notify_to: '',
     }))
   })
 

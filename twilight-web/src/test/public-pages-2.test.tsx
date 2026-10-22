@@ -1,6 +1,6 @@
 // public-pages-2.test.tsx —— Post / Tags / Search
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import Post from '../pages/public/Post'
 import Tags from '../pages/public/Tags'
@@ -22,7 +22,7 @@ function paged<T>(items: T[], page = 1, total_pages = 1, total = items.length) {
 function makeResult(overrides: { type?: 'article' | 'page'; id?: number; title?: string; tags?: string[]; cover_media_id?: number | null } = {}): import('twilight-blog-api').SearchResult {
   // cover_media_id 单独取出来：文章命中必须带上它（Article 声明为必填），
   // 而页面命中不该带——多一个字段会让 PageSearchResult 的形状与契约不符。
-  const { tags, cover_media_id, ...base } = { id: 1, title: '命中文章', content: '正文片段', created_at: NOW, updated_at: NOW, tags: ['Go'] as string[] | undefined, cover_media_id: null as number | null, ...overrides }
+  const { tags, cover_media_id, ...base } = { id: 1, title: '命中文章', content: '正文片段', title_en: '', content_en: '', ai_generated: false, created_at: NOW, updated_at: NOW, tags: ['Go'] as string[] | undefined, tags_en: [''] as string[], cover_media_id: null as number | null, ...overrides }
   return base.type === 'page'
     ? { ...base, type: 'page' }
     : { ...base, type: 'article', tags: tags ?? [], cover_media_id: cover_media_id ?? null }
@@ -215,6 +215,39 @@ describe('Search', () => {
 
     renderAt(<Search />, '/search?q=炸', '/search')
     await waitFor(() => expect(screen.getByText('搜索服务挂了')).toBeTruthy())
+  })
+
+  it('翻页：退场期间旧结果保持；提交后新页未到显示骨架，分页器仍在', async () => {
+    vi.useFakeTimers()
+    try {
+      const gate = deferred<{ items: ReturnType<typeof makeResult>[]; page: number; page_size: number; total: number; total_pages: number }>()
+      client.blog.search
+        .mockResolvedValueOnce(paged([makeResult({ id: 1, title: '第一页命中' })], 1, 2, 2))
+        .mockReturnValueOnce(gate.promise as never)
+
+      const { container, unmount } = renderAt(<Search />, '/search?q=墨', '/search')
+      await act(async () => {})
+      expect(screen.getByText('第一页命中')).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Page 2' }))
+      await act(async () => {})
+      // 退场还没播完：旧结果必须留着，不能提前换成新页。
+      expect(screen.getByText('第一页命中')).toBeTruthy()
+
+      act(() => { vi.advanceTimersByTime(180) })
+      expect(screen.queryByText('第一页命中')).toBeNull()
+      expect(container.querySelector('.skl-results')).toBeTruthy()
+      // 分页器留在原地并已指向刚点的第 2 页：它消失再出现等于把点击目标抽走。
+      expect(screen.getByRole('button', { name: 'Page 2' })).toBeTruthy()
+
+      await act(async () => {
+        gate.resolve(paged([makeResult({ id: 2, title: '第二页命中' })], 2, 2, 2))
+      })
+      expect(screen.getByText('第二页命中')).toBeTruthy()
+      unmount()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('表单提交：空关键词清空 q；有关键词写回 URL 并搜索', async () => {

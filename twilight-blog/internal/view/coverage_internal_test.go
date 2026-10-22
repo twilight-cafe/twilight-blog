@@ -15,6 +15,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"blog-engine/internal/config"
+	"blog-engine/internal/viewmodel"
 )
 
 func TestParseIndexTemplateReportsMissingEmbeddedTemplate(t *testing.T) {
@@ -87,12 +88,15 @@ func TestResolveIndexAssetsBranches(t *testing.T) {
 }
 
 func TestNewIndexDataFallsBackForInvalidValues(t *testing.T) {
-	data := newIndexData("", false, 0, 9999, nil, nil)
+	data := newIndexData("", false, false, 0, 9999, 0, nil, nil)
 	if data.HomePageSize == 0 {
 		t.Fatal("newIndexData must replace a non-positive home page size")
 	}
 	if data.BorderRadius == 9999 {
 		t.Fatal("newIndexData must replace an out-of-range border radius")
+	}
+	if data.PostBannerHeight != viewmodel.DefaultPostBannerHeight {
+		t.Fatalf("PostBannerHeight = %d, want the default", data.PostBannerHeight)
 	}
 }
 

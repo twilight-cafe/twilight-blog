@@ -15,10 +15,15 @@ import type { Article } from 'twilight-blog-api'
 import { useDialog } from '../../lib/dialog'
 import { useToast } from '../../lib/toast'
 import { Empty, Loading } from '../../components/common'
+import { useDelayedLoading } from '../../lib/loading'
+import { useI18n, useLocale } from '../../lib/i18n'
+import { articleTags, articleTitle } from '../../lib/localize'
 
 type Tab = 'active' | 'trash'
 
 export default function Posts() {
+  const { t } = useI18n()
+  const locale = useLocale()
   const toast = useToast()
   const { confirm } = useDialog()
   const [tab, setTab] = useState<Tab>('active')
@@ -27,6 +32,8 @@ export default function Posts() {
   const [totalPages, setTotalPages] = useState(1)
   const [selected, setSelected] = useState<number[]>([])
   const [loading, setLoading] = useState(true)
+  // 首屏加载超过阈值才显示等待提示（见 lib/loading.ts）。
+  const pending = useDelayedLoading(loading)
   const [reloadKey, setReloadKey] = useState(0)
 
   // Single source of truth for fetching: `tab` and `page` are only ever changed
@@ -48,7 +55,7 @@ export default function Posts() {
         if (!alive) return
         setList([])
         setTotalPages(1)
-        toast(getErrorMessage(error, '加载文章失败'))
+        toast(getErrorMessage(error, t('加载文章失败', 'Failed to load posts')))
       } finally {
         if (alive) setLoading(false)
       }
@@ -88,10 +95,10 @@ export default function Posts() {
   const toggleAll = (checked: boolean) => setSelected(checked ? list.map((item) => item.id) : [])
 
   const trash = async (item: Article) => {
-    if (!(await confirm('删除文章', `确定将「${item.title}」移入回收站？`))) return
+    if (!(await confirm(t('删除文章', 'Delete post'), t(`确定将「${item.title}」移入回收站？`, `Move “${item.title}” to the recycle bin?`)))) return
     try {
       await blog.deleteArticle(item.id)
-      toast('已移入回收站')
+      toast(t('已移入回收站', 'Moved to the recycle bin'))
       setSelected([])
       reload()
     } catch (error) {
@@ -101,10 +108,10 @@ export default function Posts() {
 
   const batchTrash = async () => {
     // 入口只有批量条上的按钮（selected 非空才渲染），无需再查空。
-    if (!(await confirm('移入回收站', `确定将选中的 ${selected.length} 篇文章移入回收站？`))) return
+    if (!(await confirm(t('移入回收站', 'Move to recycle bin'), t(`确定将选中的 ${selected.length} 篇文章移入回收站？`, `Move the ${selected.length} selected posts to the recycle bin?`)))) return
     try {
       await blog.batchDeleteArticles({ ids: selected })
-      toast(`已删除 ${selected.length} 篇`)
+      toast(t(`已删除 ${selected.length} 篇`, `${selected.length} posts moved`))
       setSelected([])
       reload()
     } catch (error) {
@@ -115,7 +122,7 @@ export default function Posts() {
   const restore = async (item: Article) => {
     try {
       await blog.restoreArticle(item.id)
-      toast('已恢复')
+      toast(t('已恢复', 'Restored'))
       reload()
     } catch (error) {
       toast(getErrorMessage(error))
@@ -125,7 +132,7 @@ export default function Posts() {
   const batchRestore = async () => {
     try {
       await blog.batchRestoreArticles({ ids: selected })
-      toast('已批量恢复')
+      toast(t('已批量恢复', 'Posts restored'))
       setSelected([])
       reload()
     } catch (error) {
@@ -134,10 +141,10 @@ export default function Posts() {
   }
 
   const permanent = async (item: Article) => {
-    if (!(await confirm('彻底删除', `确定彻底删除「${item.title}」？此操作不可撤销。`))) return
+    if (!(await confirm(t('彻底删除', 'Delete permanently'), t(`确定彻底删除「${item.title}」？此操作不可撤销。`, `Permanently delete “${item.title}”? This cannot be undone.`)))) return
     try {
       await blog.permanentlyDeleteArticle(item.id)
-      toast('已彻底删除')
+      toast(t('已彻底删除', 'Permanently deleted'))
       setSelected([])
       reload()
     } catch (error) {
@@ -146,10 +153,10 @@ export default function Posts() {
   }
 
   const batchPermanent = async () => {
-    if (!(await confirm('彻底删除', `确定彻底删除选中的 ${selected.length} 篇文章？此操作不可撤销。`))) return
+    if (!(await confirm(t('彻底删除', 'Delete permanently'), t(`确定彻底删除选中的 ${selected.length} 篇文章？此操作不可撤销。`, `Permanently delete the ${selected.length} selected posts? This cannot be undone.`)))) return
     try {
       await blog.batchPermanentlyDeleteArticles({ ids: selected })
-      toast('已批量彻底删除')
+      toast(t('已批量彻底删除', 'Posts permanently deleted'))
       setSelected([])
       reload()
     } catch (error) {
@@ -160,67 +167,71 @@ export default function Posts() {
   return (
     <>
       <div className="ph">
-        <h2>文章</h2>
+        <h2>{t('文章', 'Posts')}</h2>
         <span className="kicker" style={{ marginTop: 6 }}>POSTS · {list.length}</span>
         <span className="sp" />
-        <Link className="btn pri sm" to="/admin/editor">写文章</Link>
+        <Link className="btn pri sm" to="/admin/editor">{t('写文章', 'Write a post')}</Link>
       </div>
       <div className="atabs">
-        <Chip solid={tab === 'active'} onClick={() => changeTab('active')}>文章</Chip>
-        <Chip solid={tab === 'trash'} onClick={() => changeTab('trash')}>回收站</Chip>
+        <Chip solid={tab === 'active'} onClick={() => changeTab('active')}>{t('文章', 'Posts')}</Chip>
+        <Chip solid={tab === 'trash'} onClick={() => changeTab('trash')}>{t('回收站', 'Recycle bin')}</Chip>
       </div>
       {selected.length > 0 ? (
         <div className="bulkbar">
-          已选 {selected.length} 篇
-          <Button ghost small onClick={() => setSelected([])}>取消</Button>
+          {t('已选', 'Selected')} {selected.length} {t('篇', 'posts')}
+          <Button ghost small onClick={() => setSelected([])}>{t('取消', 'Cancel')}</Button>
           <span style={{ flex: 1 }} />
           {tab === 'active'
-            ? <Button ghost small onClick={() => void batchTrash()}>移入回收站</Button>
+            ? <Button ghost small onClick={() => void batchTrash()}>{t('移入回收站', 'Move to recycle bin')}</Button>
             : (
               <>
-                <Button ghost small onClick={() => void batchRestore()}>恢复</Button>
-                <Button ghost small onClick={() => void batchPermanent()}>彻底删除</Button>
+                <Button ghost small onClick={() => void batchRestore()}>{t('恢复', 'Restore')}</Button>
+                <Button ghost small onClick={() => void batchPermanent()}>{t('彻底删除', 'Delete permanently')}</Button>
               </>
             )}
         </div>
       ) : null}
       <div className="pcard rv">
-        <div className="bd2" style={{ padding: '6px 12px', overflowX: 'auto' }}>
+        {/* 刷新（翻页 / 切标签 / 删除 / 恢复）时不清空表格：旧行留在原位、
+            整块变暗，新数据到达后原地替换。只有第一次加载（还没有任何行）
+            才在表格下方显示等待提示。 */}
+        <div className="bd2" style={{ padding: '6px 12px', overflowX: 'auto' }} aria-busy={loading} data-busy={String(loading)}>
           <table className="tb" style={{ minWidth: 760 }}>
             <thead>
               <tr>
                 <th style={{ width: 32 }}>
                   <Checkbox checked={selected.length === list.length && list.length > 0} onChange={(event) => toggleAll(event.target.checked)} />
                 </th>
-                <th>标题</th>
-                <th>标签</th>
-                <th>创建时间</th>
-                <th>操作</th>
+                <th>{t('标题', 'Title')}</th>
+                <th>{t('标签', 'Tags')}</th>
+                <th>{t('创建时间', 'Created')}</th>
+                <th>{t('操作', 'Actions')}</th>
               </tr>
             </thead>
             <tbody>
-              {loading ? null : list.map((item) => (
+              {list.map((item) => (
                 <tr key={item.id}>
                   <td>
                     <Checkbox checked={selected.includes(item.id)} onChange={(event) => setSelected(event.target.checked ? [...selected, item.id] : selected.filter((id) => id !== item.id))} />
                   </td>
                   <td>
                     <Link to={tab === 'active' ? `/admin/editor/${item.id}` : '#'}>
-                      <b style={{ fontFamily: 'var(--serif)', fontSize: 14.5 }}>{item.title}</b>
+                      <b style={{ fontFamily: 'var(--serif)', fontSize: 14.5 }}>{articleTitle(item, locale)}</b>
+                      {item.ai_generated ? <span className="chip" style={{ marginLeft: 6 }}>{t('AI 生成', 'AI')}</span> : null}
                     </Link>
                   </td>
-                  <td><div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{item.tags.slice(0, 3).map((tag) => <span key={tag} className="chip">{tag}</span>)}</div></td>
+                  <td><div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{articleTags(item, locale).slice(0, 3).map((tag) => <span key={tag} className="chip">{tag}</span>)}</div></td>
                   <td className="mono" style={{ fontSize: 11 }}>{fmtDateTime(item.created_at)}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     {tab === 'active' ? (
                       <>
-                        <Link className="miniact" to={`/admin/editor/${item.id}`}>编辑</Link>
-                        <button className="miniact danger" type="button" onClick={() => void trash(item)}>删除</button>
+                        <Link className="miniact" to={`/admin/editor/${item.id}`}>{t('编辑', 'Edit')}</Link>
+                        <button className="miniact danger" type="button" onClick={() => void trash(item)}>{t('删除', 'Delete')}</button>
                       </>
                     ) : (
                       <>
-                        <button className="miniact" type="button" onClick={() => void restore(item)}>恢复</button>
-                        <button className="miniact danger" type="button" onClick={() => void permanent(item)}>彻底删除</button>
+                        <button className="miniact" type="button" onClick={() => void restore(item)}>{t('恢复', 'Restore')}</button>
+                        <button className="miniact danger" type="button" onClick={() => void permanent(item)}>{t('彻底删除', 'Delete permanently')}</button>
                       </>
                     )}
                   </td>
@@ -228,10 +239,10 @@ export default function Posts() {
               ))}
             </tbody>
           </table>
-          {!loading && list.length === 0 ? <Empty text="没有符合条件的文章" /> : null}
+          {!loading && list.length === 0 ? <Empty text={t('没有符合条件的文章', 'No posts match this view')} /> : null}
         </div>
       </div>
-      {loading ? <Loading height={80} /> : null}
+      {loading && list.length === 0 ? <Loading height={80} visible={pending} /> : null}
       <Pagination align="center" current={page} total={totalPages} pageSize={1} onChange={changePage} />
     </>
   )

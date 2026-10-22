@@ -9,11 +9,12 @@
 //
 // 代价是三条**隐式契约**同时被押上，任何一条静默失效都不会报错、只会让页面
 // **没样式**（构建绿、`tsc -b` 绿、单测绿）：
-//   ① 站点消费的必须是带 parts 的那份 ink-design（本地路径依赖），而不是注册表
-//      上的发布副本——P2-4 实施时就真的踩过一次：站点装的是 0.1.0 注册表副本，
-//      它没有 parts/，于是所有 InkUI 样式凭空消失、main.css 只剩 app.css；
-//   ② 每个组件的片段导入路径必须真的解析得到——`src/X.tsx` 要用 `./styles/parts/`，
-//      `src/dir/X.tsx` 要用 `../styles/parts/`，算反一次就整棵样式树失效；
+//   ① 站点消费的必须是「带 parts 的」ink-design——0.1.0 的注册表副本没有 parts/，
+//      P2-4 实施时真的踩过一次：所有 InkUI 样式凭空消失、main.css 只剩 app.css。
+//      0.1.3 起该版本已随包发布，所以依赖改回注册表区间（现为 `^0.1.4`）也安全；
+//      但「装错版本」这条仍要守住，断言改成「已安装版本 ≥ 引入 parts 的版本」。
+//   ② 每个组件的片段导入路径必须真的解析得到——相对路径要与文件深度一致，
+//      `@/styles/parts/` 则由站点别名映射到 src（见 ink-design-alias.test.ts）。
 //   ③ app.css 必须是 main.tsx 里**最后**一条样式导入（两边特异性常常相同，
 //      站点样式盖住组件默认样式靠的就是这个顺序）。
 //
@@ -30,6 +31,17 @@ const APP_SRC = join(WEB_ROOT, 'src')
 const PKG_ROOT = join(WEB_ROOT, 'node_modules/ink-design')
 const INK_SRC = join(PKG_ROOT, 'src')
 const PARTS = join(INK_SRC, 'styles/parts')
+
+/**
+ * 已知的「孤儿片段」：只有整表 `styles/inkui.css` 引用它，组件与片段都不引。
+ * 站点按**源码**消费（vite 别名指向 src/index.ts），这种片段进不了站点 CSS。
+ *
+ * 0.1.3 时这里是 `47-extend-motion.css`（兜底补间），0.1.4 起它由
+ * `21-inkui-media.css` 用 CSS `@import` 引入，已经不是孤儿，白名单随之清空。
+ * 站点不该为了孤儿片段去直接 import 库的内部文件（那会把「样式跟着组件走」的
+ * 边界打穿）；真再出现孤儿，应当上报上游，而不是把文件塞回这个名单。
+ */
+const KNOWN_ORPHANS: string[] = []
 
 /** 路径断言一律先归一成 `/`，避免 Windows 混合分隔符造成假失败。 */
 function slash(value: string): string {
@@ -57,21 +69,41 @@ function cssImportsIn(file: string): string[] {
   return [...source.matchAll(/(?:^|\n)[ \t]*import\s+['"]([^'"]+\.css)['"]/g)].map((match) => match[1])
 }
 
+/** 把片段说明符解析成绝对路径；`@/` 前缀走站点对 ink-design src 的别名。 */
+function resolveCssImport(file: string, specifier: string): string {
+  if (specifier.startsWith('@/')) return join(INK_SRC, specifier.slice(2))
+  return resolve(dirname(file), specifier)
+}
+
+/** 语义化版本比较：只认 x.y.z，够用且不引依赖。 */
+function versionAtLeast(installed: string, minimum: string): boolean {
+  const parse = (value: string) => value.split('.').map((part) => Number.parseInt(part, 10))
+  const [a, b, c] = parse(installed)
+  const [x, y, z] = parse(minimum)
+  if (a !== x) return a > x
+  if (b !== y) return b > y
+  return c >= z
+}
+
 describe('P2-4 契约：站点消费的必须是「带 parts 的」ink-design', () => {
-  it('依赖声明为本地路径（file:），而不是注册表版本区间', () => {
+  it('依赖来自注册表区间，且已安装的版本确实带 parts（≥ 0.1.2）', () => {
     const pkg = JSON.parse(readFileSync(join(WEB_ROOT, 'package.json'), 'utf8')) as {
       dependencies: Record<string, string>
     }
-    // 用 ^0.1.0 这类区间时，pnpm 会去注册表取发布副本；那份产物没有 parts/，
-    // 而且它的组件源码里也没有片段导入 —— 页面会**静默变成无样式**。
-    expect(pkg.dependencies['ink-design']).toMatch(/^file:/)
+    // 0.1.3 起注册表副本也发布 src/ 与 styles/parts/，所以不再强制 `file:`
+    // 本地目录（那会让仓库绑定到一台机器上的同级目录）。但区间必须以 0.x 的
+    // 次版本为界：0.1.x 才有 parts，0.0.x / 0.1.0 都没有。
+    expect(pkg.dependencies['ink-design']).toMatch(/^\^?0\.1\.\d+$/)
+
+    const installed = JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8')) as { version: string }
+    expect(versionAtLeast(installed.version, '0.1.2'), `已安装 ${installed.version} 不含 parts`).toBe(true)
   })
 
   it('已安装的包里有 src/styles/parts，且组件源码确实在 import 片段', () => {
     expect(existsSync(PARTS)).toBe(true)
     const parts = readdirSync(PARTS).filter((name) => name.endsWith('.css'))
     // 数量只做下界约束：片段内部怎么再拆是 InkUI 自己的事，少到只剩一两个
-    // 就说明装错了包（注册表副本里一个都没有）。
+    // 就说明装错了包（0.1.0 的注册表副本里一个都没有）。
     expect(parts.length).toBeGreaterThanOrEqual(10)
 
     const consumers = collectFiles(INK_SRC, ['.tsx', '.ts'], ['test'])
@@ -86,35 +118,50 @@ describe('P2-4 契约：站点消费的必须是「带 parts 的」ink-design', 
 describe('P2-4 契约：片段导入路径必须真能解析', () => {
   const sources = collectFiles(INK_SRC, ['.tsx', '.ts'], ['test'])
 
-  it('每个 `import "...css"` 都指向一个存在的文件', () => {
+  it('每个 `import "...css"` 都指向一个存在的文件（含 @/ 别名）', () => {
     const broken: string[] = []
     for (const file of sources) {
       for (const specifier of cssImportsIn(file)) {
-        const target = resolve(dirname(file), specifier)
-        if (!existsSync(target)) broken.push(`${slash(file.slice(INK_SRC.length + 1))} -> ${specifier}`)
+        if (!existsSync(resolveCssImport(file, specifier))) {
+          broken.push(`${slash(file.slice(INK_SRC.length + 1))} -> ${specifier}`)
+        }
       }
     }
     expect(broken).toEqual([])
   })
 
-  it('parts 目录里的每个片段都有导入方，且没有导入了不存在的片段', () => {
+  it('parts 目录里的每个片段都有导入方（白名单除外），且没有导入了不存在的片段', () => {
     const referenced = new Set<string>()
     for (const file of sources) {
       for (const specifier of cssImportsIn(file)) {
         if (specifier.includes('styles/parts/')) referenced.add(specifier.split('/').pop()!)
       }
     }
+    // 片段之间也会互相引用（0.1.4 起 `21-inkui-media.css` 用 `@import` 带上
+    // `47-extend-motion.css`）。Vite 会把这些 @import 内联进最终 CSS，所以
+    // 只被 CSS 引用的片段**不算**孤儿——按 JS 导入算会让白名单永远删不掉。
+    for (const file of collectFiles(PARTS, ['.css'])) {
+      const source = readFileSync(file, 'utf8')
+      for (const match of source.matchAll(/@import\s+(?:url\()?['"]([^'"]+\.css)['"]/g)) {
+        referenced.add(match[1].split('/').pop()!)
+      }
+    }
     const present = new Set(readdirSync(PARTS).filter((name) => name.endsWith('.css')))
     // 孤儿片段 = 白白留在库里（组件库聚合产物 dist/inkui.css 会背上它）；
     // 悬空引用 = 组件 import 了一个不存在的文件，构建期才会炸。
-    expect([...present].filter((name) => !referenced.has(name)).sort()).toEqual([])
+    const orphans = [...present].filter((name) => !referenced.has(name)).sort()
+    expect(orphans.filter((name) => !KNOWN_ORPHANS.includes(name))).toEqual([])
+    // 反向：白名单里的项仍然没有导入方。上游补上 import 后这里会红，
+    // 提醒把白名单删掉（见文件头的说明）。
+    for (const name of KNOWN_ORPHANS) expect(orphans).toContain(name)
     expect([...referenced].filter((name) => !present.has(name)).sort()).toEqual([])
   })
 
-  it('导入前缀与文件深度一致（src/X.tsx 用 ./，src/dir/X.tsx 用 ../）', () => {
+  it('相对导入的前缀与文件深度一致（src/X.tsx 用 ./，src/dir/X.tsx 用 ../）', () => {
     // 这正是实施时真踩过的坑：脚本对**所有**组件都写 `../styles/parts/`，于是
     // 顶层组件（Icon.tsx、Button.tsx……）全部指向 src 之上，构建期才以
-    // UNRESOLVED_IMPORT 炸出来。这里的断言让它在单测阶段就红。
+    // UNRESOLVED_IMPORT 炸出来。`@/` 前缀与深度无关，不在这条断言的范围内
+    // （它的可解析性由上一组用例守）。
     const offenders: string[] = []
     for (const file of sources) {
       const relative = slash(file.slice(INK_SRC.length + 1))
@@ -122,6 +169,7 @@ describe('P2-4 契约：片段导入路径必须真能解析', () => {
       const expected = `${'../'.repeat(depth) || './'}styles/parts/`
       for (const specifier of cssImportsIn(file)) {
         if (!specifier.includes('styles/parts/')) continue
+        if (specifier.startsWith('@/')) continue
         if (!specifier.startsWith(expected)) offenders.push(`${relative} -> ${specifier}（期望前缀 ${expected}）`)
       }
     }

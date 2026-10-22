@@ -14,7 +14,13 @@ var (
 // （见 replaceArticleTags）。因此删除文章只解除关联，不会删掉标签本身。
 // ArticleCount 是引用该标签的未删除文章数，由查询聚合得出，不是表上的列。
 type Tag struct {
-	ID           int64
-	Name         string
+	ID   int64
+	Name string
+	// NameEN 是英文名；空串表示未提供，前台回退 Name。
+	//
+	// 它**不参与**唯一约束：两个中文标签可以给出相同的英文译名（比如
+	// 「Go 语言」与「Golang」都译作 "Go"）。把英文名也设成 UNIQUE 会让
+	// 站长在改译名时被一个与中文名无关的冲突挡住。
+	NameEN       string
 	ArticleCount int64
 }

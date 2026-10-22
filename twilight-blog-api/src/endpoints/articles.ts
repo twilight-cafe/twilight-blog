@@ -51,6 +51,10 @@ export function createArticlesApi(http: HttpClient): ArticlesApi {
         // 创建时省略 tags 直接当成「空标签」发送（与更新不同：创建没有「旧标签」可保留）。
         tags: input.tags ?? [],
       };
+      // 英文版本与 AI 标记：省略就是「没有」，服务端按空串 / false 处理。
+      if (input.titleEn !== undefined) json.title_en = input.titleEn;
+      if (input.contentEn !== undefined) json.content_en = input.contentEn;
+      if (input.aiGenerated !== undefined) json.ai_generated = input.aiGenerated;
       // publishedAt 与 coverMediaId 在这里都不用 `??` 兜底成一个默认值：
       // 省略就该让字段**消失**，由服务端决定「用当前时间 / 没有头图」，
       // 而不是由客户端替它猜一个（比如 0）。
@@ -81,6 +85,16 @@ export function createArticlesApi(http: HttpClient): ArticlesApi {
       // 而那会让服务端把「我没提正文」理解成「把正文清空」。
       if (input.content !== undefined) {
         json.content = input.content;
+      }
+      // 英文标题 / 正文与 AI 标记同样是「省略 = 不改」。
+      if (input.titleEn !== undefined) {
+        json.title_en = input.titleEn;
+      }
+      if (input.contentEn !== undefined) {
+        json.content_en = input.contentEn;
+      }
+      if (input.aiGenerated !== undefined) {
+        json.ai_generated = input.aiGenerated;
       }
       // 只有当调用方显式给了 tags 才下发该字段。若把「省略」也强制成 []，
       // 服务端会理解为「清空标签」，从而误删文章现有的全部标签。

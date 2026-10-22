@@ -9,16 +9,21 @@ import { blog, getErrorMessage } from '../../lib/client'
 import type { Page } from 'twilight-blog-api'
 import Comments from '../../components/Comments'
 import ContentView from '../../components/ContentView'
-import { Loading, PageHero } from '../../components/common'
+import { ImageGroup } from '../../lib/imageGroup'
+import { ScrollProgress } from 'ink-design'
+import { PageHero, SkeletonArticle } from '../../components/common'
+import { useDelayedLoading } from '../../lib/loading'
 import { useDocumentTitle } from '../../lib/site'
 import { articlePageHead, useCanonicalPath, usePageHead } from '../../lib/head'
 import { loadToc, prefetchMarkdown } from '../../lib/markdown-loader'
 import NotFound from './NotFound'
 import type { TocItem } from '../../lib/markdown'
+import { useI18n } from '../../lib/i18n'
 
 const noopSetToc = () => {}
 
 export default function PageDetail() {
+  const { t } = useI18n()
   const { id = '' } = useParams()
   const pageId = Number(id)
   const outletContext = useOutletContext<{ setToc?: (items: TocItem[]) => void } | undefined>()
@@ -28,7 +33,7 @@ export default function PageDetail() {
 
   // 标题必须在这里设，不能指望下面 return 的 <NotFound />：子组件的 effect 先于
   // 父组件执行，父组件再设一次会把「页面不存在」覆盖回「页面」。
-  const pageTitle = error ? '页面不存在' : (page?.title ?? '页面')
+  const pageTitle = error ? t('页面不存在', 'Page not found') : (page?.title ?? t('页面', 'Page'))
   useDocumentTitle(pageTitle)
 
   // 独立页面与文章同样按「文章性内容」输出 head；取不到页面时 noindex（同上理由）。
@@ -52,7 +57,7 @@ export default function PageDetail() {
   useEffect(() => {
     if (!Number.isFinite(pageId) || pageId <= 0) {
       setPage(null)
-      setError('页面不存在')
+      setError(t('页面不存在', 'Page not found'))
       setToc([])
       return
     }
@@ -60,7 +65,7 @@ export default function PageDetail() {
     setError('')
     blog.getPage(pageId)
       .then(setPage)
-      .catch((reason) => setError(getErrorMessage(reason, '页面不存在')))
+      .catch((reason) => setError(getErrorMessage(reason, t('页面不存在', 'Page not found'))))
   }, [pageId, setToc])
 
   useEffect(() => {
@@ -79,11 +84,23 @@ export default function PageDetail() {
     }
   }, [page, setToc])
 
+  const pending = useDelayedLoading(!page)
+
   if (error) return <NotFound />
-  if (!page) return <Loading height={300} />
+  if (!page) {
+    return (
+      <main className="wrap gpage page-detail">
+        <SkeletonArticle visible={pending} />
+      </main>
+    )
+  }
 
   return (
+    // 与文章页同一口径：本页的图下载完再一起出现，切页面时换一个组。
+    <ImageGroup key={page.id}>
     <main className="wrap gpage page-detail">
+      {/* 与文章页同一根进度条：独立页面同样是「读长文」的场景。 */}
+      <ScrollProgress />
       <PageHero kicker="PAGE" title={page.title} />
       <ContentView text={page.content} trusted />
       <div style={{ marginTop: 30 }}>
@@ -91,5 +108,6 @@ export default function PageDetail() {
       </div>
       <div style={{ height: 70 }} />
     </main>
+    </ImageGroup>
   )
 }

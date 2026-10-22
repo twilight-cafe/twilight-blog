@@ -53,6 +53,11 @@ CREATE TABLE IF NOT EXISTS articles (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     title          TEXT    NOT NULL,
     content        TEXT    NOT NULL DEFAULT '',
+    -- 英文版本；空串表示没有英文版，前台回退中文。
+    title_en       TEXT    NOT NULL DEFAULT '',
+    content_en     TEXT    NOT NULL DEFAULT '',
+    -- 1 = 站长标记为 AI 生成；前台会显示提示。
+    ai_generated   INTEGER NOT NULL DEFAULT 0,
     created_at     INTEGER NOT NULL,
     updated_at     INTEGER NOT NULL,
     -- 头图。NULL 表示这篇文章没有头图；ON DELETE SET NULL 见文件头「表与索引速览」。
@@ -69,8 +74,10 @@ CREATE INDEX IF NOT EXISTS idx_articles_active_created
     ON articles(created_at DESC, id DESC) WHERE deleted_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS tags (
-    id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL COLLATE NOCASE UNIQUE
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    name    TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    -- 英文名；空串表示未提供，前台回退到 name。不参与唯一约束。
+    name_en TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS article_tags (
@@ -297,6 +304,10 @@ var addedColumns = []columnAddition{
 	{"users", "is_admin", "INTEGER NOT NULL DEFAULT 0"},
 	{"email_verification_codes", "attempts", "INTEGER NOT NULL DEFAULT 0"},
 	{"articles", "cover_media_id", "INTEGER REFERENCES media(id) ON DELETE SET NULL"},
+	{"articles", "title_en", "TEXT NOT NULL DEFAULT ''"},
+	{"articles", "content_en", "TEXT NOT NULL DEFAULT ''"},
+	{"articles", "ai_generated", "INTEGER NOT NULL DEFAULT 0"},
+	{"tags", "name_en", "TEXT NOT NULL DEFAULT ''"},
 	{"users", "avatar_media_id", "INTEGER REFERENCES media(id) ON DELETE SET NULL"},
 }
 

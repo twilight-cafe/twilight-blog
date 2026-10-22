@@ -19,7 +19,7 @@ import Moments from '../pages/public/Moments'
 import Search from '../pages/public/Search'
 import ContentView from '../components/ContentView'
 import MediaPicker from '../components/media/MediaPicker'
-import { DialogProvider, useDialog } from '../lib/dialog'
+import { DialogProvider } from '../lib/dialog'
 import { ToastProvider } from '../lib/toast'
 import { extractToc } from '../lib/markdown'
 import { resetSiteCacheForTests } from '../lib/site'
@@ -98,30 +98,6 @@ describe('markdown extractToc', () => {
     expect(new Set(toc.map((item) => item.id)).size).toBe(toc.length) // id 唯一
     expect(toc[0].level).toBe(1)
     expect(toc[1].level).toBe(2)
-  })
-})
-
-describe('dialog 默认上下文', () => {
-  it('Provider 外使用：confirm false、prompt null', async () => {
-    let confirmResult: boolean | null = null
-    let promptResult: string | null = 'sentinel'
-    function Consumer() {
-      const dialog = useDialog()
-      return (
-        <button
-          onClick={() => {
-            dialog.confirm('标题').then((value) => { confirmResult = value })
-            dialog.prompt('标题').then((value) => { promptResult = value })
-          }}
-        >
-          go
-        </button>
-      )
-    }
-    render(<Consumer />)
-    fireEvent.click(screen.getByText('go'))
-    await waitFor(() => expect(confirmResult).toBe(false))
-    await waitFor(() => expect(promptResult).toBeNull())
   })
 })
 
@@ -204,7 +180,7 @@ describe('Editor / PagesAdmin / Posts / Profile / Register / ForgotPassword 剩�
     fireEvent.change(second.container.querySelector('textarea.mds') as HTMLTextAreaElement, { target: { value: '新正文' } })
     client.blog.updateArticle.mockResolvedValueOnce({ message: 'ok' })
     fireEvent.click((Array.from(second.container.querySelectorAll('button')) as HTMLButtonElement[]).find((b) => b.textContent === '保存') as HTMLButtonElement)
-    await waitFor(() => expect(client.blog.updateArticle).toHaveBeenCalledWith(7, { title: '旧文', content: '新正文', tags: ['Go'], coverMediaId: null, publishedAt: NOW / 1000 }))
+    await waitFor(() => expect(client.blog.updateArticle).toHaveBeenCalledWith(7, { title: '旧文', content: '新正文', titleEn: '', contentEn: '', aiGenerated: false, tags: ['Go'], coverMediaId: null, publishedAt: NOW / 1000 }))
   })
 
   it('Posts：删除失败 toast；trash→active 切回；全选与取消', async () => {

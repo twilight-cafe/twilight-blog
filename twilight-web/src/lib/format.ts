@@ -5,6 +5,9 @@
 // 这个启发式依赖「秒级时间戳在 1e12 之前（约 2001 年之前才会越界）」这一假设，
 // 属于隐式约定，改后端时间格式时这里要同步。
 // fmtNum 在 >=10000 时用「w」（万）缩写；fmtSize 用 1024 进制（KiB/MiB…）。
+// 相对时间通过 lib/i18n 的 t() 跟随当前语言；它是事件/渲染期读取，不需要订阅。
+
+import { t } from './i18n'
 
 /**
  * 把后端传来的时间戳转成 Date：大于 1e12 的当作毫秒，否则当作秒并 ×1000。
@@ -59,12 +62,12 @@ export function fmtRelative(value?: number | string | Date | null): string {
   if (!d) return ''
   const diff = Date.now() - d.getTime()
   const minutes = Math.floor(diff / 60000)
-  if (minutes < 1) return '刚刚'
-  if (minutes < 60) return `${minutes} 分钟前`
+  if (minutes < 1) return t('刚刚', 'just now')
+  if (minutes < 60) return t(`${minutes} 分钟前`, `${minutes} min ago`)
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 小时前`
+  if (hours < 24) return t(`${hours} 小时前`, `${hours} h ago`)
   const days = Math.floor(hours / 24)
-  if (days < 7) return `${days} 天前`
+  if (days < 7) return t(`${days} 天前`, `${days} d ago`)
   return fmtDate(d)
 }
 

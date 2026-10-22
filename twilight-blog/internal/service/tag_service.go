@@ -33,17 +33,23 @@ func (s *TagService) Count(ctx context.Context, tagID int64) (int64, error) {
 	return s.repo.CountByTag(ctx, tagID)
 }
 
-// Rename 校验并修改标签名，然后回读返回最新对象。
-// 名字只做 TrimSpace，空名返回 ErrInvalidTagName；
-// 真正的重名检查在 model 层，且不区分大小写（与表上的 UNIQUE 约束一致）。
-func (s *TagService) Rename(ctx context.Context, tagID int64, name string) (*model.Tag, error) {
+// Rename 校验并修改标签的中英文名，然后回读返回最新对象。
+//
+// 中文名只做 TrimSpace，空名返回 ErrInvalidTagName；英文名同样 TrimSpace，
+// 但**允许为空**（表示不提供译名，前台回退中文）。英文名不参与唯一约束，
+// 所以这里不做重名检查——重名检查只针对中文名，在 model 层完成。
+//
+// 两个名字在同一次调用里提交：分两次改名会出现「中文已改、英文还是旧的」
+// 这种中间状态，而界面上只有一个保存按钮。
+func (s *TagService) Rename(ctx context.Context, tagID int64, name, nameEN string) (*model.Tag, error) {
 	name = strings.TrimSpace(name)
+	nameEN = strings.TrimSpace(nameEN)
 	if name == "" {
 		return nil, model.ErrInvalidTagName
 	}
 
-	logging.Debugf("[tag] renaming id=%d name=%q", tagID, name)
-	if err := s.repo.Rename(ctx, tagID, name); err != nil {
+	logging.Debugf("[tag] renaming id=%d name=%q name_en=%q", tagID, name, nameEN)
+	if err := s.repo.Rename(ctx, tagID, name, nameEN); err != nil {
 		logging.Errorf("[tag] rename failed id=%d name=%q: %v", tagID, name, err)
 		return nil, err
 	}

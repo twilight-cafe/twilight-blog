@@ -127,7 +127,7 @@ func TestRegisterCoversOptionalConfigurationBranches(t *testing.T) {
 
 	t.Run("mailer failure", func(t *testing.T) {
 		original := newMailer
-		newMailer = func(mail.Config) (*mail.ResendMailer, error) {
+		newMailer = func(mail.Config) (mail.Mailer, error) {
 			return nil, errors.New("mailer failed")
 		}
 		t.Cleanup(func() { newMailer = original })

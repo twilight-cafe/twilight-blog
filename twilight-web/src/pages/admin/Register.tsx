@@ -9,12 +9,15 @@ import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Button, Input } from 'ink-design'
 import { blog, getErrorMessage, setCurrentUser } from '../../lib/client'
-import { PASSWORD_RULE_TEXT, validatePassword } from '../../lib/password'
+import { passwordRuleText, validatePassword } from '../../lib/password'
 import { NICKNAME_MAX, USERNAME_MAX, emailError, nicknameError, usernameError } from '../../lib/validate'
 import { isRateLimited, startEmailCodeCooldown, useEmailCodeCooldown } from '../../lib/email-code-cooldown'
 import { useToast } from '../../lib/toast'
+import { useI18n } from '../../lib/i18n'
+import LanguageSwitcher from '../../components/LanguageSwitcher'
 
 export default function Register() {
+  const { t } = useI18n()
   const navigate = useNavigate()
   const toast = useToast()
   const [email, setEmail] = useState('')
@@ -39,13 +42,13 @@ export default function Register() {
       setCodeSent(true)
       // 冷却以**服务端确认成功**为准，不是以点击为准。
       startEmailCodeCooldown(email)
-      toast('验证码已发送，请查收邮箱')
+      toast(t('验证码已发送，请查收邮箱', 'Verification code sent — check your inbox'))
     } catch (error) {
       // 服务端说「太频繁」时也要把按钮锁住：否则用户会继续点，继续被拒。
       // 这里不区分 429 的具体文案——只要被拒就等一个冷却周期，
       // 让前端的节奏与服务端的记录重新对齐。
       if (isRateLimited(error)) startEmailCodeCooldown(email)
-      toast(getErrorMessage(error, '发送验证码失败'))
+      toast(getErrorMessage(error, t('发送验证码失败', 'Failed to send the code')))
     } finally {
       setSending(false)
     }
@@ -60,7 +63,7 @@ export default function Register() {
       return
     }
     if (!code.trim()) {
-      toast('请输入验证码')
+      toast(t('请输入验证码', 'Enter the verification code'))
       return
     }
     const passwordError = validatePassword(password)
@@ -90,10 +93,10 @@ export default function Register() {
         nickname: nickname.trim(),
       })
       setCurrentUser(me)
-      toast('注册成功，已自动登录')
+      toast(t('注册成功，已自动登录', 'Account created — you are signed in'))
       navigate('/admin/profile', { replace: true })
     } catch (error) {
-      toast(getErrorMessage(error, '注册失败'))
+      toast(getErrorMessage(error, t('注册失败', 'Registration failed')))
     } finally {
       setBusy(false)
     }
@@ -101,15 +104,16 @@ export default function Register() {
 
   return (
     <div className="login-bg">
+      <LanguageSwitcher className="auth-lang" />
       <form className="login" onSubmit={submit}>
         <div className="lg">
           <span className="sq">T</span>
-          <h1>Twilight · 注册</h1>
+          <h1>Twilight · {t('注册', 'Register')}</h1>
         </div>
         <p className="sub">CREATE ACCOUNT</p>
 
         <div className="fld">
-          <label>邮箱 Email</label>
+          <label>{t('邮箱', 'Email')}</label>
           <Input
             variant="login"
             type="email"
@@ -122,7 +126,7 @@ export default function Register() {
         <div className="cmt-code-row">
           {codeSent ? (
             <>
-              <Input variant="login" placeholder="验证码" value={code} onChange={(event) => setCode(event.target.value)} />
+              <Input variant="login" placeholder={t('验证码', 'Verification code')} value={code} onChange={(event) => setCode(event.target.value)} />
               <Button
                 small
                 ghost
@@ -130,7 +134,7 @@ export default function Register() {
                 disabled={sending || cooldown > 0}
                 onClick={() => void requestCode()}
               >
-                {cooldown > 0 ? `${cooldown} 秒后可重发` : '重新发送'}
+                {cooldown > 0 ? t(`${cooldown} 秒后可重发`, `Resend in ${cooldown}s`) : t('重新发送', 'Resend')}
               </Button>
             </>
           ) : (
@@ -140,13 +144,13 @@ export default function Register() {
               disabled={sending || cooldown > 0}
               onClick={() => void requestCode()}
             >
-              {sending ? '发送中…' : cooldown > 0 ? `${cooldown} 秒后可重发` : '发送验证码'}
+              {sending ? t('发送中…', 'Sending…') : cooldown > 0 ? t(`${cooldown} 秒后可重发`, `Resend in ${cooldown}s`) : t('发送验证码', 'Send code')}
             </Button>
           )}
         </div>
 
         <div className="fld">
-          <label>密码 Password</label>
+          <label>{t('密码', 'Password')}</label>
           <Input
             variant="login"
             type="password"
@@ -157,38 +161,38 @@ export default function Register() {
         </div>
 
         <div className="fld">
-          <label>用户名 Username</label>
+          <label>{t('用户名', 'Username')}</label>
           <Input
             variant="login"
             autoComplete="username"
             maxLength={USERNAME_MAX}
-            placeholder="今后登录用，不可与昵称混用"
+            placeholder={t('今后登录用，不可与昵称混用', 'Used to sign in, separate from your display name')}
             value={username}
             onChange={(event) => setUsername(event.target.value)}
           />
         </div>
 
         <div className="fld">
-          <label>昵称 Nickname</label>
+          <label>{t('昵称', 'Nickname')}</label>
           <Input
             variant="login"
             maxLength={NICKNAME_MAX}
-            placeholder="评论等场合对外展示"
+            placeholder={t('评论等场合对外展示', 'Shown publicly, e.g. on comments')}
             value={nickname}
             onChange={(event) => setNickname(event.target.value)}
           />
         </div>
 
-        <p className="policy">密码要求：{PASSWORD_RULE_TEXT}。</p>
+        <p className="policy">{t('密码要求：', 'Password requirements: ')}{passwordRuleText()}{t('。', '.')}</p>
 
         <Button primary type="submit" style={{ width: '100%', justifyContent: 'center' }} disabled={busy}>
-          {busy ? '注册中…' : '注册并登录 →'}
+          {busy ? t('注册中…', 'Registering…') : t('注册并登录 →', 'Register and sign in →')}
         </Button>
 
         <div className="login-links">
-          <Link to="/admin/login">已有账号？去登录</Link>
+          <Link to="/admin/login">{t('已有账号？去登录', 'Already have an account? Sign in')}</Link>
           <span>·</span>
-          <Link to="/admin/forgot">忘记密码</Link>
+          <Link to="/admin/forgot">{t('忘记密码', 'Forgot password')}</Link>
         </div>
       </form>
     </div>

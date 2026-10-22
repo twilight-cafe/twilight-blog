@@ -1435,7 +1435,10 @@ reported an error.
   "description": "一个人的博客：记录技术、设计与生活。",
   "code_block_max_lines": 20,
   "home_page_size": 12,
-  "border_radius": 4
+  "border_radius": 4,
+  "post_banner_height": 400,
+  "moments_enabled": true,
+  "comment_notify_to": "owner@example.com"
 }
 ```
 
@@ -1447,6 +1450,17 @@ clears the description, which makes the client fall back to its built-in copy.
 `home_page_size` must be an integer in `1`–`12`.
 `border_radius` must be an integer in `0`–`24`; **`0` is accepted and stores
 square corners**.
+`post_banner_height` must be an integer in `120`–`800`: the maximum height of a
+post cover image, in pixels. Tall images are cropped instead of pushing the
+title off the first screen.
+`moments_enabled` toggles the whole Moments feature. It is **not** a
+"soft" switch: when it is off the public Moments API answers `404`, the public
+page says the feature is disabled and sends no request, and the navigation,
+footer, sidebar and console menu entries disappear. Published moments are **not**
+deleted — turning the switch back on restores them.
+`comment_notify_to` is the address that receives a plain-text notice when a
+**visitor** comments. An empty string disables the notice; any other value must
+be a bare address (no display name). The owner's own comments never trigger it.
 
 Out-of-range values are rejected with `400` rather than clamped — silently
 changing a submitted value would make the saved result disagree with what the
@@ -1461,9 +1475,15 @@ values without a second request:
   "avatar_url": "",
   "code_block_max_lines": 20,
   "home_page_size": 12,
-  "border_radius": 4
+  "border_radius": 4,
+  "post_banner_height": 400,
+  "moments_enabled": true
 }
 ```
+
+The response never contains `comment_notify_to`: it is the administrator's
+private contact address. Read it back with
+[`GET /api/admin/site`](#get-apiadminsite).
 
 **Errors**
 
@@ -1471,6 +1491,32 @@ values without a second request:
 |---|---|
 | `400 Bad Request` | Invalid request body; the description exceeds 200 characters; or one of the numeric settings is out of range |
 | `500 Internal Server Error` | The change could not be persisted to `settings.json` (the in-memory value is rolled back) |
+
+#### `GET /api/admin/site`
+
+The administrator's view of the site settings. It is the public snapshot
+([`GET /api/site`](#get-apisite)) plus one extra field.
+
+**Authentication:** administrator session
+
+**Response `200 OK`**
+
+```json
+{
+  "description": "一个人的博客：记录技术、设计与生活。",
+  "avatar_url": "",
+  "code_block_max_lines": 20,
+  "home_page_size": 12,
+  "border_radius": 4,
+  "post_banner_height": 400,
+  "moments_enabled": true,
+  "comment_notify_to": "owner@example.com"
+}
+```
+
+`comment_notify_to` is the administrator's private contact address and is
+therefore **only** in this response — the public snapshot never carries it.
+An empty string means the notice is turned off.
 
 ### Visitor Accounts
 
@@ -1561,9 +1607,18 @@ Creates an article.
 {
   "title": "Hello World",
   "content": "Welcome to my blog.",
+  "title_en": "Hello World",
+  "content_en": "Welcome to my blog.",
+  "ai_generated": false,
   "tags": ["hello", "world"]
 }
 ```
+
+`title` and `content` are the Chinese versions and are always required.
+`title_en` and `content_en` are the optional English versions: an empty string
+(or an omitted key) means "no English version", and the front end then falls back
+to the Chinese text field by field. `ai_generated` is the owner's explicit mark
+("this was written by AI"); the server never infers it.
 
 **Response `201 Created`**
 
@@ -1572,11 +1627,18 @@ Creates an article.
   "id": 1,
   "title": "Hello World",
   "content": "Welcome to my blog.",
+  "title_en": "",
+  "content_en": "",
+  "ai_generated": false,
   "created_at": 1700000000,
   "updated_at": 1700000000,
-  "tags": ["hello", "world"]
+  "tags": ["hello", "world"],
+  "tags_en": [""]
 }
 ```
+
+`tags_en` is parallel to `tags`: same length, same order, and an empty entry
+means "this tag has no English name".
 
 **Errors**
 
@@ -1605,6 +1667,10 @@ Updates an existing non-deleted article.
 ```
 
 `title` and `content` are always applied. `tags` is optional and its absence is meaningful: **omitting it leaves the existing tags untouched**, while sending `[]` clears them. This is why an update that merely edits the body does not need to restate the tags.
+
+`title_en`, `content_en` and `ai_generated` follow the same three-state rule as
+`content`: omit the key to leave it alone, send a string (including an empty one)
+to replace it, send `false` to clear the AI mark.
 
 **Response `200 OK`**
 
@@ -1746,9 +1812,15 @@ Renames a tag.
 
 ```json
 {
-  "name": "new-tag-name"
+  "name": "new-tag-name",
+  "name_en": "new tag name"
 }
 ```
+
+`name` is the Chinese name and is required. `name_en` is the optional English
+name: an empty string (or an omitted key) means "no English name", and the front
+end falls back to `name`. It does **not** take part in the uniqueness
+constraint — two Chinese tags may share an English name.
 
 **Response `200 OK`**
 
@@ -1756,6 +1828,7 @@ Renames a tag.
 {
   "id": 1,
   "name": "new-tag-name",
+  "name_en": "new tag name",
   "article_count": 3
 }
 ```
@@ -2343,6 +2416,68 @@ Lists uploaded media, newest first.
   "total_pages": 1
 }
 ```
+
+### `PATCH /api/admin/media/:id`
+
+Renames one media item's **display name** (`original_name`).
+
+**Authentication:** administrator session, CSRF token required
+
+**Request**
+
+```json
+{
+  "original_name": "cat-on-the-keyboard"
+}
+```
+
+Only the display name changes. The on-disk file name (`storage_name`, a random
+hex name assigned at upload time) and the `/api/media/{id}` URL stay exactly the
+same, so **no reference has to be rewritten**: article covers
+(`articles.cover_media_id`), moment attachments (`moment_media.media_id`) and the
+site owner's avatar (`users.avatar_media_id`) all point at the media **id**. This
+is also why the endpoint never touches the stored file, its MIME type or its
+size, and why `storage_name` cannot be supplied by the client.
+
+Rules applied to the new name:
+
+- Leading/trailing whitespace is stripped; an empty name is rejected with `400`.
+- Control characters and path separators (`/`, `\`) are rejected with `400`.
+  The name never takes part in path construction; this only keeps logs, the
+  admin list and screen readers intact.
+- The **extension follows the current display name**: whatever extension the
+  request carries is dropped and replaced with the one already stored in
+  `original_name`, so `cat`, `cat.png` and `cat.jpg` all end up as
+  `cat.<existing extension>` for that record. A rename changes the base name
+  only — an item uploaded as `sunset.png` stays `.png` even though the file on
+  disk is WebP (the real format lives in `mime_type`; clients never infer a type
+  from the file name).
+- The result (extension included) must be at most 200 **characters**.
+- Duplicate names are allowed: `original_name` is a label, not an identifier.
+
+**Response `200 OK`**
+
+```json
+{
+  "id": 2,
+  "url": "/api/media/2",
+  "original_name": "cat-on-the-keyboard.webp",
+  "media_type": "image",
+  "mime_type": "image/webp",
+  "size": 22492,
+  "converted": true,
+  "created_at": 1700000000
+}
+```
+
+**Errors**
+
+| Status | Meaning |
+|---|---|
+| `400` | Invalid id, malformed body, or a name that breaks one of the rules above |
+| `401` | No administrator session |
+| `403` | Missing or invalid CSRF token |
+| `404` | No media with that id |
 
 ### `DELETE /api/admin/media/:id`
 

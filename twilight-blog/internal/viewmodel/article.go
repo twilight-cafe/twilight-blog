@@ -26,9 +26,14 @@ import (
 // CreateArticleRequest 是新建文章的请求体。Tags 缺失等价于空列表，
 // 因为新建时本来就没有既有标签可言。
 type CreateArticleRequest struct {
-	Title   string   `json:"title"`
-	Content string   `json:"content"`
-	Tags    []string `json:"tags"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+	// TitleEN / ContentEN 是英文版本；省略或空串表示没有英文版。
+	TitleEN   string `json:"title_en"`
+	ContentEN string `json:"content_en"`
+	// AIGenerated 由站长显式标记，服务端不做任何推断。
+	AIGenerated bool     `json:"ai_generated"`
+	Tags        []string `json:"tags"`
 	// PublishedAt 是发布时间（Unix 秒）。缺失（或显式 null）表示「用服务器当前
 	// 时间」——新建时「不指定」与「置空」没有区别，文章总得有个发布时间，
 	// 因此这里不需要 UpdateArticleRequest.CoverMediaID 那种三态。
@@ -40,6 +45,13 @@ type CreateArticleRequest struct {
 
 type UpdateArticleRequest struct {
 	Title string `json:"title"`
+	// TitleEN / ContentEN 与 Content 同一条三态规则：nil = 不改，字符串（含空串）= 替换。
+	// 用指针而不是 string 的理由与 Content 完全相同：只改标题的 PUT 不该清空英文正文。
+	TitleEN   *string `json:"title_en"`
+	ContentEN *string `json:"content_en"`
+	// AIGenerated 是 nil 表示「这次不改」。用指针是为了让「没提这件事」与
+	// 「明确取消 AI 标记」可区分。
+	AIGenerated *bool `json:"ai_generated"`
 	// Content 用指针的理由与 Tags 完全一致：让「字段缺失」与「显式传空串」可区分。
 	// 非指针时期，一个只改标题的 PUT（前端保存草稿、脚本批量改标题都会这么发）
 	// 会把正文静默清空并返回 200——数据没了、日志里也没有任何异常。
@@ -116,14 +128,21 @@ type BatchDeleteRequest struct {
 // 恒输出的字段。前端据此直接判断 `cover_media_id !== null` 取图，
 // 一个「有时不存在」的字段会让它需要多一层判空。
 type ArticleResponse struct {
-	ID           int64    `json:"id"`
-	Title        string   `json:"title"`
-	Content      string   `json:"content"`
+	ID      int64  `json:"id"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+	// TitleEN / ContentEN 恒输出（空串表示没有英文版）。前端按语言选择，
+	// 英文缺失时回退到中文，因此不能让字段缺席。
+	TitleEN      string   `json:"title_en"`
+	ContentEN    string   `json:"content_en"`
+	AIGenerated  bool     `json:"ai_generated"`
 	CreatedAt    int64    `json:"created_at"`
 	UpdatedAt    int64    `json:"updated_at"`
 	DeletedAt    *int64   `json:"deleted_at,omitempty"`
 	CoverMediaID *int64   `json:"cover_media_id"`
 	Tags         []string `json:"tags"`
+	// TagsEN 与 Tags 等长，空串表示该标签没有英文名。
+	TagsEN []string `json:"tags_en"`
 }
 
 // NewArticleResponse 把领域对象转成响应。
@@ -134,15 +153,28 @@ func NewArticleResponse(article *model.Article) ArticleResponse {
 	if tags == nil {
 		tags = []string{}
 	}
+	// 两个切片必须等长：前端按索引取英文名，短一个就会把「最后一个标签」
+	// 与「没有英文名」混在一起。
+	tagsEN := article.TagsEN
+	if tagsEN == nil {
+		tagsEN = []string{}
+	}
+	for len(tagsEN) < len(tags) {
+		tagsEN = append(tagsEN, "")
+	}
 	return ArticleResponse{
 		ID:           article.ID,
 		Title:        article.Title,
 		Content:      article.Content,
+		TitleEN:      article.TitleEN,
+		ContentEN:    article.ContentEN,
+		AIGenerated:  article.AIGenerated,
 		CreatedAt:    article.CreatedAt,
 		UpdatedAt:    article.UpdatedAt,
 		DeletedAt:    article.DeletedAt,
 		CoverMediaID: article.CoverMediaID,
 		Tags:         tags,
+		TagsEN:       tagsEN,
 	}
 }
 
@@ -183,9 +215,11 @@ func validatePublishedAt(value *int64) error {
 
 func (r *CreateArticleRequest) Validate() error {
 	r.Title = strings.TrimSpace(r.Title)
+	r.TitleEN = strings.TrimSpace(r.TitleEN)
 	if r.Title == "" {
 		return fmt.Errorf("title is required")
 	}
+	// 英文标题与正文各自独立、都可为空：允许先补标题，稍后再补正文。
 	if err := validatePublishedAt(r.PublishedAt); err != nil {
 		return err
 	}
@@ -199,6 +233,10 @@ func (r *UpdateArticleRequest) Validate() error {
 	r.Title = strings.TrimSpace(r.Title)
 	if r.Title == "" {
 		return fmt.Errorf("title is required")
+	}
+	if r.TitleEN != nil {
+		trimmed := strings.TrimSpace(*r.TitleEN)
+		r.TitleEN = &trimmed
 	}
 	if err := validatePublishedAt(r.PublishedAt); err != nil {
 		return err

@@ -16,10 +16,11 @@ import { useState, type FormEvent } from 'react'
 import { Button, Input } from 'ink-design'
 import { mediaUrl, type MeResponse, type UserResponse } from 'twilight-blog-api'
 import { blog, getErrorMessage, refreshAuth, setCurrentUser, useCurrentUser } from '../../lib/client'
-import { PASSWORD_RULE_TEXT, validatePassword } from '../../lib/password'
+import { passwordRuleText, validatePassword } from '../../lib/password'
 import { refreshSiteMeta, useSiteAvatar } from '../../lib/site'
 import { NICKNAME_MAX, USERNAME_MAX, nicknameError, usernameError } from '../../lib/validate'
 import { useToast } from '../../lib/toast'
+import { t, useI18n } from '../../lib/i18n'
 import AvatarPicker from '../../components/media/AvatarPicker'
 
 /**
@@ -42,6 +43,7 @@ type AvatarEdit =
  * where the values live and which sub-cards appear.
  */
 export default function Profile() {
+  const { t } = useI18n()
   const user = useCurrentUser()
 
   if (!user) return null
@@ -49,7 +51,7 @@ export default function Profile() {
   return (
     <>
       <div className="ph">
-        <h2>{user.role === 'admin' ? '管理员账号' : '我的资料'}</h2>
+        <h2>{user.role === 'admin' ? t('管理员账号', 'Administrator account') : t('我的资料', 'My profile')}</h2>
         <span className="kicker" style={{ marginTop: 6 }}>ACCOUNT · {user.role === 'admin' ? 'ADMIN' : 'USER'}</span>
       </div>
       {user.role === 'admin'
@@ -60,6 +62,7 @@ export default function Profile() {
 }
 
 function AdminProfile({ name, username }: { name: string; username: string }) {
+  const { t } = useI18n()
   const toast = useToast()
   const [displayName, setDisplayName] = useState(name)
   const [loginName, setLoginName] = useState(username)
@@ -83,7 +86,7 @@ function AdminProfile({ name, username }: { name: string; username: string }) {
     event.preventDefault()
     const trimmedName = displayName.trim()
     const trimmedLogin = loginName.trim()
-    const nameErr = nicknameError(displayName, '显示名称')
+    const nameErr = nicknameError(displayName, '显示名称', 'display name')
     if (nameErr) {
       toast(nameErr)
       return
@@ -115,10 +118,10 @@ function AdminProfile({ name, username }: { name: string; username: string }) {
         await refreshSiteMeta()
       }
       toast(changingLogin
-        ? '已更新，下次登录请使用新的登录名'
-        : avatarChanged ? '头像已更新' : '显示名称已更新')
+        ? t('已更新，下次登录请使用新的登录名', 'Updated — use the new login name next time')
+        : avatarChanged ? t('头像已更新', 'Avatar updated') : t('显示名称已更新', 'Display name updated'))
     } catch (error) {
-      toast(getErrorMessage(error, '保存失败'))
+      toast(getErrorMessage(error, t('保存失败', 'Save failed')))
     } finally {
       setBusy(false)
     }
@@ -127,16 +130,16 @@ function AdminProfile({ name, username }: { name: string; username: string }) {
   return (
     <>
       <form className="pcard rv" onSubmit={submit}>
-        <div className="ph2"><b>站长资料</b></div>
+        <div className="ph2"><b>{t('站长资料', 'Owner profile')}</b></div>
         <div className="bd2">
           <p className="hint" style={{ marginBottom: 14 }}>
-            显示名称用于前台署名与后台侧栏；登录名只用于登录。两者互相独立，改一个不会影响另一个。
+            {t('显示名称用于前台署名与后台侧栏；登录名只用于登录。两者互相独立，改一个不会影响另一个。', 'The display name is used for public bylines and the console sidebar; the login name is only for signing in. They are independent.')}
           </p>
           <div className="fld">
             {/* 头像与显示名/登录名在业务上是三件独立的事，但它们在同一个表单里、
                 共用同一个「保存」——分开保存会让「我只想换张图」变成两次请求，
                 而其中一次的结果无法回滚另一次。 */}
-            <label>头像 Avatar</label>
+            <label>{t('头像', 'Avatar')}</label>
             <AvatarPicker
               url={displayedAvatarUrl}
               onChange={(id) => setAvatar(id === null ? { kind: 'remove' } : { kind: 'set', id })}
@@ -144,15 +147,15 @@ function AdminProfile({ name, username }: { name: string; username: string }) {
               disabled={busy}
             />
             <p className="hint" style={{ marginTop: 8 }}>
-              显示在前台侧栏的作者卡上。未设置时用首字母占位；换图或移除都只是解除引用，图片仍留在媒体库。
+              {t('显示在前台侧栏的作者卡上。未设置时用首字母占位；换图或移除都只是解除引用，图片仍留在媒体库。', 'Shown on the author card. Without one, the first letter is used; changing or removing only drops the reference, the file stays in the library.')}
             </p>
           </div>
           <div className="fld" style={{ marginTop: 12 }}>
-            <label>显示名称 Display name</label>
+            <label>{t('显示名称', 'Display name')}</label>
             <Input variant="login" maxLength={NICKNAME_MAX} value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
           </div>
           <div className="fld" style={{ marginTop: 12 }}>
-            <label>登录名 Login name（留空表示不修改）</label>
+            <label>{t('登录名（留空表示不修改）', 'Login name (leave empty to keep it)')}</label>
             <Input
               variant="login"
               maxLength={USERNAME_MAX}
@@ -168,17 +171,16 @@ function AdminProfile({ name, username }: { name: string; username: string }) {
             </span>
             {/* 上传没结束就提交会存下一张还没拿到 id 的图，所以两个状态都要挡住。 */}
             <Button primary small type="submit" disabled={busy || uploading}>
-              {busy ? '保存中…' : '保存'}
+              {busy ? t('保存中…', 'Saving…') : t('保存', 'Save')}
             </Button>
           </div>
         </div>
       </form>
       <div className="pcard rv" style={{ marginTop: 16 }}>
-        <div className="ph2"><b>密码</b></div>
+        <div className="ph2"><b>{t('密码', 'Password')}</b></div>
         <div className="bd2">
           <p className="hint">
-            管理员密码在安装时设置，目前没有通过控制台修改的入口。如需更换，请修改服务端配置后重新安装或直接更新
-            settings.json 中的 password_hash。
+            {t('管理员密码在安装时设置。如需更换，请在服务器上运行 admin set-password 子命令。', 'The administrator password is set during installation. To change it, run the admin set-password command on the server.')}
           </p>
         </div>
       </div>
@@ -199,11 +201,11 @@ function changingLoginHint(
   avatarChanged: boolean,
 ): string {
   const parts: string[] = []
-  if (displayName.trim() !== currentName) parts.push('显示名称有改动')
+  if (displayName.trim() !== currentName) parts.push(t('显示名称有改动', 'display name changed'))
   const nextLogin = loginName.trim()
-  if (nextLogin !== '' && nextLogin !== currentLogin) parts.push('登录名有改动')
-  if (avatarChanged) parts.push('头像有改动')
-  return parts.length > 0 ? parts.join(' · ') : '尚未修改'
+  if (nextLogin !== '' && nextLogin !== currentLogin) parts.push(t('登录名有改动', 'login name changed'))
+  if (avatarChanged) parts.push(t('头像有改动', 'avatar changed'))
+  return parts.length > 0 ? parts.join(' · ') : t('尚未修改', 'No changes yet')
 }
 
 function UserProfile() {
@@ -222,6 +224,7 @@ function UserProfile() {
 }
 
 function IdentityCard({ account }: { account: UserResponse }) {
+  const { t } = useI18n()
   const toast = useToast()
   const [nicknameValue, setNicknameValue] = useState(account.nickname)
   const [usernameValue, setUsernameValue] = useState(account.username)
@@ -260,9 +263,9 @@ function IdentityCard({ account }: { account: UserResponse }) {
       // The identity cache holds the old values; re-read it so the comment form
       // and the sidebar agree with the server.
       await refreshAuth()
-      toast(changingUsername ? '已更新，下次登录请使用新的用户名' : '昵称已更新')
+      toast(changingUsername ? t('已更新，下次登录请使用新的用户名', 'Updated — use the new username next time') : t('昵称已更新', 'Nickname updated'))
     } catch (error) {
-      toast(getErrorMessage(error, '保存失败'))
+      toast(getErrorMessage(error, t('保存失败', 'Save failed')))
     } finally {
       setBusy(false)
     }
@@ -270,13 +273,13 @@ function IdentityCard({ account }: { account: UserResponse }) {
 
   return (
     <form className="pcard rv" onSubmit={submit}>
-      <div className="ph2"><b>资料</b></div>
+      <div className="ph2"><b>{t('资料', 'Profile')}</b></div>
       <div className="bd2">
         <p className="hint" style={{ marginBottom: 14 }}>
-          用户名用于登录，昵称用于前台展示（评论署名等）；两者独立，改其一不影响另一个。
+          {t('用户名用于登录，昵称用于前台展示（评论署名等）；两者独立，改其一不影响另一个。', 'The username is for signing in; the nickname is shown publicly (e.g. comment bylines). They are independent.')}
         </p>
         <div className="fld">
-          <label>用户名 Username（登录用）</label>
+          <label>{t('用户名（登录用）', 'Username (for signing in)')}</label>
           <Input
             variant="login"
             maxLength={USERNAME_MAX}
@@ -286,19 +289,19 @@ function IdentityCard({ account }: { account: UserResponse }) {
           />
         </div>
         <div className="fld" style={{ marginTop: 12 }}>
-          <label>昵称 Nickname（对外展示）</label>
+          <label>{t('昵称（对外展示）', 'Nickname (public)')}</label>
           <Input variant="login" maxLength={NICKNAME_MAX} value={nicknameValue} onChange={(event) => setNicknameValue(event.target.value)} />
         </div>
         <div className="fld" style={{ marginTop: 12 }}>
-          <label>邮箱 Email（已验证的联系方式，不可自行修改）</label>
+          <label>{t('邮箱（已验证的联系方式，不可自行修改）', 'Email (verified; cannot be changed here)')}</label>
           <Input variant="login" value={account.email} disabled readOnly />
         </div>
         <div className="act-row">
           <span className="sp" />
           <span className="set-state">
-            {changingUsername ? '用户名有改动，下次登录需用新用户名' : (nicknameChanged ? '昵称有改动' : '尚未修改')}
+            {changingUsername ? t('用户名有改动，下次登录需用新用户名', 'Username changed — sign in with it next time') : (nicknameChanged ? t('昵称有改动', 'Nickname changed') : t('尚未修改', 'No changes yet'))}
           </span>
-          <Button primary small type="submit" disabled={busy}>{busy ? '保存中…' : '保存'}</Button>
+          <Button primary small type="submit" disabled={busy}>{busy ? t('保存中…', 'Saving…') : t('保存', 'Save')}</Button>
         </div>
       </div>
     </form>
@@ -306,6 +309,7 @@ function IdentityCard({ account }: { account: UserResponse }) {
 }
 
 function PasswordCard() {
+  const { t } = useI18n()
   const toast = useToast()
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
@@ -315,7 +319,7 @@ function PasswordCard() {
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!current) {
-      toast('请输入当前密码')
+      toast(t('请输入当前密码', 'Enter your current password'))
       return
     }
     const passwordError = validatePassword(next)
@@ -324,7 +328,7 @@ function PasswordCard() {
       return
     }
     if (next.trim() !== confirm.trim()) {
-      toast('两次输入的新密码不一致')
+      toast(t('两次输入的新密码不一致', 'The new passwords do not match'))
       return
     }
 
@@ -337,9 +341,9 @@ function PasswordCard() {
       // The server rotates the session: every other device is signed out and this
       // one receives fresh cookies, so the cached identity must be re-read.
       await refreshAuth()
-      toast('密码已更新，其他设备需要重新登录')
+      toast(t('密码已更新，其他设备需要重新登录', 'Password updated — other devices must sign in again'))
     } catch (error) {
-      toast(getErrorMessage(error, '修改失败'))
+      toast(getErrorMessage(error, t('修改失败', 'Change failed')))
     } finally {
       setBusy(false)
     }
@@ -347,24 +351,24 @@ function PasswordCard() {
 
   return (
     <form className="pcard rv" style={{ marginTop: 16 }} onSubmit={submit}>
-      <div className="ph2"><b>修改密码</b></div>
+      <div className="ph2"><b>{t('修改密码', 'Change password')}</b></div>
       <div className="bd2">
         <div className="fld">
-          <label>当前密码 Current password</label>
+          <label>{t('当前密码', 'Current password')}</label>
           <Input variant="login" type="password" autoComplete="current-password" value={current} onChange={(event) => setCurrent(event.target.value)} />
         </div>
         <div className="fld" style={{ marginTop: 12 }}>
-          <label>新密码 New password</label>
+          <label>{t('新密码', 'New password')}</label>
           <Input variant="login" type="password" autoComplete="new-password" value={next} onChange={(event) => setNext(event.target.value)} />
         </div>
         <div className="fld" style={{ marginTop: 12 }}>
-          <label>确认新密码 Confirm</label>
+          <label>{t('确认新密码', 'Confirm new password')}</label>
           <Input variant="login" type="password" autoComplete="new-password" value={confirm} onChange={(event) => setConfirm(event.target.value)} />
         </div>
-        <p className="hint" style={{ marginTop: 10 }}>密码要求：{PASSWORD_RULE_TEXT}。</p>
+        <p className="hint" style={{ marginTop: 10 }}>{t('密码要求：', 'Password requirements: ')}{passwordRuleText()}{t('。', '.')}</p>
         <div className="act-row">
           <span className="sp" />
-          <Button primary small type="submit" disabled={busy}>{busy ? '提交中…' : '修改密码'}</Button>
+          <Button primary small type="submit" disabled={busy}>{busy ? t('提交中…', 'Submitting…') : t('修改密码', 'Change password')}</Button>
         </div>
       </div>
     </form>

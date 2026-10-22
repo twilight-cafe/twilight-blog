@@ -4,6 +4,23 @@ import "errors"
 
 var ErrMediaNotFound = errors.New("media not found")
 
+// ErrInvalidMediaName 表示一个新的展示名不合法（空、超长、含控制字符或路径分隔符）。
+//
+// 它与「名字里带路径分隔符 = 有穿越风险」无关——展示名从不参与磁盘路径拼接
+// （磁盘名是独立的 storage_name，见 Media.StorageName）。这条校验防的是另一类
+// 麻烦：控制字符会把日志与界面撑断，而带分隔符的名字会让人误以为它能当路径用。
+// 放在 model 层是因为服务层要返回它、handler 要按它映射 HTTP 状态码，
+// 与 ErrTagNameExists 同一考虑。
+var ErrInvalidMediaName = errors.New("invalid media name")
+
+// MaxMediaOriginalNameLength 是展示名（original_name）的长度上限，按**字符数**
+// 而不是字节数——否则一个中文名会因为 UTF-8 占 3 字节而被误判超长，
+// 与 MaxSiteDescriptionLength 同一口径。
+//
+// 它只是展示名的上限，不是文件系统限制：这个名字既不会落盘也不会进响应头，
+// 200 个字符足够表达「这是哪张图」，同时挡住把整个段落粘进来的误操作。
+const MaxMediaOriginalNameLength = 200
+
 // MediaTypeImage 是「图片」这一逻辑分类的取值。
 //
 // 分类只有 image / audio / video 三种（见 service.classify 的判定），

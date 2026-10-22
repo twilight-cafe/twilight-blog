@@ -84,3 +84,55 @@ export function borderRadius(): number {
 export function applyBorderRadius(): void {
   document.documentElement.style.setProperty('--radius', `${borderRadius()}px`)
 }
+
+/**
+ * 微语（Moments）是否启用。外壳未标记（属性缺失）视为启用。
+ *
+ * 与 isSearchEnabled 同一条通道、同一条兜底：老二进制的 HTML 里没有
+ * data-moments-enabled，不能因为前端先升级就把站长正在用的功能藏掉。
+ * 关闭时导航 / 页脚 / 侧栏 / 后台菜单 / 仪表盘快捷入口一起过滤，公开的
+ * /moments 页给出「未启用」提示。
+ */
+export function isMomentsEnabled(): boolean {
+  return document.documentElement.dataset.momentsEnabled !== 'false'
+}
+
+/** 文章头图最大高度（px）在属性缺失 / 解析不出来时的兜底。 */
+export const FALLBACK_POST_BANNER_HEIGHT = 400
+
+/**
+ * 头图高度的合法区间，与 Go 侧 viewmodel.Min/MaxPostBannerHeight 对应。
+ *
+ * 0 **不在**区间内：与圆角不同，0px 的头图没有意义，所以服务端把 0 当作
+ * 「未设置」并写入默认值。这里同样按越界处理。
+ */
+export const MIN_POST_BANNER_HEIGHT = 120
+export const MAX_POST_BANNER_HEIGHT = 800
+
+/**
+ * 文章头图最大高度（px），读自外壳的 `data-post-banner-height`。
+ *
+ * 走属性通道的理由同 homePageSize：文章数据到达后头图立刻要按最终高度占位，
+ * 等 /api/site 回来再改 CSS 变量会让读者看到一次高度跳变。
+ *
+ * 解析方式与 homePageSize 一致：先 parseInt 再判 NaN。不能用 Number('')——
+ * 空串会被它变成 0，而 0 恰好落在「非法」区间之外，会导致下发 0px 的头图。
+ */
+export function postBannerHeight(): number {
+  const raw = document.documentElement.dataset.postBannerHeight
+  const parsed = Number.parseInt(raw ?? '', 10)
+  if (!Number.isFinite(parsed) || parsed < MIN_POST_BANNER_HEIGHT || parsed > MAX_POST_BANNER_HEIGHT) {
+    return FALLBACK_POST_BANNER_HEIGHT
+  }
+  return parsed
+}
+
+/**
+ * 把头图高度写进 `--post-banner-height` CSS 变量。
+ *
+ * 与 applyBorderRadius 一样在 main.tsx 的最开头调用：文章页首帧就要用对的
+ * 高度画占位框，否则图片加载完成后整页会往下顶一截。
+ */
+export function applyPostBannerHeight(): void {
+  document.documentElement.style.setProperty('--post-banner-height', `${postBannerHeight()}px`)
+}

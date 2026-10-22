@@ -19,15 +19,17 @@
 //     不整页重拉。
 //   - 发帖/回复成功：刷新第 1 页（reloadFirstPage），不是乐观插入。
 
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge, Button, Input } from 'ink-design'
 import { blog, getErrorMessage, setCurrentUser, useCurrentUser } from '../lib/client'
 import { fmtRelative } from '../lib/format'
 import type { Comment, TargetType } from 'twilight-blog-api'
 import { useToast } from '../lib/toast'
-import { Avatar, Empty, Loading } from './common'
+import { Avatar, Empty, SkeletonRows } from './common'
+import { useDelayedLoading } from '../lib/loading'
 import ContentView from './ContentView'
+import { t, useI18n } from '../lib/i18n'
 
 interface CommentsProps {
   targetType: TargetType
@@ -43,11 +45,11 @@ const PAGE_SIZE = 12
 const CONTENT_MAX = 2000
 
 function authorLabel(comment: Comment): string {
-  if (comment.author.type === 'admin') return comment.author.name || '管理员'
+  if (comment.author.type === 'admin') return comment.author.name || t('管理员', 'Admin')
   // `email` is only present on admin-authenticated responses, so the display
   // name can never be derived from it.
   const nickname = (comment.author.nickname || '').trim()
-  return nickname || '访客'
+  return nickname || t('访客', 'Guest')
 }
 
 function authorLetter(comment: Comment): string {
@@ -90,6 +92,7 @@ function buildTree(comments: Comment[]): CommentNode[] {
 }
 
 export default function Comments({ targetType, targetId, enabled = true }: CommentsProps) {
+  const { t } = useI18n()
   const toast = useToast()
   const [items, setItems] = useState<Comment[]>([])
   const [page, setPage] = useState(1)
@@ -97,6 +100,8 @@ export default function Comments({ targetType, targetId, enabled = true }: Comme
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
+  // 评论骨架延迟出现：发完评论后的刷新通常在阈值内返回，不该让列表闪一下。
+  const pending = useDelayedLoading(loading)
 
   // Incremented for every request; a response whose id no longer matches is
   // stale (target changed, or the component unmounted) and is dropped.
@@ -129,7 +134,7 @@ export default function Comments({ targetType, targetId, enabled = true }: Comme
           setTotal(0)
           setTotalPages(1)
         } else {
-          toast(getErrorMessage(error, '加载更多评论失败'))
+          toast(getErrorMessage(error, t('加载更多评论失败', 'Failed to load more comments')))
         }
       } finally {
         if (requestRef.current === requestId) {
@@ -163,16 +168,22 @@ export default function Comments({ targetType, targetId, enabled = true }: Comme
 
   return (
     <section className="cmt-sec">
-      <h3>评论 <span>· {total} 条</span></h3>
+      {/* key 绑在条数上：发完评论条数变化时这一小块重新挂载，CSS 的弹一下
+          动画才会重播——否则它只是换个数字，像表格里翻了一格。 */}
+      <h3>{t('评论', 'Comments')} <span key={total}>· {t(`${total} 条`, `${total}`)}</span></h3>
       {enabled ? (
         <CommentForm targetType={targetType} targetId={targetId} onPosted={reloadFirstPage} />
       ) : (
-        <div className="cform" style={{ textAlign: 'center', color: 'var(--faint)' }}>评论已关闭</div>
+        <div className="cform" style={{ textAlign: 'center', color: 'var(--faint)' }}>{t('评论已关闭', 'Comments are closed')}</div>
       )}
-      {loading ? <Loading height={100} /> : nodes.length === 0 ? <Empty text="还没有评论" /> : (
+      {nodes.length === 0 ? (
+        // 第一次加载画骨架；已有评论时（发帖、回复后的刷新）列表原地留在这里，
+        // 只变暗一次，新评论在数据到达时带着入场动画插进来。
+        loading ? <SkeletonRows variant="comments" count={2} visible={pending} /> : <Empty text={t('还没有评论', 'No comments yet')} />
+      ) : (
         <>
-          <div className="cmt-list">
-            {nodes.map((comment) => (
+          <div className="cmt-list" aria-busy={loading} data-busy={String(pending)}>
+            {nodes.map((comment, index) => (
               <CommentItemView
                 key={comment.id}
                 comment={comment}
@@ -180,13 +191,15 @@ export default function Comments({ targetType, targetId, enabled = true }: Comme
                 targetId={targetId}
                 onUpdated={applyUpdated}
                 onReplyPosted={reloadFirstPage}
+                // 逐条错峰，最多 0.2s：一屏十来条评论同时上浮会像整块在抖。
+                delay={Math.min(index * 0.04, 0.2)}
               />
             ))}
           </div>
           {hasMore ? (
             <div style={{ display: 'flex', justifyContent: 'center', marginTop: 14 }}>
               <Button ghost small disabled={loadingMore} onClick={() => void loadPage(page + 1, 'append')}>
-                {loadingMore ? '加载中…' : '加载更多'}
+                {loadingMore ? t('加载中…', 'Loading…') : t('加载更多', 'Load more')}
               </Button>
             </div>
           ) : null}
@@ -203,6 +216,7 @@ export default function Comments({ targetType, targetId, enabled = true }: Comme
  * the comment form without any navigation, so reading position is preserved.
  */
 function InlineAuth() {
+  const { t } = useI18n()
   const toast = useToast()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -211,11 +225,11 @@ function InlineAuth() {
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!username.trim()) {
-      toast('请输入用户名（或注册邮箱）')
+      toast(t('请输入用户名（或注册邮箱）', 'Enter your username (or registered email)'))
       return
     }
     if (!password) {
-      toast('请输入密码')
+      toast(t('请输入密码', 'Enter your password'))
       return
     }
 
@@ -225,9 +239,9 @@ function InlineAuth() {
       // username, so the card needs no "administrator / visitor" switch.
       const me = await blog.login({ username: username.trim(), password })
       setCurrentUser(me)
-      toast('登录成功，欢迎参与讨论')
+      toast(t('登录成功，欢迎参与讨论', 'Signed in — welcome to the discussion'))
     } catch (error) {
-      toast(getErrorMessage(error, '登录失败'))
+      toast(getErrorMessage(error, t('登录失败', 'Sign-in failed')))
     } finally {
       setBusy(false)
     }
@@ -236,13 +250,13 @@ function InlineAuth() {
   return (
     <form className="cform" onSubmit={submit}>
       <p className="hint" style={{ marginBottom: 10 }}>
-        登录后即可发言、点赞与回复。你的昵称取自账号资料，评论署名与账号保持一致。
+        {t('登录后即可发言、点赞与回复。你的昵称取自账号资料，评论署名与账号保持一致。', 'Sign in to comment, like and reply. Your display name comes from your account profile.')}
       </p>
       <div className="fld">
         <Input
           variant="login"
           autoComplete="username"
-          placeholder="用户名或注册邮箱"
+          placeholder={t('用户名或注册邮箱', 'Username or email')}
           value={username}
           onChange={(event) => setUsername(event.target.value)}
         />
@@ -252,17 +266,17 @@ function InlineAuth() {
           variant="login"
           type="password"
           autoComplete="current-password"
-          placeholder="密码"
+          placeholder={t('密码', 'Password')}
           value={password}
           onChange={(event) => setPassword(event.target.value)}
         />
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
-        <Button primary small type="submit" disabled={busy}>{busy ? '登录中…' : '登录'}</Button>
+        <Button primary small type="submit" disabled={busy}>{busy ? t('登录中…', 'Signing in…') : t('登录', 'Sign in')}</Button>
         <span style={{ flex: 1 }} />
-        <Link to="/admin/register">注册新账号</Link>
+        <Link to="/admin/register">{t('注册新账号', 'Create an account')}</Link>
         <span>·</span>
-        <Link to="/admin/forgot">忘记密码</Link>
+        <Link to="/admin/forgot">{t('忘记密码', 'Forgot password')}</Link>
       </div>
     </form>
   )
@@ -277,6 +291,7 @@ function CommentForm({
   targetId: number
   onPosted: () => void
 }) {
+  const { t } = useI18n()
   const toast = useToast()
   const user = useCurrentUser()
   const [content, setContent] = useState('')
@@ -292,18 +307,18 @@ function CommentForm({
   const submit = async () => {
     const trimmed = content.trim()
     if (!trimmed) {
-      toast('内容不能为空')
+      toast(t('内容不能为空', 'The comment cannot be empty'))
       return
     }
     if (trimmed.length > CONTENT_MAX) {
-      toast(`评论不能超过 ${CONTENT_MAX} 个字符`)
+      toast(t(`评论不能超过 ${CONTENT_MAX} 个字符`, `Comments cannot exceed ${CONTENT_MAX} characters`))
       return
     }
 
     setBusy(true)
     try {
       await blog.createComment({ targetType, targetId, content: trimmed })
-      toast('评论已发布')
+      toast(t('评论已发布', 'Comment posted'))
       setContent('')
       onPosted()
     } catch (error) {
@@ -319,16 +334,16 @@ function CommentForm({
         variant="box"
         multiline
         maxLength={CONTENT_MAX}
-        placeholder="写下你的想法…"
+        placeholder={t('写下你的想法…', 'Write what you think…')}
         value={content}
         onChange={(event) => setContent(event.target.value)}
       />
       <div className="foot">
         <span className="cmt-authed">
-          {isAdmin ? '管理员评论' : `以 ${user.user?.nickname || '访客'} 的身份评论`}
+          {isAdmin ? t('管理员评论', 'Commenting as the site owner') : t(`以 ${user.user?.nickname || '访客'} 的身份评论`, `Commenting as ${user.user?.nickname || 'Guest'}`)}
         </span>
         <span style={{ flex: 1 }} />
-        <Button primary small disabled={busy} onClick={() => void submit()}>发布评论</Button>
+        <Button primary small disabled={busy} onClick={() => void submit()}>{t('发布评论', 'Post comment')}</Button>
       </div>
     </div>
   )
@@ -340,13 +355,17 @@ function CommentItemView({
   targetId,
   onUpdated,
   onReplyPosted,
+  delay,
 }: {
   comment: CommentNode
   targetType: TargetType
   targetId: number
   onUpdated: (updated: Comment) => void
   onReplyPosted: () => void
+  /** 顶层评论的错峰延迟（秒）；嵌套回复按各自的挂载时刻立即入场。 */
+  delay?: number
 }) {
+  const { t } = useI18n()
   const toast = useToast()
   const user = useCurrentUser()
   const [replying, setReplying] = useState(false)
@@ -371,23 +390,23 @@ function CommentItemView({
       if (!updated) return
       onUpdated(updated)
     } catch (error) {
-      toast(getErrorMessage(error, '操作失败'))
+      toast(getErrorMessage(error, t('操作失败', 'Action failed')))
     } finally {
       setLiking(false)
     }
   }
 
   const likeTip = !canLike
-    ? (isAdmin ? '管理员仅可查看点赞数，不能点赞' : '登录后可点赞')
+    ? (isAdmin ? t('管理员仅可查看点赞数，不能点赞', 'The site owner can see likes but cannot like') : t('登录后可点赞', 'Sign in to like'))
     : undefined
 
   return (
-    <div className="cmt">
+    <div className="cmt" style={delay ? ({ '--d': `${delay}s` } as CSSProperties) : undefined}>
       <Avatar letter={authorLetter(comment)} alt={comment.author.type !== 'admin'} />
       <div style={{ flex: 1 }}>
         <div className="nm">
           <b>{authorLabel(comment)}</b>
-          {comment.author.type === 'admin' ? <Badge>作者</Badge> : null}
+          {comment.author.type === 'admin' ? <Badge>{t('作者', 'Author')}</Badge> : null}
           <time>{fmtRelative(comment.created_at)}</time>
         </div>
         <div className="bd"><ContentView text={comment.content} /></div>
@@ -402,7 +421,7 @@ function CommentItemView({
             {comment.liked_by_me ? '♥' : '♡'} {comment.like_count}
           </button>
           {user ? (
-            <button type="button" className="reply-btn" onClick={() => setReplying((value) => !value)}>回复</button>
+            <button type="button" className="reply-btn" onClick={() => setReplying((value) => !value)}>{t('回复', 'Reply')}</button>
           ) : null}
         </div>
         {replying ? (
@@ -448,6 +467,7 @@ function ReplyForm({
   onDone: () => void
   onPosted: () => void
 }) {
+  const { t } = useI18n()
   const toast = useToast()
   const [content, setContent] = useState('')
   const [busy, setBusy] = useState(false)
@@ -455,18 +475,18 @@ function ReplyForm({
   const submit = async () => {
     const trimmed = content.trim()
     if (!trimmed) {
-      toast('内容不能为空')
+      toast(t('内容不能为空', 'The comment cannot be empty'))
       return
     }
     if (trimmed.length > CONTENT_MAX) {
-      toast(`回复不能超过 ${CONTENT_MAX} 个字符`)
+      toast(t(`回复不能超过 ${CONTENT_MAX} 个字符`, `Replies cannot exceed ${CONTENT_MAX} characters`))
       return
     }
 
     setBusy(true)
     try {
       await blog.createComment({ targetType, targetId, parentId, content: trimmed })
-      toast('回复已发布')
+      toast(t('回复已发布', 'Reply posted'))
       setContent('')
       onPosted()
     } catch (error) {
@@ -482,13 +502,13 @@ function ReplyForm({
         variant="box"
         multiline
         maxLength={CONTENT_MAX}
-        placeholder="写下回复…"
+        placeholder={t('写下回复…', 'Write a reply…')}
         value={content}
         onChange={(event) => setContent(event.target.value)}
       />
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
-        <Button ghost small onClick={onDone}>取消</Button>
-        <Button primary small disabled={busy} onClick={() => void submit()}>回复</Button>
+        <Button ghost small onClick={onDone}>{t('取消', 'Cancel')}</Button>
+        <Button primary small disabled={busy} onClick={() => void submit()}>{t('回复', 'Reply')}</Button>
       </div>
     </div>
   )

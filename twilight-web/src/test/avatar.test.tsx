@@ -423,6 +423,42 @@ describe('侧栏间距与底栏下划线的样式契约', () => {
     expect(ruleBlock('.post-cover')).toMatch(/margin-top:\s*var\(--top-gap\)/)
   })
 
+  it('侧栏永不出现滑动条：弹性分配高度、滑动条隐藏、盒子只做透明度入场', () => {
+    // 三件事合起来才是「滑动条总是不出现」：
+    //   ① 侧栏按剩余高度分配（作者卡固定、目录盒收缩、目录列表内部滚），
+    //      不再整栏 overflow-y 硬扛，目录多寡都不改变侧栏自身的高度；
+    //   ② 该滚的地方仍能滚，但滑动条一律不画（Chrome/Safari 与 Firefox 各一条）；
+    //   ③ 盒子入场不再用带 translateY 的 fade-up——位移不参与布局，却会被算进
+    //      可滚动溢出：目录盒是最后一个盒子，它入场的那 8px 就是「中途闪一下
+    //      滑动条、最终又没有」的来路。
+    const sidebar = ruleBlock('.public-sidebar')
+    expect(sidebar).toMatch(/display:\s*flex/)
+    expect(sidebar).toMatch(/flex-direction:\s*column/)
+    expect(sidebar).toMatch(/scrollbar-width:\s*none/)
+    expect(sidebar).not.toMatch(/overflow-y:\s*auto/)
+
+    const webkit = ruleBlock('.public-sidebar::-webkit-scrollbar')
+    expect(webkit, '找不到 ::-webkit-scrollbar 规则').not.toBe('')
+    expect(webkit).toMatch(/width:\s*0/)
+
+    // 目录列表在侧栏里用剩余高度，而不是 60vh（60vh + 作者卡会超出侧栏高度）。
+    const tocList = ruleBlock('.public-sidebar .toc-list')
+    expect(tocList).toMatch(/max-height:\s*none/)
+    expect(tocList).toMatch(/flex:/)
+    expect(tocList).toMatch(/scrollbar-width:\s*none/)
+    expect(ruleBlock('.toc-box')).not.toMatch(/max-height/)
+
+    // 侧栏盒子：只有透明度入场，没有位移。.public-sidebar .box 出现过两次
+    // （边框/内边距与入场动画），这里按「带 animation 的那一块」取。
+    expect(appCss).toMatch(/\.public-sidebar \.box \{[^}]*animation:\s*fade-in/)
+    expect(appCss).not.toMatch(/\.public-sidebar \.box \{[^}]*animation:\s*fade-up/)
+    expect(appCss).toMatch(/@keyframes fade-in\s*\{[^}]*opacity:\s*0/)
+
+    // 站点设置里的作者卡预览复用了 .public-sidebar：它必须还是普通块，
+    // 不能被侧栏的弹性列布局影响。
+    expect(ruleBlock('.set-sidebar')).toMatch(/display:\s*block/)
+  })
+
   it('底栏链接的下划线只出现在文字下方（width: fit-content）', () => {
     // 块级元素在 inkui 全局 a 的 background-size 0%→100% 动画下，
     // 下划线会横贯整列宽度；fit-content 把元素收到文字那么宽。

@@ -85,6 +85,16 @@ type indexData struct {
 	//
 	// 属性值是数字（dataset 永远是 string，见前端 flags.ts 的读取方式）。
 	BorderRadius int
+	// PostBannerHeight 是文章头图最大高度（px），作为
+	// <html data-post-banner-height="..."> 下发。
+	//
+	// 与 BorderRadius 同理：头图在文章数据到达后立刻要按最终高度占位。
+	// 若等 GET /api/site 回来再改 CSS 变量，读者会看到一次高度跳变。
+	PostBannerHeight int
+	// MomentsEnabled 决定微语入口是否挂载，作为 <html data-moments-enabled="...">
+	// 下发。属性缺失时前端按「启用」兜底，以便前端先升级、后端后升级也不会
+	// 把正在用的功能凭空藏掉。
+	MomentsEnabled bool
 	// Stylesheets / Scripts 是站内绝对路径（以 / 开头）。
 	Stylesheets []string
 	Scripts     []string
@@ -181,7 +191,7 @@ func resolveIndexAssets(webFS fs.FS) (stylesheets []string, scripts []string, er
 // borderRadius 的兜底**不能照抄上面的 `<= 0`**：圆角的下界就是 0，
 // 0 是合法的「直角」。这里只能对**越界**值兜底，否则站长设的直角
 // 会在渲染外壳时被悄悄改成默认圆角（设置页显示 0、前台却是 4）。
-func newIndexData(description string, searchEnabled bool, homePageSize, borderRadius int, stylesheets, scripts []string) indexData {
+func newIndexData(description string, searchEnabled, momentsEnabled bool, homePageSize, borderRadius, postBannerHeight int, stylesheets, scripts []string) indexData {
 	description = viewmodel.SiteDescription(description)
 	if homePageSize <= 0 {
 		homePageSize = viewmodel.DefaultHomePageSize
@@ -189,13 +199,23 @@ func newIndexData(description string, searchEnabled bool, homePageSize, borderRa
 	if borderRadius < viewmodel.MinBorderRadius || borderRadius > viewmodel.MaxBorderRadius {
 		borderRadius = viewmodel.DefaultBorderRadius
 	}
+	// 0 表示「未设置」；越界值同样兜底。头图高度没有 0 这个合法值
+	// （0px 的头图没有意义），所以这里可以照抄 homePageSize 的 `<= 0`。
+	if postBannerHeight <= 0 {
+		postBannerHeight = viewmodel.DefaultPostBannerHeight
+	}
+	if postBannerHeight < viewmodel.MinPostBannerHeight || postBannerHeight > viewmodel.MaxPostBannerHeight {
+		postBannerHeight = viewmodel.DefaultPostBannerHeight
+	}
 	return indexData{
-		Description:   description,
-		Title:         indexTitleBrand + " · " + description,
-		SearchEnabled: searchEnabled,
-		HomePageSize:  homePageSize,
-		BorderRadius:  borderRadius,
-		Stylesheets:   stylesheets,
-		Scripts:       scripts,
+		Description:      description,
+		Title:            indexTitleBrand + " · " + description,
+		SearchEnabled:    searchEnabled,
+		HomePageSize:     homePageSize,
+		BorderRadius:     borderRadius,
+		PostBannerHeight: postBannerHeight,
+		MomentsEnabled:   momentsEnabled,
+		Stylesheets:      stylesheets,
+		Scripts:          scripts,
 	}
 }

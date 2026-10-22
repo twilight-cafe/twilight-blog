@@ -11,8 +11,10 @@ import (
 
 // TagResponse 是标签的对外形状；ArticleCount 统计的是「未删除文章」的引用数。
 type TagResponse struct {
-	ID           int64  `json:"id"`
-	Name         string `json:"name"`
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	// NameEN 是英文名；空串表示未提供，前端回退 Name。
+	NameEN       string `json:"name_en"`
 	ArticleCount int64  `json:"article_count"`
 }
 
@@ -25,6 +27,9 @@ type CountResponse struct {
 // RenameTagRequest 是标签改名请求。
 type RenameTagRequest struct {
 	Name string `json:"name"`
+	// NameEN 是英文名；省略或空串都表示「没有英文名」（回退中文）。
+	// 它不参与唯一约束，所以不需要像 Name 那样强制非空。
+	NameEN string `json:"name_en"`
 }
 
 func NewTagResponse(tag *model.Tag) TagResponse {
@@ -32,6 +37,7 @@ func NewTagResponse(tag *model.Tag) TagResponse {
 	return TagResponse{
 		ID:           tag.ID,
 		Name:         tag.Name,
+		NameEN:       tag.NameEN,
 		ArticleCount: tag.ArticleCount,
 	}
 }
@@ -47,6 +53,7 @@ func NewTagResponseList(tags []model.Tag) []TagResponse {
 
 func (r *RenameTagRequest) Validate() error {
 	r.Name = strings.TrimSpace(r.Name)
+	r.NameEN = strings.TrimSpace(r.NameEN)
 	if r.Name == "" {
 		return fmt.Errorf("name is required")
 	}

@@ -12,6 +12,8 @@ import type { UserResponse } from 'twilight-blog-api'
 import { useToast } from '../../lib/toast'
 import { NICKNAME_MAX, USERNAME_MAX, emailError, nicknameError, usernameError } from '../../lib/validate'
 import { Empty, Loading } from '../../components/common'
+import { useDelayedLoading } from '../../lib/loading'
+import { useI18n } from '../../lib/i18n'
 
 const PAGE_SIZE = 12
 
@@ -22,12 +24,15 @@ const PAGE_SIZE = 12
  * here on purpose — merging them is how this project got into trouble before.
  */
 export default function UsersAdmin() {
+  const { t } = useI18n()
   const toast = useToast()
   const [list, setList] = useState<UserResponse[]>([])
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
   const [loading, setLoading] = useState(true)
+  // 首屏加载超过阈值才显示等待提示（见 lib/loading.ts）。
+  const pending = useDelayedLoading(loading)
   const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
@@ -46,7 +51,7 @@ export default function UsersAdmin() {
         setList([])
         setTotal(0)
         setTotalPages(1)
-        toast(getErrorMessage(error, '加载用户失败'))
+        toast(getErrorMessage(error, t('加载用户失败', 'Failed to load users')))
       } finally {
         if (alive) setLoading(false)
       }
@@ -63,16 +68,21 @@ export default function UsersAdmin() {
   return (
     <>
       <div className="ph">
-        <h2>用户</h2>
+        <h2>{t('用户', 'Users')}</h2>
         <span className="kicker" style={{ marginTop: 6 }}>VISITOR ACCOUNTS · {total}</span>
       </div>
       <p className="hint" style={{ marginBottom: 16 }}>
-        这里只列出注册的访客账号；管理员账号由配置文件维护，不在列表中。
-        用户名用于登录，昵称用于前台展示。
+        {t('这里只列出注册的访客账号；管理员账号由配置文件维护，不在列表中。', 'Only registered visitor accounts are listed here; the administrator account is maintained separately.')}
+        {t('用户名用于登录，昵称用于前台展示。', 'The username is used to sign in; the nickname is shown publicly.')}
       </p>
-      {loading ? <Loading height={200} /> : list.length === 0 ? <Empty text="还没有注册用户" /> : (
+      {list.length === 0 ? (
+        loading ? <Loading height={200} visible={pending} /> : <Empty text={t('还没有注册用户', 'No registered users yet')} />
+      ) : (
+        // 保存 / 翻页后的刷新：旧行原地变暗，新数据到达后替换。
+        // data-busy 挂在内层 .ulist 而不是 .pcard.rv：卡片自身有一条 fill: both
+        // 的入场动画，动画的终值会一直盖住 opacity，挂在它上面淡不下去。
         <div className="pcard rv">
-          <div className="ulist">
+          <div className="ulist" aria-busy={loading} data-busy={String(loading)}>
             {list.map((item) => (
               <UserRow key={item.id} user={item} onSaved={reload} />
             ))}
@@ -85,6 +95,7 @@ export default function UsersAdmin() {
 }
 
 function UserRow({ user, onSaved }: { user: UserResponse; onSaved: () => void }) {
+  const { t } = useI18n()
   const toast = useToast()
   const [editing, setEditing] = useState(false)
   const [username, setUsername] = useState(user.username)
@@ -123,13 +134,13 @@ function UserRow({ user, onSaved }: { user: UserResponse; onSaved: () => void })
     setBusy(true)
     try {
       await blog.updateUser(user.id, { username: trimmedUsername, nickname: trimmedNickname, email: trimmedEmail })
-      toast('已保存')
+      toast(t('已保存', 'Saved'))
       setEditing(false)
       onSaved()
     } catch (error) {
       // The server rejects a username/address another account already uses;
       // keep the row in edit mode so the operator can correct it without retyping.
-      toast(getErrorMessage(error, '保存失败'))
+      toast(getErrorMessage(error, t('保存失败', 'Save failed')))
     } finally {
       setBusy(false)
     }
@@ -140,35 +151,35 @@ function UserRow({ user, onSaved }: { user: UserResponse; onSaved: () => void })
       {editing ? (
         <div className="uedit">
           <div className="fld">
-            <label>用户名 Username（登录用）</label>
+            <label>{t('用户名（登录用）', 'Username (for signing in)')}</label>
             <Input variant="login" maxLength={USERNAME_MAX} value={username} onChange={(event) => setUsername(event.target.value)} />
           </div>
           <div className="fld">
-            <label>昵称 Nickname（对外展示）</label>
+            <label>{t('昵称（对外展示）', 'Nickname (public)')}</label>
             <Input variant="login" maxLength={NICKNAME_MAX} value={nickname} onChange={(event) => setNickname(event.target.value)} />
           </div>
           <div className="fld">
-            <label>邮箱 Email（联系方式）</label>
+            <label>{t('邮箱（联系方式）', 'Email (contact)')}</label>
             <Input variant="login" type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
           </div>
           <div className="act-row">
             <span className="sp" />
-            <Button ghost small disabled={busy} onClick={() => setEditing(false)}>取消</Button>
-            <Button primary small disabled={busy} onClick={() => void save()}>{busy ? '保存中…' : '保存'}</Button>
+            <Button ghost small disabled={busy} onClick={() => setEditing(false)}>{t('取消', 'Cancel')}</Button>
+            <Button primary small disabled={busy} onClick={() => void save()}>{busy ? t('保存中…', 'Saving…') : t('保存', 'Save')}</Button>
           </div>
         </div>
       ) : (
         <>
-          <span className="cav">{(user.nickname.slice(0, 1) || '访').toUpperCase()}</span>
+          <span className="cav">{(user.nickname.slice(0, 1) || t('访', '?')).toUpperCase()}</span>
           <div className="uinfo">
             <div className="uline">
-              <b>{user.nickname || '访客'}</b>
+              <b>{user.nickname || t('访客', 'Guest')}</b>
               <span className="utag">@{user.username || '—'}</span>
-              {user.has_password ? null : <Badge>未设密码</Badge>}
+              {user.has_password ? null : <Badge>{t('未设密码', 'No password')}</Badge>}
             </div>
-            <span className="umeta">#{user.id} · {user.email} · 注册于 {fmtDateTime(user.created_at)}</span>
+            <span className="umeta">#{user.id} · {user.email} · {t('注册于', 'Joined')} {fmtDateTime(user.created_at)}</span>
           </div>
-          <Button ghost small onClick={startEdit}>编辑</Button>
+          <Button ghost small onClick={startEdit}>{t('编辑', 'Edit')}</Button>
         </>
       )}
     </div>

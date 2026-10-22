@@ -50,12 +50,32 @@ func (h *SiteHandler) Get(c echo.Context) error {
 
 	// 头像读不到（未安装、或那一列是 NULL）时给空串而不是省略字段：
 	// 前端需要能区分「没有头像」（回退占位块）与「这个字段不存在」。
-	return c.JSON(http.StatusOK, viewmodel.SiteSettingsResponse{
+	return c.JSON(http.StatusOK, h.publicResponse(c))
+}
+
+// publicResponse 组装公开快照。Get 与 Update 共用它，避免两处响应漂移；
+// 通知邮箱**不在**这里，它只走 GetAdmin。
+func (h *SiteHandler) publicResponse(c echo.Context) viewmodel.SiteSettingsResponse {
+	return viewmodel.SiteSettingsResponse{
 		Description:       h.config.SiteDescriptionValue(),
 		AvatarURL:         h.currentAvatarURL(c),
 		CodeBlockMaxLines: h.config.CodeBlockMaxLinesValue(),
 		HomePageSize:      h.config.HomePageSizeValue(),
 		BorderRadius:      h.config.BorderRadiusValue(),
+		PostBannerHeight:  h.config.PostBannerHeightValue(),
+		MomentsEnabled:    h.config.MomentsEnabledValue(),
+	}
+}
+
+// GetAdmin 对应 GET /api/admin/site（仅管理员，见 router 的 admin 分组）。
+//
+// 它在公开快照上多一个 comment_notify_to。单独开一个端点而不是把该字段塞进
+// 公开响应，是因为通知邮箱属于站长的私人联系方式，匿名读者没有任何理由读到它。
+func (h *SiteHandler) GetAdmin(c echo.Context) error {
+	logging.Debugf("[handler:site] GetAdmin called path=%s", c.Request().URL.Path)
+	return c.JSON(http.StatusOK, viewmodel.AdminSiteSettingsResponse{
+		SiteSettingsResponse: h.publicResponse(c),
+		CommentNotifyTo:      h.config.CommentNotifyToValue(),
 	})
 }
 
@@ -84,6 +104,9 @@ func (h *SiteHandler) Update(c echo.Context) error {
 	previousLines := h.config.CodeBlockMaxLinesValue()
 	previousPageSize := h.config.HomePageSizeValue()
 	previousRadius := h.config.BorderRadiusValue()
+	previousBanner := h.config.PostBannerHeightValue()
+	previousMoments := h.config.MomentsEnabledValue()
+	previousNotify := h.config.CommentNotifyToValue()
 	h.config.SetSiteDescription(req.Description)
 	// 行数是三态（nil=保持现值），所以这里不是无条件调用。
 	// 先暂存合法化后的值：SetCodeBlockMaxLines 可能存的是请求里的指针值，
@@ -112,6 +135,24 @@ func (h *SiteHandler) Update(c echo.Context) error {
 		}
 		newRadius = *req.BorderRadius
 	}
+	newBanner := previousBanner
+	if req.PostBannerHeight != nil {
+		if err := h.config.SetPostBannerHeight(*req.PostBannerHeight); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
+		newBanner = *req.PostBannerHeight
+	}
+	if req.MomentsEnabled != nil {
+		h.config.SetMomentsEnabled(*req.MomentsEnabled)
+	}
+	newMoments := h.config.MomentsEnabledValue()
+	newNotify := previousNotify
+	if req.CommentNotifyTo != nil {
+		if err := h.config.SetCommentNotifyTo(*req.CommentNotifyTo); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
+		newNotify = *req.CommentNotifyTo
+	}
 
 	if err := h.config.Save(h.settingsPath); err != nil {
 		h.config.SetSiteDescription(previousDescription)
@@ -124,20 +165,29 @@ func (h *SiteHandler) Update(c echo.Context) error {
 		if newRadius != previousRadius {
 			_ = h.config.SetBorderRadius(previousRadius)
 		}
+		if newBanner != previousBanner {
+			_ = h.config.SetPostBannerHeight(previousBanner)
+		}
+		if newMoments != previousMoments {
+			h.config.SetMomentsEnabled(previousMoments)
+		}
+		if newNotify != previousNotify {
+			_ = h.config.SetCommentNotifyTo(previousNotify)
+		}
 		logging.Errorf("[site] persist settings failed: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to save site settings")
 	}
 
 	logging.Infof("[site] site settings updated")
-	return c.JSON(http.StatusOK, viewmodel.SiteSettingsResponse{
-		Description: h.config.SiteDescriptionValue(),
-		// 与 Get 保持同一形状：写描述不会动头像，但响应若少一个字段，
-		// 前端「拿响应替换本地缓存」的写法就会把头像抹掉。
-		AvatarURL:         h.currentAvatarURL(c),
-		CodeBlockMaxLines: newLines,
-		HomePageSize:      newPageSize,
-		BorderRadius:      newRadius,
-	})
+	response := h.publicResponse(c)
+	// 用 new* 覆盖：publicResponse 读的是内存里的最新值，但 Save 的 ApplyDefaults
+	// 可能把 0 补成默认值。这里显式回填，保证响应与本次请求的结果一致。
+	response.CodeBlockMaxLines = newLines
+	response.HomePageSize = newPageSize
+	response.BorderRadius = newRadius
+	response.PostBannerHeight = newBanner
+	response.MomentsEnabled = newMoments
+	return c.JSON(http.StatusOK, response)
 }
 
 // currentAvatarURL 是 Get 与 Update 共用的头像读取，避免两处响应漂移。

@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/mail"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,6 +115,40 @@ const (
 	MinBorderRadius = 0
 	MaxBorderRadius = 24
 )
+
+// PostBannerHeightBounds 是 post_banner_height 的合法区间（含端点），单位 px。
+//
+// 它是文章页头图（banner）的最大显示高度。下界 120：再矮就不是「头图」而是一条
+// 装饰色带，标题会显得比图片更重；上界 800：一整屏高度已经足够，再高会把正文
+// 推到首屏之外，读者必须滚一屏才看得到第一段。
+//
+// 0 表示「未设置」，由 ApplyDefaults 兜底成 DefaultPostBannerHeight。
+const (
+	MinPostBannerHeight = 120
+	MaxPostBannerHeight = 800
+)
+
+// DefaultPostBannerHeight 是头图最大高度的默认值，单位 px。
+//
+// 400 与升级前 .post-cover img 的写死值一致：新增可配置项不应该顺带改变任何
+// 既有站点的观感。
+const DefaultPostBannerHeight = 400
+
+// validatePostBannerHeight 校验 post_banner_height 的取值。
+// 0 表示「未设置」，交给 ApplyDefaults 兜底；显式写下的值必须落在区间内。
+func validatePostBannerHeight(value int) error {
+	if value < 0 {
+		return fmt.Errorf("invalid post_banner_height %d: cannot be negative", value)
+	}
+	if value == 0 {
+		return nil
+	}
+	if value < MinPostBannerHeight || value > MaxPostBannerHeight {
+		return fmt.Errorf("invalid post_banner_height %d: must be between %d and %d (0 means the default %d)",
+			value, MinPostBannerHeight, MaxPostBannerHeight, DefaultPostBannerHeight)
+	}
+	return nil
+}
 
 // validateBorderRadius 校验 border_radius 的取值。
 //
@@ -221,6 +256,12 @@ const (
 type MailConfig struct {
 	From   string `json:"from"`
 	APIKey string `json:"api_key"`
+	// CommentNotifyTo 是「有新访客评论」通知邮件的收件地址。
+	//
+	// 空串表示关闭通知——这也是默认状态：没有征得同意就往某个地址发信是不对的，
+	// 而管理员的 users.email 是空串哨兵（见 model.User），不能拿来当收件人。
+	// 它只出现在仅管理员可读的响应里，绝不随公开的 GET /api/site 下发。
+	CommentNotifyTo string `json:"comment_notify_to"`
 }
 
 // MailAPIKeyEnvVar 是默认的发信密钥环境变量名。
@@ -442,6 +483,29 @@ type Config struct {
 	// 若等 GET /api/site 回来再改 CSS 变量，首屏会先按默认圆角画一遍再跳变。
 	BorderRadius *int `json:"border_radius,omitempty"`
 
+	// PostBannerHeight 是文章页头图（banner）的最大显示高度，单位 px。
+	//
+	// 0 表示「未设置」，由 ApplyDefaults 兜底成 DefaultPostBannerHeight；
+	// 显式配置的值必须落在 [MinPostBannerHeight, MaxPostBannerHeight] 内。
+	//
+	// 它走**首屏属性**通道（index.html 的 data-post-banner-height），与
+	// HomePageSize 同理：头图在文章数据到达后立刻要按最终高度占位，若等
+	// GET /api/site 回来再改 CSS 变量，读者会看到一次高度跳变。
+	PostBannerHeight int `json:"post_banner_height"`
+
+	// MomentsEnabled 控制**微语（Moments）功能**是否启用。
+	//
+	// 用指针是为了让「键缺失」表示「开启」：这个选项出现之前写下的
+	// settings.json 里没有这个键，若把缺失当成 false，那些旧配置升级后会
+	// 无声地失去微语入口与已发布的内容。要关闭必须显式写 false。
+	//
+	// 关闭时的行为（三处必须一致）：
+	//   - router 不再注册公开的 /api/moments 与 /api/moments/:id（404）；
+	//   - view 层向 index.html 注入 momentsEnabled 标志，前端隐藏导航、
+	//     页脚、侧栏与后台菜单里的入口；
+	//   - 管理员写接口保留，内容不会因此不可达，重新开启即可恢复。
+	MomentsEnabled *bool `json:"moments_enabled"`
+
 	// SearchEnabled 控制**内嵌 Meilisearch 与搜索功能**是否启用。
 	//
 	// 用指针是为了让「键缺失」表示「开启」：这个选项出现之前写下的
@@ -573,8 +637,14 @@ func Load(path string) (*Config, error) {
 			return nil, err
 		}
 	}
+	if err := validatePostBannerHeight(cfg.PostBannerHeight); err != nil {
+		return nil, err
+	}
 
 	cfg.Mail = normalizeMailConfig(cfg.Mail)
+	if err := ValidateEmailAddress(cfg.Mail.CommentNotifyTo); err != nil {
+		return nil, fmt.Errorf("invalid mail.comment_notify_to: %w", err)
+	}
 
 	if _, err := logging.ParseLevel(cfg.LogLevel); err != nil {
 		return nil, fmt.Errorf("invalid log_level: %w", err)
@@ -860,6 +930,98 @@ func (c *Config) SetBorderRadius(radius int) error {
 	return nil
 }
 
+// PostBannerHeightValue 返回文章头图最大高度的当前值（px）。
+// 未设置（0，即 ApplyDefaults 之前读到的旧文件）时返回默认值，
+// 保证调用方拿到的永远是一个可直接写进 CSS 的正数。
+func (c *Config) PostBannerHeightValue() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.PostBannerHeight == 0 {
+		return DefaultPostBannerHeight
+	}
+	return c.PostBannerHeight
+}
+
+// SetPostBannerHeight 只在内存里更新头图高度，**不负责落盘**。
+// 与 SetHomePageSize 相同，显式输入不接受 0（0 只表示旧文件里的「未设置」）。
+func (c *Config) SetPostBannerHeight(height int) error {
+	if height == 0 {
+		return fmt.Errorf("post_banner_height cannot be empty: specify a value between %d and %d", MinPostBannerHeight, MaxPostBannerHeight)
+	}
+	if err := validatePostBannerHeight(height); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.PostBannerHeight = height
+	return nil
+}
+
+// MomentsEnabledValue 报告微语功能是否启用。
+//
+// 键缺失（nil）视为启用：老版本 settings.json 里没有这个键，升级后必须保持
+// 既有行为——静默关掉已经发布的内容属于破坏性变更。只有显式写 false 才是关闭。
+func (c *Config) MomentsEnabledValue() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.MomentsEnabled == nil || *c.MomentsEnabled
+}
+
+// SetMomentsEnabled 只在内存里更新微语开关，**不负责落盘**。
+func (c *Config) SetMomentsEnabled(enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	value := enabled
+	c.MomentsEnabled = &value
+}
+
+// CommentNotifyToValue 返回评论通知的收件地址；未配置时返回空串。
+// 每次发信前都读一次，好让站长在设置页改完立即生效，不必重启。
+func (c *Config) CommentNotifyToValue() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.Mail == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.Mail.CommentNotifyTo)
+}
+
+// SetCommentNotifyTo 只在内存里更新评论通知收件地址，**不负责落盘**。
+// 空串是合法值（关闭通知）；非空时必须是纯邮箱地址（不允许 "Name <a@b>"）。
+func (c *Config) SetCommentNotifyTo(address string) error {
+	address = strings.TrimSpace(address)
+	if err := ValidateEmailAddress(address); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Mail == nil {
+		c.Mail = &MailConfig{}
+	}
+	c.Mail.CommentNotifyTo = address
+	return nil
+}
+
+// ValidateEmailAddress 校验一个**纯邮箱地址**（不含显示名）。
+//
+// 空串合法：它表示「不配置」。非空时要求 net/mail 能解析，且解析结果里不能
+// 带显示名——`Twilight <a@b>` 这种形式在 To 头里是合法的，但本站只接受一个
+// 地址，允许显示名只会让「保存了什么」与「发到哪」看起来不一致。
+func ValidateEmailAddress(address string) error {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return nil
+	}
+	parsed, err := mail.ParseAddress(address)
+	if err != nil {
+		return fmt.Errorf("invalid email address %q", address)
+	}
+	if parsed.Name != "" || parsed.Address != address {
+		return fmt.Errorf("email address %q must be a bare address without a display name", address)
+	}
+	return nil
+}
+
 // ApplyDefaults 为习惯上会被省略的键补上默认值，绝不覆盖已设置的值。
 // Save() 也会调用它，因此写出的文件总是「完整」的。
 //
@@ -907,6 +1069,9 @@ func (c *Config) ApplyDefaults() {
 	if c.BorderRadius == nil {
 		value := DefaultBorderRadius
 		c.BorderRadius = &value
+	}
+	if c.PostBannerHeight == 0 {
+		c.PostBannerHeight = DefaultPostBannerHeight
 	}
 	if c.Mail == nil {
 		c.Mail = &MailConfig{}
@@ -1051,6 +1216,7 @@ func normalizeMailConfig(m *MailConfig) *MailConfig {
 	}
 	m.From = strings.TrimSpace(m.From)
 	m.APIKey = strings.TrimSpace(m.APIKey)
+	m.CommentNotifyTo = strings.TrimSpace(m.CommentNotifyTo)
 	return m
 }
 

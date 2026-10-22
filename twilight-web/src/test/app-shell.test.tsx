@@ -6,6 +6,7 @@ import type { TocItem } from '../lib/markdown'
 
 import App from '../App'
 import PublicShell, { type PublicOutletContext } from '../components/PublicShell'
+import RouteTransition from '../components/RouteTransition'
 import PublicSidebar from '../components/PublicSidebar'
 import { resetCountsCacheForTests } from '../components/AdminLayout'
 import { resetSiteCacheForTests } from '../lib/site'
@@ -205,7 +206,9 @@ describe('App 路由表', () => {
       await waitFor(() => expect(screen.getAllByText(stub).length).toBeGreaterThan(0), { timeout: 3000 })
       view.unmount()
     }
-  })
+    // 16 个路由 × 每次最多 3s：默认的 5s 在 8 worker 满载跑全量时会擦线。
+    // 这里要守的是「路由可达」，不是速度，放宽总时限而不是放宽每条断言。
+  }, 30000)
 
   it('访客账号：/admin 重定向到我的资料；菜单折叠为单项', async () => {
     client.setCurrentUser(visitorMe)
@@ -261,6 +264,16 @@ describe('PublicShell + PublicSidebar', () => {
     )
   }
 
+  it('回到顶部入口由 ink-design BackTop 提供：页首时移出 Tab 顺序', async () => {
+    renderShell('/')
+    await waitFor(() => expect(screen.getByText('OUTLET-PROBE')).toBeTruthy(), { timeout: 3000 })
+    // 不可见时 aria-hidden + tabIndex=-1：一个看不见的按钮不该被读屏念出来，
+    // 也不该让键盘用户停在屏幕右下角的空气上。
+    const backTop = screen.getByTitle('回到顶部')
+    expect(backTop.getAttribute('aria-hidden')).toBe('true')
+    expect(backTop.tabIndex).toBe(-1)
+  })
+
   it('首页：大标题、描述、导航、页脚（未登录 → 登录入口）', async () => {
     renderShell('/')
     await waitFor(() => expect(screen.getByText('OUTLET-PROBE')).toBeTruthy(), { timeout: 3000 })
@@ -278,7 +291,12 @@ describe('PublicShell + PublicSidebar', () => {
     await waitFor(() => expect(screen.getByText('OUTLET-PROBE')).toBeTruthy(), { timeout: 3000 })
 
     expect(document.querySelector('header[data-header="home"]')).toBeNull()
-    expect(screen.getByText('TWILIGHT BLOG — INK & CODE')).toBeTruthy()
+    // 内页页头右侧现在是语言切换器（原「TWILIGHT BLOG — INK & CODE」已按要求替换）。
+    expect(screen.getByRole('group', { name: '语言' })).toBeTruthy()
+    // 所有内页共用紧凑头（post/page 以及归档、标签等）。
+    expect(document.querySelector('.mast.slim.compact')).toBeTruthy()
+    expect(document.querySelector('.nav-slim.compact')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '中' }).getAttribute('aria-pressed')).toBe('true')
 
     // 模拟文章页回传目录 → 侧栏渲染 TOC（缩进按层级）
     await act(async () => {
@@ -291,6 +309,24 @@ describe('PublicShell + PublicSidebar', () => {
     expect(tocLinks.map((a) => a.textContent)).toEqual(['第一章', '小结'])
     expect(tocLinks[0].getAttribute('href')).toBe('#h1')
     expect(parseInt(tocLinks[1].style.paddingLeft, 10)).toBeGreaterThan(parseInt(tocLinks[0].style.paddingLeft, 10))
+
+    // 滚动高亮：jsdom 里所有 rect 都是 0（都在阅读线之上）→ 高亮最后一个，
+    // 也就是「当前读到的最靠下的小节」。逻辑本身由 motion.test.tsx 守。
+    const headingA = document.createElement('h2')
+    headingA.id = 'h1'
+    const headingB = document.createElement('h2')
+    headingB.id = 'h2'
+    document.body.append(headingA, headingB)
+    try {
+      act(() => {
+        window.dispatchEvent(new Event('scroll'))
+      })
+      expect(tocLinks[1].className).toBe('on')
+      expect(tocLinks[0].className).toBe('')
+    } finally {
+      headingA.remove()
+      headingB.remove()
+    }
 
     // 当前路径高亮
     const navLinks = Array.from(container.querySelectorAll('.nl')) as HTMLAnchorElement[]
@@ -313,6 +349,55 @@ describe('PublicShell + PublicSidebar', () => {
     client.setCurrentUser(visitorMe)
     const third = renderShell('/')
     await waitFor(() => expect(third.container.querySelector('a[href="/admin/profile"]')?.textContent).toBe('我的资料'))
+  })
+
+  it('首页 → 内页：精简头第一帧钉在旧页头的高度上，再连续收到自己的高度', async () => {
+    // 换页要走 RouteTransition（App 里就是这样包的），并让两个页头量出不同的高度：
+    // 大标题 300px、精简头 120px。jsdom 里 Element.animate 不存在，这里也一并补上。
+    vi.useFakeTimers()
+    const rectDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'getBoundingClientRect')!
+    const animate = vi.fn(() => ({ cancel: vi.fn(), onfinish: null as (() => void) | null }))
+    Object.defineProperty(Element.prototype, 'animate', { configurable: true, value: animate })
+    Object.defineProperty(Element.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value: function (this: Element) {
+        const big = this.matches?.('header[data-header="home"]') === true
+        const height = big ? 300 : 120
+        return { top: 0, left: 0, right: 0, bottom: height, width: 0, height, x: 0, y: 0, toJSON: () => ({}) }
+      },
+    })
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/']}>
+          <RouteTransition>
+            <Route element={<PublicShell />}>
+              <Route path="*" element={<OutletProbe />} />
+            </Route>
+          </RouteTransition>
+        </MemoryRouter>,
+      )
+      await act(async () => {})
+      expect(document.querySelector('header[data-header="home"]')).toBeTruthy()
+
+      // 点导航进内页：180ms 退场之后才提交新地址，旧页头在退场时被量下 300px。
+      fireEvent.click(screen.getAllByText('归档')[0])
+      act(() => {
+        vi.advanceTimersByTime(180)
+      })
+
+      const slim = document.querySelector('.wrap.mast.slim') as HTMLElement
+      expect(slim).toBeTruthy()
+      const head = slim.parentElement as HTMLElement
+      // 新页头的盒子钉在旧高度上：正文从原来的位置起算，再被连续推上去；
+      // 少了这一步，提交那一帧正文与页脚会被拽动 180px。
+      expect(head.style.height).toBe('300px')
+      expect(head.style.overflow).toBe('hidden')
+    } finally {
+      vi.useRealTimers()
+      delete (Element.prototype as unknown as { animate?: unknown }).animate
+      Object.defineProperty(Element.prototype, 'getBoundingClientRect', rectDescriptor)
+    }
   })
 })
 

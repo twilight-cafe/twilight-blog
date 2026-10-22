@@ -6,17 +6,30 @@
 // 首页标语与页脚简介都来自站长设置的「网站描述」（useSiteDescription），
 // 未设置或接口失败时回退到内置文案——这里是描述唯一的展示落点，
 // 若写死在这里，后台改完就只是存了个没有人看得到的字符串。
+// 路由切换时只有正文容器（.public-main）动：页头与侧栏原地不动，与 iOS 的
+// 「推入新内容」同一个观感。老内容向左/右滑走淡出，新内容从来的方向推入，
+// 容器高度从旧页连续接到新页（页脚被推过去而不是瞬移）；前进一律回到页首、
+// 返回回到离开时的滚动位置（见 lib/motion.ts 的 useRouteMotion 与
+// components/RouteTransition.tsx 的三阶段编排）。
+// 页头本身不参与位移，但它的大小会变：首页是整幅大标题、内页是精简头，两者
+// 差约 180px。这段空间同样要连续收放（useHeightRelay），否则正文与页脚会在
+// 提交的那一帧被拽动——位移连续了、空间不连续，看起来一样是抖。
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
-import { NavRow } from 'ink-design'
+import { BackTop, NavRow } from 'ink-design'
 import type { Page } from 'twilight-blog-api'
 import type { TocItem } from '../lib/markdown'
 import { buildNav, isNavActive, loadPagesForNav } from '../lib/nav'
-import { isSearchEnabled } from '../lib/flags'
+import { isMomentsEnabled, isSearchEnabled } from '../lib/flags'
 import { useCurrentUser } from '../lib/client'
+import { useHeightRelay, useRouteMotion } from '../lib/motion'
+import { useRouteTransition } from './RouteTransition'
 import { useSiteDescription } from '../lib/site'
+import { useI18n, useLocale } from '../lib/i18n'
 import PublicSidebar from './PublicSidebar'
+import LanguageSwitcher from './LanguageSwitcher'
+import Icon from '../lib/icons'
 
 export interface PublicOutletContext {
   setToc: (items: TocItem[]) => void
@@ -26,9 +39,25 @@ export default function PublicShell() {
   const location = useLocation()
   const [pages, setPages] = useState<Page[]>([])
   const [toc, setToc] = useState<TocItem[]>([])
-  const navItems = useMemo(() => buildNav(pages), [pages])
+  const locale = useLocale()
+  const navItems = useMemo(() => buildNav(pages, locale), [pages, locale])
   const isHome = location.pathname === '/'
   const description = useSiteDescription()
+  // 正文容器：路由切换时由它接力播一次入场动画（页头与侧栏保持原地不动，
+  // 动的只有「这一页的内容」——与 iOS 的导航推入同一个观感）。前进 / 返回的
+  // 方向与滚动位置也由同一个钩子负责；退场与高度接力由 RouteTransition 的
+  // phase 驱动（老内容滑走 → 新内容带着新高度滑入）。
+  const mainRef = useRef<HTMLElement | null>(null)
+  const { phase } = useRouteTransition()
+  useRouteMotion(mainRef, phase)
+  // 页头的高度接力：首页大标题与内页精简头是两种结构，提交时会整块替换。
+  // 两者的高度差（约 180px）由这个钩子连续收放，正文与页脚因此是被推过去
+  // 而不是被拽过去。ref 会先后指向两个不同的元素——退场量旧头、入场量新头。
+  const headRef = useRef<HTMLElement | null>(null)
+  const attachHead = useCallback((el: HTMLElement | null) => {
+    headRef.current = el
+  }, [])
+  useHeightRelay(headRef, phase)
   const setTocItems = useCallback((items: TocItem[]) => {
     setToc(items)
   }, [])
@@ -50,7 +79,7 @@ export default function PublicShell() {
   return (
     <div className="site-shell">
       {isHome ? (
-        <header data-header="home">
+        <header data-header="home" ref={attachHead}>
           <div className="wrap mast big">
             <h1>
               <span style={{ '--d': '0.05s' } as CSSProperties}>T</span>
@@ -65,6 +94,9 @@ export default function PublicShell() {
             </h1>
             <div className="sub">
               <span className="slogan">{description}</span>
+              {/* 首页是唯一没有内页精简头的地方；把切换器放在标语右侧，
+                  保证「任何一页都能换语言」，而不是要先点进内页。 */}
+              <LanguageSwitcher />
             </div>
             <div className="dbl" />
           </div>
@@ -80,14 +112,17 @@ export default function PublicShell() {
           </div>
         </header>
       ) : (
-        <div>
-          <div className="wrap mast slim">
+        <div ref={attachHead}>
+          <div className="wrap mast slim compact">
             <Link className="brand" to="/">
               Twilight<i className="ink" />
             </Link>
-            <span className="latin">TWILIGHT BLOG — INK &amp; CODE</span>
+            {/* 这里原来是「TWILIGHT BLOG — INK & CODE」那行拉丁文副标题。
+                按要求换成语言切换器：既保留了右上角那块的视觉重量，又让
+                读者在任何一页都能直接换语言。 */}
+            <LanguageSwitcher />
           </div>
-          <div className="wrap nav-slim">
+          <div className="wrap nav-slim compact">
             <NavRow>
               {navItems.map((item) => (
                 <Link key={item.to} to={item.to} className={`nl ${isNavActive(location.pathname, item.to) ? 'on' : ''}`}>
@@ -101,13 +136,15 @@ export default function PublicShell() {
       )}
 
       <div className="public-layout">
-        <main className="public-main">
+        <main className="public-main" ref={mainRef}>
           <Outlet context={{ setToc: setTocItems } satisfies PublicOutletContext} />
         </main>
         <PublicSidebar pages={pages} toc={toc} />
       </div>
 
       <Footer pages={pages} />
+      {/* 长页面才需要的返回入口：滚动超过一屏以后才从右下角浮出来。 */}
+      <BackTop icon={<Icon name="up" size={16} />} />
     </div>
   )
 }
@@ -118,8 +155,11 @@ function Footer({ pages }: { pages: Page[] }) {
   // points at whatever the current session can actually open.
   const user = useCurrentUser()
   const description = useSiteDescription()
+  const { t } = useI18n()
   const accountTo = user ? (user.role === 'admin' ? '/admin' : '/admin/profile') : '/admin/login'
-  const accountLabel = user ? (user.role === 'admin' ? '控制台' : '我的资料') : '登录 / 注册'
+  const accountLabel = user
+    ? (user.role === 'admin' ? t('控制台', 'Console') : t('我的资料', 'My profile'))
+    : t('登录 / 注册', 'Sign in / Register')
   return (
     <footer className="site">
       <div className="wrap">
@@ -129,25 +169,25 @@ function Footer({ pages }: { pages: Page[] }) {
             <p>{description}</p>
           </div>
           <div>
-            <h6>导航</h6>
-            <Link to="/archive">归档</Link>
-            <Link to="/tags">标签</Link>
+            <h6>{t('导航', 'Navigation')}</h6>
+            <Link to="/archive">{t('归档', 'Archive')}</Link>
+            <Link to="/tags">{t('标签', 'Tags')}</Link>
             {/* 搜索关闭时页脚也不再给出入口：导航、页脚、搜索页三处一致，
                 否则「关了搜索」的站点还剩一条死链接。 */}
-            {isSearchEnabled() && <Link to="/search">搜索</Link>}
-            <Link to="/moments">微语</Link>
+            {isSearchEnabled() && <Link to="/search">{t('搜索', 'Search')}</Link>}
+            {isMomentsEnabled() && <Link to="/moments">{t('微语', 'Moments')}</Link>}
             {pages.map((page) => (
               <Link key={page.id} to={`/pages/${page.id}`}>{page.title}</Link>
             ))}
           </div>
           <div>
-            <h6>更多</h6>
-            <Link to="/">首页</Link>
+            <h6>{t('更多', 'More')}</h6>
+            <Link to="/">{t('首页', 'Home')}</Link>
             <Link to={accountTo}>{accountLabel}</Link>
           </div>
         </div>
         <div className="bar">
-          <span>© 2021–{year} Twilight · 自托管</span>
+          <span>© 2021–{year} Twilight · {t('自托管', 'Self-hosted')}</span>
           <span>Powered by Go + React</span>
         </div>
       </div>

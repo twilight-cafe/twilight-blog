@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
+import { createClient } from 'twilight-blog-api'
 import Dashboard from '../pages/admin/Dashboard'
 import TagsAdmin from '../pages/admin/TagsAdmin'
 import CommentsAdmin from '../pages/admin/CommentsAdmin'
@@ -80,7 +81,7 @@ describe('TagsAdmin', () => {
     client.blog.renameTag.mockResolvedValueOnce({ message: 'ok' })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
     await waitFor(() => expect(screen.getByText('Golang')).toBeTruthy())
-    expect(client.blog.renameTag).toHaveBeenCalledWith(1, { name: 'Golang' })
+    expect(client.blog.renameTag).toHaveBeenCalledWith(1, { name: 'Golang', nameEn: '' })
   })
 
   it('加载失败回退空列表', async () => {
@@ -231,5 +232,101 @@ describe('MediaAdmin', () => {
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/api/media/7`),
     )
+  })
+
+  it('重命名：预填当前名字并全选；取消/空名/超长都不发请求；成功后刷新列表', async () => {
+    client.blog.listMedia
+      .mockResolvedValueOnce(paged([makeMedia({ id: 7, original_name: 'old.png' })]))
+      .mockResolvedValue(paged([makeMedia({ id: 7, original_name: '猫咪.png' })]))
+
+    renderNode(<MediaAdmin />)
+    await waitFor(() => expect(screen.getByText('old.png')).toBeTruthy())
+
+    // 取消：对话框返回 null，一个请求都不该发出去。
+    fireEvent.click(screen.getByTitle('重命名'))
+    const cancelled = (await screen.findByRole('textbox')) as HTMLInputElement
+    expect(cancelled.value).toBe('old.png') // 预填的是当前名字
+    expect(cancelled.selectionEnd).toBe('old.png'.length) // 打开即全选
+    fireEvent.click(screen.getByText('取消'))
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull())
+    expect(client.blog.renameMedia).not.toHaveBeenCalled()
+
+    // 空名：提示，不发请求（服务端也会 400，没必要白跑一趟）。
+    fireEvent.click(screen.getByTitle('重命名'))
+    const blank = (await screen.findByRole('textbox')) as HTMLInputElement
+    fireEvent.change(blank, { target: { value: '   ' } })
+    fireEvent.click(screen.getByText('确定'))
+    await waitFor(() => expect(screen.getAllByText('名字不能为空').length).toBeGreaterThan(0))
+    expect(client.blog.renameMedia).not.toHaveBeenCalled()
+
+    // 超长：按码点算，201 个字符拦下（上限与后端 model.MaxMediaOriginalNameLength 镜像）。
+    fireEvent.click(screen.getByTitle('重命名'))
+    const tooLong = (await screen.findByRole('textbox')) as HTMLInputElement
+    fireEvent.change(tooLong, { target: { value: '字'.repeat(201) } })
+    fireEvent.click(screen.getByText('确定'))
+    await waitFor(() => expect(screen.getAllByText('名字不能超过 200 个字符').length).toBeGreaterThan(0))
+    expect(client.blog.renameMedia).not.toHaveBeenCalled()
+
+    // 成功：把 trim 后的名字交给接口，并用服务端返回的结果刷新列表。
+    client.blog.renameMedia.mockResolvedValueOnce(makeMedia({ id: 7, original_name: '猫咪.png' }))
+    fireEvent.click(screen.getByTitle('重命名'))
+    const input = (await screen.findByRole('textbox')) as HTMLInputElement
+    fireEvent.change(input, { target: { value: '  猫咪.png  ' } })
+    fireEvent.click(screen.getByText('确定'))
+
+    await waitFor(() => expect(client.blog.renameMedia).toHaveBeenCalledWith(7, { original_name: '猫咪.png' }))
+    await waitFor(() => expect(screen.getByText('猫咪.png')).toBeTruthy())
+    expect(screen.getAllByText('已重命名').length).toBeGreaterThan(0)
+  })
+
+  it('重命名失败：toast 提示，界面保持原样', async () => {
+    client.blog.listMedia.mockResolvedValue(paged([makeMedia({ id: 7, original_name: 'old.png' })]))
+    client.blog.renameMedia.mockRejectedValueOnce(new Error('名字不能用'))
+
+    renderNode(<MediaAdmin />)
+    await waitFor(() => expect(screen.getByText('old.png')).toBeTruthy())
+
+    fireEvent.click(screen.getByTitle('重命名'))
+    const input = (await screen.findByRole('textbox')) as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'new.png' } })
+    fireEvent.click(screen.getByText('确定'))
+
+    await waitFor(() => expect(screen.getAllByText('名字不能用').length).toBeGreaterThan(0))
+    expect(screen.getByText('old.png')).toBeTruthy()
+  })
+})
+
+/* ------------------- renameMedia 的请求形状（真实模块） ------------------- */
+
+/**
+ * 与 article-cover.test.tsx 里 updateSite 那一组同源：这里用**真实 SDK** +
+ * fetch 替身，断言的是封装层组装出来的请求本身。
+ *
+ * 为什么必须单独钉：改名只有 id 与 original_name 两个入参，其中 id 决定改哪一条
+ * （写错了会改到别人的图），方法与路径决定服务端认不认这个请求。用 mock 掉
+ * `blog.renameMedia` 的行为测试完全看不到这一层——mock 会把封装整个换掉。
+ */
+describe('SDK 下发的媒体改名请求形状（真实模块）', () => {
+  it('PATCH /api/admin/media/:id，请求体只带 original_name', async () => {
+    const calls: { url: string; method?: string; body: unknown }[] = []
+    const fetchStub = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({
+        url: String(input),
+        method: init?.method,
+        body: JSON.parse(String(init?.body ?? '{}')),
+      })
+      return new Response(JSON.stringify(makeMedia({ id: 7, original_name: '猫咪.png' })), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    })
+    const api = createClient({ baseUrl: 'https://blog.test', fetch: fetchStub as unknown as typeof fetch })
+
+    const updated = await api.renameMedia(7, { original_name: '猫咪.png' })
+
+    expect(calls[0].url).toBe('https://blog.test/api/admin/media/7')
+    expect(calls[0].method).toBe('PATCH')
+    expect(calls[0].body).toEqual({ original_name: '猫咪.png' })
+    expect(updated.original_name).toBe('猫咪.png')
   })
 })

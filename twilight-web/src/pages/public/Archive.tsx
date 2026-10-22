@@ -6,12 +6,16 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { Reveal } from 'ink-design'
 import { blog } from '../../lib/client'
 import { fmtMonthDay } from '../../lib/format'
 import type { Article } from 'twilight-blog-api'
 import { useDocumentTitle } from '../../lib/site'
 import { useCanonicalPath, usePageHead } from '../../lib/head'
-import { Loading, PageHero, Reveal } from '../../components/common'
+import { PageHero, SkeletonRows } from '../../components/common'
+import { useDelayedLoading } from '../../lib/loading'
+import { useI18n, useLocale } from '../../lib/i18n'
+import { articleTitle } from '../../lib/localize'
 
 async function fetchAllArticles(): Promise<Article[]> {
   const first = await blog.listArticles({ page: 1, pageSize: 12 })
@@ -25,12 +29,16 @@ async function fetchAllArticles(): Promise<Article[]> {
 }
 
 export default function Archive() {
-  useDocumentTitle('归档')
+  const { t } = useI18n()
+  const locale = useLocale()
+  useDocumentTitle(t('归档', 'Archive'))
   // 列表页不自定义描述，交给站点描述兜底（head.ts 会回落）——「归档」两个字
   // 作为描述对搜索结果毫无信息量。
-  usePageHead({ path: useCanonicalPath(), title: '归档' })
+  usePageHead({ path: useCanonicalPath(), title: t('归档', 'Archive') })
   const [articles, setArticles] = useState<Article[]>([])
   const [loading, setLoading] = useState(true)
+  // 页头在加载前后都保留：否则「先光秃秃一行骨架、再整页下移」是最明显的跳版。
+  const pending = useDelayedLoading(loading)
 
   useEffect(() => {
     setLoading(true)
@@ -51,20 +59,26 @@ export default function Archive() {
     return [...map.entries()]
   }, [articles])
 
-  if (loading) return <Loading height={300} />
   const total = articles.length
 
   return (
     <main className="wrap page-list">
-      <PageHero kicker="ARCHIVE" title={<>归档<small>共 {total} 篇 · {groups.length} 年</small></>} subtitle="所有文字按时间封存，随时可以回头。" />
-      {groups.map(([year, items]) => (
+      {/* 篇数/年数要到数据到达才有，但它们是 h1 里的行内 small：出现时只改这
+          一行里的内容，不改变页头高度。 */}
+      <PageHero
+        kicker="ARCHIVE"
+        title={<>{t('归档', 'Archive')}{loading ? null : <small>{t(`共 ${total} 篇 · ${groups.length} 年`, `${total} posts · ${groups.length} years`)}</small>}</>}
+        subtitle={t('所有文字按时间封存，随时可以回头。', 'Everything written, sealed by date and ready to revisit.')}
+      />
+      {loading ? <SkeletonRows variant="archive" count={6} visible={pending} /> : null}
+      {!loading && groups.map(([year, items]) => (
         <div key={year}>
-          <div className="tl-y rv">{year}<small>{items.length} 篇</small></div>
+          <div className="tl-y rv">{year}<small>{t(`${items.length} 篇`, `${items.length} posts`)}</small></div>
           {items.map((article, index) => (
-            <Reveal key={article.id} className="tl-row" delay={Math.min(index * 0.04, 0.2)}>
+            <Reveal key={article.id} className="tl-row" delay={Math.min(index * 40, 200)}>
               <Link to={`/post/${article.id}`} style={{ display: 'contents' }}>
                 <time>{fmtMonthDay(article.created_at)}</time>
-                <b>{article.title}</b>
+                <b>{articleTitle(article, locale)}</b>
                 {article.tags[0] ? <span className="chip">{article.tags[0]}</span> : <span />}
               </Link>
             </Reveal>

@@ -37,6 +37,17 @@ export interface Article {
   id: number;
   title: string;
   content: string;
+  /**
+   * 英文标题 / 正文。空串表示没有英文版，前台按字段回退中文。
+   *
+   * 恒出现（服务端不带 omitempty）：判断「有没有英文」只需要看空串，
+   * 不必再区分 undefined 与「旧后端没有这个字段」。旧后端确实缺这两个键，
+   * 所以读取侧仍应容忍 undefined（见 twilight-web 的 lib/localize.ts）。
+   */
+  title_en: string;
+  content_en: string;
+  /** 站长显式标记的「AI 生成」。false 是正常值，前台据此显示/不显示提示条。 */
+  ai_generated: boolean;
   created_at: number;
   updated_at: number;
   deleted_at?: number;
@@ -49,12 +60,21 @@ export interface Article {
    */
   cover_media_id: number | null;
   tags: string[];
+  /**
+   * 标签的英文名，与 tags **等长同序**；某一项为空串表示该标签没有译名。
+   *
+   * 等长同序是服务端保证的（同一次 JOIN 里装配），前端可以按下标对齐。
+   * 旧后端没有这个字段，读取侧同样要容忍 undefined。
+   */
+  tags_en: string[];
 }
 
 // 标签。article_count 是该标签下（公开）文章数，便于前端直接展示热度，无需另发计数请求。
 export interface Tag {
   id: number;
   name: string;
+  /** 英文名；空串表示未提供，前台回退 name。不参与唯一约束。 */
+  name_en: string;
   article_count: number;
 }
 
@@ -121,6 +141,22 @@ export interface MediaItem {
   converted: boolean;
   created_at: number;
   deleted_at?: number;
+}
+
+/**
+ * 修改媒体的**展示名**（`PATCH /api/admin/media/:id`）。
+ *
+ * 只改 `original_name`：磁盘文件名由服务端生成、与引用无关，不允许客户端指定。
+ * 服务端会强制沿用**现有展示名的后缀**（`猫咪` / `猫咪.png` / `猫咪.jpg` 三种输入
+ * 都得到 `猫咪.<现有后缀>`——一次改名只换主名，不会顺手改后缀），并拒绝空名、
+ * 超长（> 200 字符）、控制字符与路径分隔符。
+ *
+ * 改完之后**不需要更新任何引用**：文章头图（cover_media_id）、微语配图
+ * （moment_media.media_id）、站长头像（avatar_media_id）指向的都是媒体 id，
+ * `url` 依旧是 `/api/media/{id}`。
+ */
+export interface RenameMediaInput {
+  original_name: string;
 }
 
 // 安装状态。installed=false 表示尚未完成首次初始化（设置管理员密码），
@@ -219,6 +255,15 @@ export interface ListCommentsOptions extends PaginationOptions {
 export interface CreateArticleInput {
   title: string;
   content: string;
+  /**
+   * 英文标题 / 正文与 AI 标记。创建时省略等同于「没有」：服务端写入空串 / false。
+   *
+   * 这三个字段在创建路径上是**两态**（省略 = 空），与正文的 `content` 一致；
+   * 更新路径上才是三态（省略 = 不改）。两者的差别来自「有没有旧值」。
+   */
+  titleEn?: string;
+  contentEn?: string;
+  aiGenerated?: boolean;
   // 创建时省略 tags 视为「无标签」；想显式不带标签就传空数组。注意与更新时语义不同。
   tags?: string[];
   /**
@@ -244,6 +289,10 @@ export interface UpdateArticleInput {
   // 这里的可选性与 tags 同源：字段缺失与显式传值在服务端是两种语义，
   // 类型上就必须能表达「我这次不提这个字段」。
   content?: string;
+  // 英文标题 / 正文与 AI 标记同样是三态：省略 = 不改，空串 / false = 显式清空。
+  titleEn?: string;
+  contentEn?: string;
+  aiGenerated?: boolean;
   tags?: string[];
   /**
    * 发布时间（Unix 秒）。省略表示「不改」，传值才会改。
@@ -303,8 +352,17 @@ export interface BatchIdsInput {
 }
 
 export interface RenameTagInput {
-  // 新名称。改名是整标签重命名，会影响所有关联文章（文章只存标签名字符串）。
+  /**
+   * 新名称。改名是整标签重命名，会影响所有关联文章（文章只存标签名字符串）。
+   */
   name: string;
+  /**
+   * 新英文名。空串表示「不要英文名」（前台回退中文）。
+   *
+   * 它与 name 在同一次请求里一起提交：分两次请求会出现「中文已改、英文还是旧的」
+   * 这种中间状态，而界面只显示一次保存按钮。
+   */
+  nameEn: string;
 }
 
 export interface InstallInput {
@@ -441,6 +499,32 @@ export interface SiteSettingsResponse {
    * 0 是**合法值**（直角），不是「未设置」。
    */
   border_radius: number;
+  /**
+   * 文章头图的最大高度（px，120..800）。恒输出。
+   *
+   * 与 border_radius 同理，前端**不读这个字段**来应用样式：首屏由外壳属性
+   * `data-post-banner-height` 写进 --post-banner-height。这里保留是为了让
+   * 设置页回读当前值。
+   */
+  post_banner_height: number;
+  /**
+   * 微语功能开关。恒输出。
+   *
+   * 关闭时导航、页脚、侧栏、后台菜单统一隐藏入口，公开 /moments 页给出提示。
+   * 首屏决策同样走外壳属性 `data-moments-enabled`。
+   */
+  moments_enabled: boolean;
+}
+
+/**
+ * 管理端站点设置（`GET /api/admin/site`，仅站长）。
+ *
+ * 在公开快照之上多一个评论通知收件地址：那是站长的私人联系方式，
+ * 绝不能随公开接口下发，所以单独一个类型、单独一个端点。
+ */
+export interface AdminSiteSettingsResponse extends SiteSettingsResponse {
+  /** 新访客评论的通知收件地址；空串表示关闭通知。 */
+  comment_notify_to: string;
 }
 
 /** 修改站点设置。description 必填；其余字段省略表示保持现值。 */
@@ -456,6 +540,16 @@ export interface SiteSettingsInput {
    * 注意 0 与「省略」含义不同：省略保持现值，0 表示把圆角设成直角。
    */
   border_radius?: number;
+  /** 头图最大高度（120..800）；省略 = 不修改。0 会被服务端拒绝。 */
+  post_banner_height?: number;
+  /** 微语开关；省略 = 不修改。false 是合法值，不能与「省略」混同。 */
+  moments_enabled?: boolean;
+  /**
+   * 评论通知收件地址；省略 = 不修改。空串 = 关闭通知。
+   *
+   * 只接受裸地址（`a@b.com`），带显示名的写法会被服务端拒绝。
+   */
+  comment_notify_to?: string;
 }
 
 // 媒体源：浏览器里传 Blob/ArrayBuffer/Uint8Array，Node 里也可传文件路径字符串（由 media.ts 读盘）。

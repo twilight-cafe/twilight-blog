@@ -27,6 +27,57 @@ import (
 // DefaultDataDir 是数据目录的兜底值。
 const DefaultDataDir = "meilisearch-data"
 
+// 以下变量把「与操作系统打交道」的调用收成可替换的间接层。
+//
+// 存在的唯一理由是覆盖率：FindExecutable / Start / Stop 的失败分支全部挂在
+// os.Executable、net.Listen、exec.Command 这些调用上，而它们**无法用真实处境
+// 稳定构造**——要触发「取不到可执行文件路径」就得真的破坏进程环境，要触发
+// 「子进程管道创建失败」就得让操作系统拒绝管道。没有这层间接，那些分支只能
+// 靠「反正不会发生」交代；而它们恰恰是启动失败时用户看到的全部信息。
+//
+// 生产路径始终使用下面这些默认值，测试只在自己的用例里临时替换并在
+// t.Cleanup 里还原——测试之间并行时也能各拿各的实现。
+var (
+	findExecutableFn = FindExecutable
+	ensureBinaryFn   = EnsureBinary
+	osExecutable     = os.Executable
+	osGetwd          = os.Getwd
+	absPath          = filepath.Abs
+	statFile         = os.Stat
+	readFile         = os.ReadFile
+	writeFile        = os.WriteFile
+	chmodFile        = os.Chmod
+	mkdirAll         = os.MkdirAll
+	randRead         = rand.Read
+	execCommand      = exec.Command
+	listenTCP        = net.Listen
+)
+
+// healthClient 构造探测 /health 的客户端。默认 2 秒超时：启动初期连不上是常态，
+// 单次探测不该拖住整个轮询。
+var healthClient = func() *http.Client { return &http.Client{Timeout: 2 * time.Second} }
+
+// fatalLog 是 logging.Fatalf 的间接层。monitor 在子进程意外退出时调用它，
+// 而它会 os.Exit——测试需要观察「有没有走到这一步」，而不是真的结束测试进程。
+var fatalLog = logging.Fatalf
+
+// 子进程关闭相关的平台函数同样可替换：Stop 的「优雅退出成功 / 超时强杀」
+// 两条路径需要确定性地控制「进程多快退出」，不能依赖真实 Meilisearch。
+var (
+	requestShutdown = requestChildShutdown
+	killGroup       = killChildProcessGroup
+	configureChild  = configureChildProcess
+)
+
+// shutdownGrace 是 Stop 等待子进程优雅退出的时长；测试把它调到毫秒级。
+var shutdownGrace = childShutdownGrace
+
+// waitReady 的轮询参数。默认 60 秒 / 200 毫秒，测试用短值。
+var (
+	readyTimeout  = 60 * time.Second
+	readyInterval = 200 * time.Millisecond
+)
+
 // masterKeySuffix 拼在数据目录名之后，形成主密钥文件的名字。
 //
 // ⚠️ 密钥文件**不能**放在数据目录里面：那个目录是 Meilisearch 自己的数据库目录
@@ -71,7 +122,7 @@ func MasterKeyPath(dataDir string) string {
 func resolveMasterKey(dataDir string) (string, error) {
 	path := masterKeyPath(dataDir)
 
-	if data, err := os.ReadFile(path); err == nil {
+	if data, err := readFile(path); err == nil {
 		if key := strings.TrimSpace(string(data)); len(key) >= minMasterKeyLength {
 			logging.Debugf("[search] reusing the meilisearch master key stored in %s", path)
 			return key, nil
@@ -81,19 +132,19 @@ func resolveMasterKey(dataDir string) (string, error) {
 	}
 
 	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := randRead(buf); err != nil {
 		return "", fmt.Errorf("generate a meilisearch master key: %w", err)
 	}
 	key := hex.EncodeToString(buf)
 
-	if err := os.WriteFile(path, []byte(key+"\n"), 0o600); err != nil {
+	if err := writeFile(path, []byte(key+"\n"), 0o600); err != nil {
 		// 落盘失败不阻断启动：密钥只在「本进程 ↔ 它自己拉起的子进程」之间使用，
 		// 一次性的随机值同样能工作，代价只是下次启动会再生成一个。
 		logging.Warnf("[search] persisting the meilisearch master key to %s failed: %v; "+
 			"continuing with a per-run key", path, err)
 		return key, nil
 	}
-	_ = os.Chmod(path, 0o600)
+	_ = chmodFile(path, 0o600)
 	logging.Debugf("[search] generated a new meilisearch master key and stored it in %s", path)
 	return key, nil
 }
@@ -138,15 +189,15 @@ type Manager struct {
 // 若要在任何平台上彻底钉死，把二进制放进程序目录的 bin/ 并确保该目录
 // 只允许管理员写入——那是候选列表里的第一项，会优先命中。
 func FindExecutable() (string, error) {
-	exe, err := os.Executable()
+	exe, err := osExecutable()
 	if err != nil {
 		exe = os.Args[0]
 	}
-	exeDir, err := filepath.Abs(filepath.Dir(exe))
+	exeDir, err := absPath(filepath.Dir(exe))
 	if err != nil {
 		return "", fmt.Errorf("resolve executable directory: %w", err)
 	}
-	cwd, err := os.Getwd()
+	cwd, err := osGetwd()
 	if err != nil {
 		return "", fmt.Errorf("resolve working directory: %w", err)
 	}
@@ -167,7 +218,7 @@ func FindExecutable() (string, error) {
 	}
 
 	for _, item := range candidates {
-		info, err := os.Stat(item.path)
+		info, err := statFile(item.path)
 		if err != nil || info.IsDir() {
 			continue
 		}
@@ -179,7 +230,7 @@ func FindExecutable() (string, error) {
 				"so it cannot be trusted as an executable; continuing the search", item.path, item.origin)
 			continue
 		}
-		abs, absErr := filepath.Abs(item.path)
+		abs, absErr := absPath(item.path)
 		if absErr != nil {
 			logExecutableChoice(item.path, item.origin)
 			return item.path, nil
@@ -201,7 +252,16 @@ func FindExecutable() (string, error) {
 // 「程序目录只允许管理员写入」这条部署约束，logExecutableChoice 会在每次
 // 启动时把实际采用的路径打出来，便于发现被替换。
 func candidateIsSafelyOwned(path string, info os.FileInfo) bool {
-	if runtime.GOOS == "windows" {
+	return candidateIsSafelyOwnedFor(runtime.GOOS, info)
+}
+
+// candidateIsSafelyOwnedFor 是候选检查的平台参数化版本。
+//
+// Windows 没有 POSIX 权限位可比，只能放行；把它拆成参数之后，两条分支在
+// 任何宿主上都能被验证，而不会因为「开发机是 Linux」而让 Windows 的放行
+// 逻辑永远没有被执行过。
+func candidateIsSafelyOwnedFor(goos string, info os.FileInfo) bool {
+	if goos == "windows" {
 		return true
 	}
 	return info.Mode().Perm()&0o022 == 0
@@ -225,32 +285,50 @@ func logExecutableChoice(path, origin string) {
 // binaryNames 列出各平台可能出现的二进制文件名，含 x86_64 / aarch64 等别名，
 // 以兼容官方 release 压缩包里带平台后缀的命名。去重后按优先级返回。
 func binaryNames() []string {
+	return binaryNamesFor(runtime.GOOS, runtime.GOARCH)
+}
+
+// binaryNamesFor 是 binaryNames 的平台参数化版本。
+//
+// 参数化不是为了「更通用」，而是为了让 Windows / macOS 的别名分支在任何
+// 宿主机上都能被验证：那些分支只由 runtime.GOOS / GOARCH 决定，在 Linux 上
+// 永远走不到，而「给 macOS arm64 补别名」这类漏项恰恰是实机踩过的。
+// appendUnique 把名字追加到列表里，跳过空串与重复项。
+//
+// 单独拆成函数而不是留在闭包里：去重分支是闭包里唯一无法用真实调用触发的
+// 逻辑（各平台的名字表里没有重复项），留在闭包里它就只能被「反正不会发生」
+// 交代过去。
+func appendUnique(names []string, seen map[string]struct{}, name string) []string {
+	if name == "" {
+		return names
+	}
+	if _, ok := seen[name]; ok {
+		return names
+	}
+	seen[name] = struct{}{}
+	return append(names, name)
+}
+
+func binaryNamesFor(goos, goarch string) []string {
 	seen := make(map[string]struct{})
 	var names []string
 	add := func(name string) {
-		if name == "" {
-			return
-		}
-		if _, ok := seen[name]; ok {
-			return
-		}
-		seen[name] = struct{}{}
-		names = append(names, name)
+		names = appendUnique(names, seen, name)
 	}
 
 	add("meilisearch")
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		add("meilisearch.exe")
-		add("meilisearch-" + runtime.GOOS + "-" + runtime.GOARCH + ".exe")
-		if runtime.GOARCH == "amd64" {
+		add("meilisearch-" + goos + "-" + goarch + ".exe")
+		if goarch == "amd64" {
 			add("meilisearch-windows-x86_64.exe")
 		}
 	} else {
-		add("meilisearch-" + runtime.GOOS + "-" + runtime.GOARCH)
-		if runtime.GOARCH == "amd64" {
-			add("meilisearch-" + runtime.GOOS + "-x86_64")
+		add("meilisearch-" + goos + "-" + goarch)
+		if goarch == "amd64" {
+			add("meilisearch-" + goos + "-x86_64")
 		}
-		if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		if goos == "darwin" && goarch == "arm64" {
 			add("meilisearch-macos-aarch64")
 		}
 	}
@@ -274,13 +352,13 @@ func binaryNames() []string {
 // 落点写不进去（例如二进制装在 /usr/local/bin 而 <exe目录>/bin 不可写）是
 // **逐个跳过并继续**的：这是预期内的正常降级，最终通常落到工作目录下的 bin/。
 func EnsureBinary() (string, error) {
-	path, err := FindExecutable()
+	path, err := findExecutableFn()
 	if err == nil {
 		logging.Debugf("[search] meilisearch executable found: %s", path)
 		return path, nil
 	}
 
-	release, asset, source, err := latestAsset()
+	release, asset, source, err := latestAssetFn()
 	if err != nil {
 		return "", fmt.Errorf("resolve the meilisearch release to download: %w", err)
 	}
@@ -290,12 +368,12 @@ func EnsureBinary() (string, error) {
 	logging.Infof("[search] meilisearch binary not found locally; downloading %s from release %s",
 		asset.Name, release.TagName)
 
-	exe, exeErr := os.Executable()
+	exe, exeErr := osExecutable()
 	if exeErr != nil {
 		exe = os.Args[0]
 	}
-	exeDir, _ := filepath.Abs(filepath.Dir(exe))
-	cwd, _ := os.Getwd()
+	exeDir, _ := absPath(filepath.Dir(exe))
+	cwd, _ := osGetwd()
 
 	targets := make([]string, 0, len(binaryNames())*3)
 	for _, dir := range []string{filepath.Join(exeDir, "bin"), filepath.Join(cwd, "bin"), cwd} {
@@ -305,15 +383,12 @@ func EnsureBinary() (string, error) {
 	}
 	var lastErr error
 	for _, target := range targets {
-		if err := installRelease(target, release, asset, source); err != nil {
+		if err := installReleaseFn(target, release, asset, source); err != nil {
 			lastErr = err
 			logging.Warnf("[search] install meilisearch to %s failed: %v", target, err)
 			continue
 		}
 		return target, nil
-	}
-	if lastErr == nil {
-		lastErr = err
 	}
 	return "", fmt.Errorf("download meilisearch: %w", lastErr)
 }
@@ -330,7 +405,7 @@ func EnsureBinary() (string, error) {
 //
 // waitReady 失败时会主动 Kill 子进程，不会留下孤儿进程。
 func Start(ctx context.Context, dataDir string) (*Manager, error) {
-	binary, err := EnsureBinary()
+	binary, err := ensureBinaryFn()
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +415,7 @@ func Start(ctx context.Context, dataDir string) (*Manager, error) {
 		dataDir = DefaultDataDir
 	}
 	if !filepath.IsAbs(dataDir) {
-		cwd, cwdErr := os.Getwd()
+		cwd, cwdErr := osGetwd()
 		if cwdErr != nil {
 			return nil, fmt.Errorf("resolve data dir: %w", cwdErr)
 		}
@@ -351,10 +426,10 @@ func Start(ctx context.Context, dataDir string) (*Manager, error) {
 	//
 	// 显式 Chmod 是必需的，因为 MkdirAll 对**已存在**的目录不做任何改动——
 	// 老部署里那个 0755 的目录不会被这一步自动收紧。
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+	if err := mkdirAll(dataDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create meilisearch data directory: %w", err)
 	}
-	if err := os.Chmod(dataDir, 0o700); err != nil {
+	if err := chmodFile(dataDir, 0o700); err != nil {
 		logging.Warnf("[search] tightening permissions on the meilisearch data directory %s failed: %v", dataDir, err)
 	}
 
@@ -370,7 +445,7 @@ func Start(ctx context.Context, dataDir string) (*Manager, error) {
 		return nil, err
 	}
 
-	cmd := exec.Command(binary)
+	cmd := execCommand(binary)
 	cmd.Env = cleanMeiliEnv()
 	cmd.Env = append(cmd.Env,
 		"MEILI_HTTP_ADDR=127.0.0.1:"+strconv.Itoa(port),
@@ -395,7 +470,7 @@ func Start(ctx context.Context, dataDir string) (*Manager, error) {
 	// 子进程的进程组与「父进程死亡信号」在这里配置（仅 Linux 生效，见
 	// configureChildProcess）：父进程被 SIGKILL 时，孤儿 Meilisearch 会一直占着
 	// 数据目录的 LMDB 锁，导致博客重启后再也起不来——这类故障现场很难定位。
-	configureChildProcess(cmd)
+	configureChild(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start meilisearch: %w", err)
@@ -450,7 +525,7 @@ func (m *Manager) Stop() {
 		}
 
 		logging.Debugf("[search] stopping meilisearch pid=%d", m.cmd.Process.Pid)
-		if err := requestChildShutdown(m.cmd.Process); err != nil {
+		if err := requestShutdown(m.cmd.Process); err != nil {
 			// 进程可能已经自己退出了，这不是错误。
 			logging.Debugf("[search] graceful shutdown request returned: %v", err)
 		}
@@ -460,12 +535,12 @@ func (m *Manager) Stop() {
 			case <-m.done:
 				logging.Debugf("[search] meilisearch exited after the graceful shutdown request")
 				return
-			case <-time.After(childShutdownGrace):
-				logging.Warnf("[search] meilisearch did not exit within %s; killing it", childShutdownGrace)
+			case <-time.After(shutdownGrace):
+				logging.Warnf("[search] meilisearch did not exit within %s; killing it", shutdownGrace)
 			}
 		}
 
-		_ = killChildProcessGroup(m.cmd.Process)
+		_ = killGroup(m.cmd.Process)
 	})
 }
 
@@ -482,7 +557,7 @@ func (m *Manager) monitor() {
 		err = errors.New("process exited")
 	}
 	if !m.stopping.Load() {
-		logging.Fatalf("[search] meilisearch exited unexpectedly: %v", err)
+		fatalLog("[search] meilisearch exited unexpectedly: %v", err)
 	}
 }
 
@@ -493,12 +568,12 @@ func (m *Manager) monitor() {
 // 单次探测只给 2 秒超时且失败后继续下一轮：启动初期连不上是正常现象，
 // 不该因为第一次探测失败就放弃。
 func (m *Manager) waitReady(ctx context.Context, waitCh <-chan error) error {
-	timeout := 60 * time.Second
+	timeout := readyTimeout
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 
-	client := &http.Client{Timeout: 2 * time.Second}
-	ticker := time.NewTicker(200 * time.Millisecond)
+	client := healthClient()
+	ticker := time.NewTicker(readyInterval)
 	defer ticker.Stop()
 
 	for {
@@ -531,7 +606,7 @@ func (m *Manager) waitReady(ctx context.Context, waitCh <-chan error) error {
 // 被别的进程抢走。概率很低，但要知道此时的失败表现是 waitReady 超时，
 // 而不是「端口被占用」这种一眼能看懂的报错。
 func freePort() (int, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := listenTCP("tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
 	}
@@ -554,6 +629,8 @@ func cleanMeiliEnv() []string {
 	return childenv.Sanitized("MEILI_")
 }
 
+var logLine = logging.Infof
+
 func pipeLines(reader io.Reader, prefix string) {
 	// 必须逐行读。若按固定大小分块直接把子进程输出打进日志，其中内嵌的换行
 	// 会造出既无前缀也无时间戳的「裸行」，与真正的日志条目无法区分——
@@ -565,7 +642,7 @@ func pipeLines(reader io.Reader, prefix string) {
 	for scanner.Scan() {
 		line := sanitizeLogLine(scanner.Text())
 		if line != "" {
-			logging.Infof("%s%s", prefix, line)
+			logLine("%s%s", prefix, line)
 		}
 	}
 	if err := scanner.Err(); err != nil {

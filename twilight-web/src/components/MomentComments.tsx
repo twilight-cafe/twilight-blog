@@ -15,6 +15,7 @@
 
 import { useState } from 'react'
 import Comments from './Comments'
+import { useI18n } from '../lib/i18n'
 
 interface MomentCommentsProps {
   /** 被评论微语的 id（targetType 恒为 moment，无需调用方重复传）。 */
@@ -22,6 +23,7 @@ interface MomentCommentsProps {
 }
 
 export default function MomentComments({ momentId }: MomentCommentsProps) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
 
   return (
@@ -33,7 +35,7 @@ export default function MomentComments({ momentId }: MomentCommentsProps) {
           aria-expanded={open}
           onClick={() => setOpen((value) => !value)}
         >
-          {open ? '收起评论' : '评论'}
+          {open ? t('收起评论', 'Hide comments') : t('评论', 'Comments')}
         </button>
       </div>
       {open ? <Comments targetType="moment" targetId={momentId} enabled /> : null}

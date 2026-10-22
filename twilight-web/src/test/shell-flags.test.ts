@@ -253,7 +253,7 @@ describe('外壳开关通道：CSP 不得为内联脚本开口子', () => {
  * article-cover.test.tsx 的「SDK 下发的站点设置请求体形状」覆盖）。
  * 这里补的是**静态**那一面——它不依赖任何运行时条件，改坏了立刻红。
  */
-describe('站点设置下发完整性：四个字段一个都不能少', () => {
+describe('站点设置下发完整性：每个字段一个都不能少', () => {
   const source = readFileSync(SDK_SITE_TS, 'utf8')
   // 剥注释之后再抽 json 块。不剥的话，上面那段解释「为什么不能写
   // `json: { ...input }`」的注释会先被正则命中，于是断言拿到的是注释文本
@@ -265,12 +265,12 @@ describe('站点设置下发完整性：四个字段一个都不能少', () => {
     return /path:\s*['"]\/api\/admin\/site['"][\s\S]*?json:\s*\{([\s\S]*?)\}/.exec(code)?.[1] ?? ''
   }
 
-  it('updateSite 的请求体逐个列出四个字段', () => {
+  it('updateSite 的请求体逐个列出全部字段', () => {
     const body = jsonBlock()
     expect(body, '找不到 /api/admin/site 的 json 请求体').not.toBe('')
 
-    // 四个都必须显式出现。这就是事故现场：少了两个，而没有任何一层会报错。
-    for (const key of ['description', 'code_block_max_lines', 'home_page_size', 'border_radius']) {
+    // 每个都必须显式出现。这就是事故现场：少了两个，而没有任何一层会报错。
+    for (const key of ['description', 'code_block_max_lines', 'home_page_size', 'border_radius', 'post_banner_height', 'moments_enabled', 'comment_notify_to']) {
       expect(body, `请求体缺少 ${key}`).toContain(key)
     }
   })
@@ -296,8 +296,8 @@ describe('站点设置下发完整性：四个字段一个都不能少', () => {
     //    抽到的块会残留 `//` 或 `/*`；这两样在真实的 json 字面量里不存在。
     expect(body).not.toContain('//')
     expect(body).not.toContain('/*')
-    // ③ 行数与形态：四个键各占一行，整体是「多行对象」而不是被压平的片段。
-    expect(body.trim().split('\n').length).toBe(4)
+    // ③ 行数与形态：每个键各占一行，整体是「多行对象」而不是被压平的片段。
+    expect(body.trim().split('\n').length).toBe(7)
   })
 
   it('SDK 声明的字段与请求体里下发的字段对得上', () => {

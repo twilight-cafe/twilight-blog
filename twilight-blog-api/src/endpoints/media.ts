@@ -7,16 +7,23 @@ import type {
   MediaSource,
   Paginated,
   PaginationOptions,
+  RenameMediaInput,
 } from '../types';
 import { resolvePagination } from './pagination';
 
-// 媒体接口。上传/列表/删除走 /api/admin（需登录）；getMedia 走公开 /api/media，直接返回
-// 原始字节（不是 JSON），用于下载或预览。上传用 multipart/form-data，字段名固定为 'files'。
+// 媒体接口。上传/列表/删除/改名走 /api/admin（需登录）；getMedia 走公开 /api/media，
+// 直接返回原始字节（不是 JSON），用于下载或预览。上传用 multipart/form-data，
+// 字段名固定为 'files'。
 export interface MediaApi {
   uploadMedia(files: MediaInput | MediaInput[]): Promise<MediaItem[]>;
   getMedia(id: number): Promise<MediaContent>;
   listMedia(options?: PaginationOptions): Promise<Paginated<MediaItem>>;
   deleteMedia(id: number): Promise<void>;
+  /**
+   * 改媒体的展示名（仅站长）。只影响界面/alt/灯箱里显示的名字，磁盘文件名与
+   * `/api/media/{id}` 地址都不变，所有引用（头图、微语配图、头像）自动继续有效。
+   */
+  renameMedia(id: number, input: RenameMediaInput): Promise<MediaItem>;
 }
 
 /**
@@ -198,6 +205,17 @@ export function createMediaApi(http: HttpClient): MediaApi {
       return http.request<void>({
         method: 'DELETE',
         path: `/api/admin/media/${id}`,
+      });
+    },
+
+    renameMedia(id: number, input: RenameMediaInput) {
+      return http.request<MediaItem>({
+        // PATCH 而不是 PUT：只改展示名一个字段，媒体本体（文件、类型、大小）不动。
+        method: 'PATCH',
+        path: `/api/admin/media/${id}`,
+        // 逐个列出字段，不写成 `{ ...input }`：契约里「调用方没提这件事」与
+        // 「调用方明确要求这个值」是两件事，多透一个键就等于替调用方做了决定。
+        json: { original_name: input.original_name },
       });
     },
   };

@@ -26,6 +26,7 @@ import type { SearchApi } from './endpoints/search';
 import { createSiteApi } from './endpoints/site';
 import type { SiteApi } from './endpoints/site';
 import type {
+  AdminSiteSettingsResponse,
   Article,
   BatchIdsInput,
   ChangePasswordInput,
@@ -51,6 +52,7 @@ import type {
   Paginated,
   PaginationOptions,
   RegisterInput,
+  RenameMediaInput,
   RenameTagInput,
   ResetPasswordInput,
   SearchOptions,
@@ -183,6 +185,11 @@ export class BlogClient {
 
   updateSite(input: SiteSettingsInput): Promise<SiteSettingsResponse> {
     return this.siteApi.updateSite(input);
+  }
+
+  // 管理端站点设置：比公开快照多一个评论通知收件地址（仅站长可读）。
+  getAdminSite(): Promise<AdminSiteSettingsResponse> {
+    return this.siteApi.getAdminSite();
   }
 
   // 文章（列表/详情公开；增删改与回收站在 /api/admin 下，需登录）
@@ -400,7 +407,7 @@ export class BlogClient {
     return this.emailApi.getEmail(id);
   }
 
-  // 媒体（列表/下载公开；上传/删除在 /api/admin 下）
+  // 媒体（列表/下载公开；上传/改展示名/删除在 /api/admin 下）
   uploadMedia(files: MediaInput | MediaInput[]): Promise<MediaItem[]> {
     return this.mediaApi.uploadMedia(files);
   }
@@ -411,6 +418,10 @@ export class BlogClient {
 
   listMedia(options?: PaginationOptions): Promise<Paginated<MediaItem>> {
     return this.mediaApi.listMedia(options);
+  }
+
+  renameMedia(id: number, input: RenameMediaInput): Promise<MediaItem> {
+    return this.mediaApi.renameMedia(id, input);
   }
 
   deleteMedia(id: number): Promise<void> {

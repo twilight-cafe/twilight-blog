@@ -35,19 +35,16 @@
 
 :root {
   --page-width: 1360px;
-  /* 顶栏与下方内容之间的呼吸间距。
-     文章头图（.post-cover）与公开侧栏（.public-sidebar）共用这一个值：
-     两者在视觉上是同一行上的两个起点，间距不一致就会看起来一边贴着顶栏。
-     它曾被写成两处各自硬编码的 26px / 0，于是侧栏紧贴顶栏下边框、
-     头图却离着 26px——同一个屏幕上「间距」有两个答案。 */
   --top-gap: 26px;
-  /* 站点统一圆角的**静态兜底**，必须与 viewmodel.DefaultBorderRadius 和
-     flags.ts 的 FALLBACK_BORDER_RADIUS 三处一致（当前都是 4px）。
-     真实值由 main.tsx 开头的 applyBorderRadius() 从 <html data-border-radius>
-     写进内联 style，优先级高于这里；这一条只服务于「JS 未执行 / 执行失败」
-     时的首帧——没有它的话，内联样式缺失会让 --radius 直接落回
-     12-inkui-root.css 的 4px，虽然数值恰好相同，但那是巧合而非契约。 */
   --radius: 4px;
+  --ease-ios: cubic-bezier(.32, .72, 0, 1);
+  --ease-out-ios: cubic-bezier(.22, 1, .36, 1);
+  --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
+  --ease-in-out-ios: cubic-bezier(.65, 0, .35, 1);
+  --dur-tap: .14s;
+  --dur-fast: .2s;
+  --dur: .32s;
+  --dur-slow: .52s;
 }
 
 * {
@@ -56,16 +53,35 @@
 
 html {
   scroll-behavior: smooth;
+  /* 预留滚动条槽位：页面从「不滚动」变成「可滚动」（或反过来）时，经典滚动条
+     会占去 10~15px 宽，居中的内容整体横移几个像素——搜索页回车、结果把页面
+     撑出滚动条的那一刻就能看到这 5px 的横向跳动。这类变化**不会**派发 resize
+     （window.innerWidth 没变，只是布局视口变窄），也没有 scroll 事件，所以
+     任何按视口坐标定位的浮层都会跟着错位。
+     ink-design 0.1.4 已让自绘光标用 ResizeObserver 重测（见
+     INKDESIGN-0.1.3-FINDINGS.md 第 7 条），错位不会留住了；这里再让槽位常驻，
+     是为了连那一下跳动本身也去掉：内容宽度恒定，长短页面互跳时也不会横移。
+     Safari 18.2 之前不认这条，但 macOS 默认是覆盖式滚动条、本来就没有这段
+     位移，旧 Safari 只是保持现状。 */
+  scrollbar-gutter: stable;
 }
 
 body {
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
-  transition: background 0.45s var(--ease), color 0.45s var(--ease);
+  transition: background .45s var(--ease), color .45s var(--ease);
 }
 
 button {
   font-family: inherit;
+}
+
+button {
+  transition: scale var(--dur-tap) var(--ease-ios);
+}
+
+button:not(:disabled):active {
+  scale: .96;
 }
 
 img,
@@ -86,7 +102,7 @@ svg {
 /* Public layout with sidebar */
 .public-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0,1fr) 300px;
   gap: 40px;
   max-width: var(--page-width);
   margin: 0 auto;
@@ -98,19 +114,31 @@ svg {
   min-width: 0;
 }
 
-.public-main > .wrap {
+.public-main>.wrap {
   padding-left: 0;
   padding-right: 0;
 }
 
+/* 侧栏是「粘住的一列」，高度只能用视口给的那点空间。这里按弹性列分配：
+   作者卡按内容高度固定，目录盒吃掉剩下的高度、在内部滚动。侧栏本身因此
+   不会因为多出一个目录盒就变成滚动容器——不出现滑动条，也就不会在目录
+   入场的中途闪一下再消失。overflow-x 仍然 hidden：目录条目的 hover 位移
+   不该在横轴上留下可滚动的痕迹。窗口矮到连作者卡都放不下时滚动能力还在
+   （overflow-y: auto 的兜底），但滑动条一律不画。 */
 .public-sidebar {
   position: sticky;
   top: 24px;
-  /* 与文章头图（.post-cover）共用同一个顶栏间距：侧边栏不能贴着顶栏，
-     距离必须等于头图与顶栏的间距——两处都用变量，改就一起改。 */
   margin-top: var(--top-gap);
+  display: flex;
+  flex-direction: column;
   max-height: calc(100vh - 48px);
-  overflow-y: auto;
+  overflow: hidden auto;
+  scrollbar-width: none;
+}
+
+.public-sidebar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .public-sidebar .box {
@@ -139,7 +167,7 @@ svg {
 
 .public-sidebar .homenav-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3,1fr);
   gap: 6px 10px;
   padding: 14px 0;
   border-top: 1px dashed var(--line);
@@ -153,7 +181,7 @@ svg {
   font-weight: 500;
   color: var(--mut);
   padding: 5px 0;
-  transition: color 0.2s;
+  transition: color .2s;
 }
 
 .public-sidebar .homenav-row a:hover,
@@ -170,16 +198,25 @@ svg {
 
 .public-sidebar .tools .mono {
   font-size: 10px;
-  letter-spacing: 0.16em;
+  letter-spacing: .16em;
 }
 
-.public-sidebar .box + .box {
+.public-sidebar .box+.box {
   margin-top: 16px;
 }
 
+/* 目录盒是侧栏里唯一允许被压缩的块：高度由作者卡之外的剩余空间决定，
+   列表在这块内部滚动（见 .public-sidebar .toc-list）。 */
 .toc-box {
-  max-height: calc(100vh - 48px);
-  overflow: auto;
+  min-height: 0;
+}
+
+.public-sidebar .toc-box {
+  display: flex;
+  flex-direction: column;
+  /* 只缩不长：目录短时盒子贴着内容结束，不被拉满整栏；目录长时才让出多余
+     高度（列表在盒子里滚）。 */
+  flex: 0 1 auto;
 }
 
 .toc-head {
@@ -206,6 +243,22 @@ svg {
   gap: 2px;
   max-height: 60vh;
   overflow: auto;
+  overflow-x: hidden;
+}
+
+/* 侧栏里的目录列表用「剩下的高度」而不是 60vh：60vh 加上作者卡会比侧栏的
+   max-height 高一截，多出来的部分只能靠侧栏自己滚——那正是滑动条出现的来路。
+   内部滚动保留（滚轮可以滚），滑动条不画。 */
+.public-sidebar .toc-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  scrollbar-width: none;
+}
+
+.public-sidebar .toc-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .toc-list a {
@@ -217,8 +270,8 @@ svg {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  background-image: none !important;
-  transition: color 0.2s var(--ease), border-color 0.2s var(--ease), background 0.2s var(--ease);
+  background-image: none!important;
+  transition: color .2s var(--ease), border-color .2s var(--ease), background .2s var(--ease), translate var(--dur-fast) var(--ease-ios);
 }
 
 .toc-list a:hover {
@@ -226,6 +279,7 @@ svg {
   border-left-color: var(--fg);
   background: var(--softer);
   border-radius: 0 var(--radius) var(--radius) 0;
+  translate: 2px 0;
 }
 
 /* Page width classes inside the public main column */
@@ -245,19 +299,23 @@ svg {
   .public-layout {
     grid-template-columns: 1fr;
   }
-
   .public-sidebar {
     position: static;
+    display: block;
     max-height: none;
     overflow: visible;
   }
-
   .public-sidebar .box {
     margin-bottom: 0;
   }
+  /* 单列时侧栏不再被视口高度约束：目录回到「最多 60vh、内部滚动」。 */
+  .public-sidebar .toc-box {
+    display: block;
+  }
+  .public-sidebar .toc-list {
+    max-height: 60vh;
+  }
 }
-
-
 
 .sp {
   flex: 1;
@@ -273,7 +331,7 @@ svg {
 .kicker {
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 0.22em;
+  letter-spacing: .22em;
   text-transform: uppercase;
   color: var(--faint);
 }
@@ -302,12 +360,15 @@ svg {
   stroke: none;
 }
 
-/* Reveal / motion */
+/* Reveal / motion：入场动画由 InkUI 的 .rv 提供（关键帧 rise 被本站重定义过），
+   这里只把时间轴接到站点的动效令牌上。注意 fill: both 会把 transform 锁在
+   translateY(0)，所以卡片的悬停浮起一律用独立的 translate 属性。 */
 .rv {
   opacity: 0;
-  transform: translateY(16px);
-  transition: opacity 0.7s var(--ease), transform 0.7s var(--ease);
-  transition-delay: var(--d, 0s);
+  transform: translateY(14px);
+  animation-duration: var(--dur-slow);
+  animation-timing-function: var(--ease-out-ios);
+  animation-delay: var(--d, 0s);
 }
 
 .rv.in {
@@ -342,7 +403,7 @@ svg {
 .phero h1 {
   font-family: var(--serif);
   font-weight: 900;
-  font-size: clamp(30px, 4vw, 44px);
+  font-size: clamp(30px,4vw,44px);
   display: flex;
   align-items: baseline;
   gap: 16px;
@@ -353,7 +414,7 @@ svg {
   font-family: var(--mono);
   font-size: 12px;
   font-weight: 400;
-  letter-spacing: 0.2em;
+  letter-spacing: .2em;
   color: var(--faint);
 }
 
@@ -363,10 +424,13 @@ svg {
   font-size: 14.5px;
 }
 
-/* ============ Public header ============ */
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.25; }
+  0%,to {
+    opacity: 1;
+  }
+  50% {
+    opacity: .25;
+  }
 }
 
 .mast.big {
@@ -376,31 +440,34 @@ svg {
 .mast.big h1 {
   font-family: var(--serif);
   font-weight: 900;
-  font-size: clamp(52px, 8vw, 96px);
+  font-size: clamp(52px,8vw,96px);
   line-height: 1;
   display: flex;
   align-items: flex-end;
-  gap: 0.06em;
+  gap: .06em;
 }
 
 .mast.big h1 span {
   display: inline-block;
   opacity: 0;
   transform: translateY(26px);
-  animation: rise 0.8s var(--ease) forwards;
+  animation: rise .8s var(--ease-spring) forwards;
   animation-delay: var(--d, 0s);
 }
 
 @keyframes rise {
-  to { opacity: 1; transform: none; }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .mast.big h1 .ink {
-  width: 0.15em;
-  height: 0.15em;
+  width: .15em;
+  height: .15em;
   border-radius: 50%;
   background: var(--fg);
-  margin-bottom: 0.09em;
+  margin-bottom: .09em;
   animation: pulse 3s infinite 1.2s;
 }
 
@@ -416,8 +483,80 @@ svg {
 .mast .latin {
   font-family: var(--mono);
   font-size: 12px;
-  letter-spacing: 0.34em;
+  letter-spacing: .34em;
   color: var(--mut);
+}
+
+/* 语言切换器：替代内页页头原来的拉丁文副标题。做成两枚紧挨的小按钮，
+   选中态用实底，未选中用弱化的文字色——一眼能看出当前是哪种语言。 */
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.lang-switch button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--mut);
+  padding: 5px 9px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-ios), color var(--dur-fast) var(--ease-ios);
+}
+
+.lang-switch button + button {
+  border-left: 1px solid var(--line);
+}
+
+.lang-switch button:hover {
+  color: var(--fg);
+}
+
+.lang-switch button.on {
+  background: var(--fg);
+  color: var(--bg);
+}
+
+/* 后台顶栏与登录页里的切换器不需要额外的垂直偏移；只给一点左间距。 */
+.topbar .lang-switch {
+  margin-left: 10px;
+}
+
+/* 编辑器语言标签页：与站点语言切换器同一套「选中实底」语言，但更大、更像
+   文档标签，避免被误认为又一次全站语言切换。 */
+.ed-lang-tabs {
+  display: inline-flex;
+  gap: 4px;
+  margin: 10px 0 4px;
+}
+
+.ed-lang-tabs button {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--mut);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.ed-lang-tabs button.on {
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--bg);
+}
+
+.auth-lang {
+  position: absolute;
+  top: 22px;
+  right: 26px;
 }
 
 .mast .slogan {
@@ -427,7 +566,7 @@ svg {
 }
 
 .dbl {
-  border-top: 3px double color-mix(in srgb, var(--fg) 45%, var(--bg));
+  border-top: 3px double color-mix(in srgb,var(--fg) 45%,var(--bg));
   margin-top: 22px;
 }
 
@@ -435,7 +574,10 @@ svg {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  padding: 28px 28px 10px;
+  /* 内页页头是「读文章」的常驻顶栏，不是首页的封面：原来 28px 上内边距 + 32px
+     品牌字让它在每次进入文章时都占掉一整块。压到 16px/26px 后，正文起点上移
+     约 30px，品牌与导航仍然清楚可辨。 */
+  padding: 16px 28px 6px;
   max-width: var(--page-width);
   margin: 0 auto;
   flex-wrap: wrap;
@@ -445,7 +587,7 @@ svg {
 .brand {
   font-family: var(--serif);
   font-weight: 900;
-  font-size: 32px;
+  font-size: 26px;
   display: inline-flex;
   align-items: center;
   gap: 9px;
@@ -465,7 +607,7 @@ svg {
 
 .nav-slim .navrow {
   border-bottom: 0;
-  padding-bottom: 10px;
+  padding: 8px 0;
 }
 
 .navrow {
@@ -485,6 +627,10 @@ svg {
 .navrow a.nl:hover,
 .navrow a.nl.on {
   color: var(--fg);
+}
+
+.navrow a.nl.on {
+  background-size: 100% 1.5px;
 }
 
 kbd {
@@ -515,7 +661,7 @@ footer.site .cols {
 footer.site h6 {
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: 0.2em;
+  letter-spacing: .2em;
   color: var(--faint);
   text-transform: uppercase;
   margin-bottom: 14px;
@@ -579,13 +725,21 @@ footer.site .bar {
   border-radius: var(--radius);
   overflow: hidden;
   cursor: pointer;
-  transition: all 0.25s var(--ease);
+  transition: translate var(--dur) var(--ease-ios), scale var(--dur-tap) var(--ease-ios), border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease-ios);
+}
+
+.acard:active {
+  scale: .995;
 }
 
 .acard:hover {
-  transform: translateY(-4px);
-  border-color: color-mix(in srgb, var(--fg) 38%, var(--bg));
-  box-shadow: 0 18px 44px color-mix(in srgb, var(--fg) 13%, transparent);
+  translate: 0 -4px;
+  border-color: color-mix(in srgb,var(--fg) 38%,var(--bg));
+  box-shadow: 0 18px 44px color-mix(in srgb,var(--fg) 13%,transparent);
+}
+
+.acard:hover .cover img {
+  transform: scale(1.04);
 }
 
 .acard .body {
@@ -598,7 +752,7 @@ footer.site .bar {
   gap: 10px;
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: 0.14em;
+  letter-spacing: .14em;
   color: var(--faint);
 }
 
@@ -652,7 +806,7 @@ footer.site .bar {
    与这里没有内边距——圆角由卡片的 radius 裁出来。 */
 .acard.has-cover {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 220px minmax(0,1fr);
 }
 
 .acard .cover {
@@ -670,17 +824,20 @@ footer.site .bar {
    .cover 上给它提供定位基准。 */
 .acard .cover img {
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: transform var(--dur-slow) var(--ease-ios);
 }
 
 @media (max-width: 640px) {
   .acard.has-cover {
     grid-template-columns: 1fr;
   }
-
   .acard .cover {
     height: 170px;
     min-height: 0;
@@ -701,7 +858,7 @@ footer.site .bar {
 .tl-y small {
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 0.18em;
+  letter-spacing: .18em;
   color: var(--faint);
 }
 
@@ -749,7 +906,7 @@ footer.site .bar {
 .sres .where {
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: 0.12em;
+  letter-spacing: .12em;
   color: var(--faint);
 }
 
@@ -780,11 +937,25 @@ footer.site .bar {
   background: var(--bg);
   padding: 18px 20px;
   margin-bottom: 14px;
-  transition: all 0.2s var(--ease);
+  transition: translate var(--dur-fast) var(--ease-ios), border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease-ios);
 }
 
 .mom:hover {
-  border-color: color-mix(in srgb, var(--fg) 36%, var(--bg));
+  translate: 0 -2px;
+  border-color: color-mix(in srgb,var(--fg) 36%,var(--bg));
+  box-shadow: 0 10px 28px color-mix(in srgb,var(--fg) 7%,transparent);
+}
+
+.mom-meta {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+
+.mom-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
 }
 
 /* 微语卡页脚：只放卡片级动作（目前是「评论」开关），一律靠右下角。
@@ -811,7 +982,7 @@ footer.site .bar {
   font-size: 11px;
   line-height: 1;
   cursor: pointer;
-  transition: all 0.15s var(--ease);
+  transition: all .15s var(--ease);
 }
 
 .mom-cmt-btn:hover {
@@ -823,6 +994,27 @@ footer.site .bar {
 /* Article / page */
 .phead {
   padding: 36px 0 16px;
+}
+
+/* AI 生成提示：只出现在文章页，位于头图与标题之间。用低饱和的暖色底 +
+   虚线边框，读起来像「编者按」而不是错误警告——它是信息，不是故障。 */
+.ai-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 18px 0 0;
+  padding: 10px 12px;
+  border: 1px dashed color-mix(in srgb, var(--fg) 30%, transparent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--fg) 4%, var(--bg));
+  color: var(--mut);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ai-notice svg {
+  flex: none;
+  color: var(--fg);
 }
 
 /* 文章详情页头图：位于顶栏之下、标签之上，宽度与正文栏相同（= public-main
@@ -841,14 +1033,16 @@ footer.site .bar {
 .post-cover img {
   width: 100%;
   height: auto;
-  max-height: 400px;
+  /* 高度由站长在「站点设置」里配，经外壳属性写进 --post-banner-height。
+     变量缺失时回退到 400px（升级前的写死值）。 */
+  max-height: var(--post-banner-height, 400px);
   object-fit: cover;
 }
 
 .phead h1 {
   font-family: var(--serif);
   font-weight: 900;
-  font-size: clamp(32px, 5vw, 48px);
+  font-size: clamp(32px,5vw,48px);
   line-height: 1.25;
   margin: 12px 0 10px;
 }
@@ -873,11 +1067,11 @@ footer.site .bar {
   color: var(--fg);
 }
 
-.plain-body > :first-child {
+.plain-body>:first-child {
   margin-top: 0;
 }
 
-.plain-body > :last-child {
+.plain-body>:last-child {
   margin-bottom: 0;
 }
 
@@ -889,16 +1083,32 @@ footer.site .bar {
 .plain-body h6 {
   font-family: var(--serif);
   line-height: 1.3;
-  margin: 1.8em 0 0.7em;
+  margin: 1.8em 0 .7em;
   font-weight: 800;
 }
 
-.plain-body h1 { font-size: 1.9em; }
-.plain-body h2 { font-size: 1.55em; border-bottom: 1px solid var(--line); padding-bottom: 0.25em; }
-.plain-body h3 { font-size: 1.28em; }
-.plain-body h4 { font-size: 1.1em; }
+.plain-body h1 {
+  font-size: 1.9em;
+}
+
+.plain-body h2 {
+  font-size: 1.55em;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: .25em;
+}
+
+.plain-body h3 {
+  font-size: 1.28em;
+}
+
+.plain-body h4 {
+  font-size: 1.1em;
+}
+
 .plain-body h5,
-.plain-body h6 { font-size: 1em; }
+.plain-body h6 {
+  font-size: 1em;
+}
 
 .plain-body h1[id],
 .plain-body h2[id],
@@ -917,9 +1127,9 @@ footer.site .bar {
 .plain-body a {
   color: var(--fg);
   text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, var(--fg) 40%, transparent);
+  text-decoration-color: color-mix(in srgb,var(--fg) 40%,transparent);
   text-underline-offset: 3px;
-  transition: text-decoration-color 0.2s var(--ease);
+  transition: text-decoration-color .2s var(--ease);
 }
 
 .plain-body a:hover {
@@ -941,16 +1151,16 @@ footer.site .bar {
 }
 
 .plain-body li {
-  margin: 0.3em 0;
+  margin: .3em 0;
 }
 
-.plain-body li > ul,
-.plain-body li > ol {
-  margin: 0.2em 0;
+.plain-body li>ul,
+.plain-body li>ol {
+  margin: .2em 0;
 }
 
 .plain-body .contains-task-list {
-  padding-left: 0.4em;
+  padding-left: .4em;
 }
 
 .plain-body .task-list-item {
@@ -958,12 +1168,12 @@ footer.site .bar {
 }
 
 .plain-body .task-list-item input {
-  margin-right: 0.5em;
+  margin-right: .5em;
 }
 
 .plain-body blockquote {
   margin: 1.2em 0;
-  padding: 0.4em 1.1em;
+  padding: .4em 1.1em;
   border-left: 3px solid var(--fg);
   background: var(--softer);
   color: var(--mut);
@@ -971,7 +1181,7 @@ footer.site .bar {
 }
 
 .plain-body blockquote p {
-  margin: 0.4em 0;
+  margin: .4em 0;
 }
 
 .plain-body hr {
@@ -1000,7 +1210,7 @@ footer.site .bar {
 .plain-body th,
 .plain-body td {
   border: 1px solid var(--line);
-  padding: 0.45em 0.8em;
+  padding: .45em .8em;
   text-align: left;
 }
 
@@ -1010,16 +1220,16 @@ footer.site .bar {
 }
 
 .plain-body code {
-  font-family: 'JetBrains Mono', 'Noto Sans SC', monospace;
-  font-size: 0.9em;
+  font-family: JetBrains Mono, Noto Sans SC, monospace;
+  font-size: .9em;
   background: var(--softer);
   border: 1px solid var(--line);
   border-radius: 4px;
-  padding: 0.15em 0.4em;
+  padding: .15em .4em;
 }
 
 .plain-body pre {
-  font-family: 'JetBrains Mono', 'Noto Sans SC', monospace;
+  font-family: JetBrains Mono, Noto Sans SC, monospace;
   font-size: 13px;
   line-height: 1.8;
 }
@@ -1028,7 +1238,7 @@ footer.site .bar {
 .plain-body .code-block {
   position: relative;
   margin: 1.5em 0;
-  border: 1px solid color-mix(in srgb, var(--fg) 18%, var(--bg));
+  border: 1px solid color-mix(in srgb,var(--fg) 18%,var(--bg));
   border-radius: var(--radius);
   overflow: hidden;
   background: #0d1117;
@@ -1040,13 +1250,14 @@ footer.site .bar {
   top: 10px;
   left: 14px;
   z-index: 2;
-  font-family: 'JetBrains Mono', 'Noto Sans SC', monospace;
+  font-family: JetBrains Mono, Noto Sans SC, monospace;
   font-size: 10px;
-  letter-spacing: 0.12em;
+  letter-spacing: .12em;
   text-transform: uppercase;
   color: #8b949e;
-  opacity: 0.7;
+  opacity: .7;
   pointer-events: none;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -1055,20 +1266,20 @@ footer.site .bar {
   top: 8px;
   right: 10px;
   z-index: 2;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255,255,255,.14);
   border-radius: 5px;
-  background: rgba(22, 27, 34, 0.9);
+  background: #161b22e6;
   color: #e6edf3;
   font: inherit;
   font-size: 11px;
   line-height: 1;
-  letter-spacing: 0.02em;
+  letter-spacing: .02em;
   cursor: pointer;
   padding: 5px 9px;
   opacity: 0;
   pointer-events: none;
   transform: translateY(-2px);
-  transition: opacity 0.18s var(--ease), transform 0.18s var(--ease), background 0.18s var(--ease), border-color 0.18s var(--ease);
+  transition: opacity .18s var(--ease), transform .18s var(--ease), background .18s var(--ease), border-color .18s var(--ease);
 }
 
 .plain-body .code-block:hover .code-copy,
@@ -1079,32 +1290,24 @@ footer.site .bar {
 }
 
 .plain-body .code-copy:hover {
-  color: #ffffff;
-  background: rgba(22, 27, 34, 0.96);
-  border-color: rgba(255, 255, 255, 0.35);
+  color: #fff;
+  background: #161b22f5;
+  border-color: #ffffff59;
 }
 
 .plain-body .code-copy.copied {
   color: #7ee787;
-  border-color: rgba(126, 231, 135, 0.5);
+  border-color: #7ee78780;
 }
 
 .plain-body .code-block pre {
   margin: 0;
   overflow-x: auto;
   background: transparent;
-  /* 行数上限（站点设置「代码块最大显示行数」下发，ContentView 注入 CSS 变量）：
-     超过 N 行的块级代码框在块内上下滚动，而不是把整页撑长。
-     max-height 必须加在内层 pre 上而不是 .code-block 上——后者 overflow:hidden
-     负责圆角裁切，限高放它上面会直接剪掉内容而不是给出滚动条。
-     合成式：N × 1.8em（行高，基于 pre 的 13px 字号）+ 4.3rem（code 的
-     顶 2.9rem + 底 1.4rem 内边距；滚动高度包含子元素 padding，必须计入）。 */
   max-height: calc(var(--code-max-lines, 20) * 1.8em + 4.3rem);
   overflow-y: auto;
-  /* 暗色底上的滚动条弱化到「看得见但不抢戏」；Firefox 用 scrollbar-*，
-     Chromium 走下面的 ::-webkit-scrollbar。 */
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+  scrollbar-color: rgba(255,255,255,.28) transparent;
 }
 
 .plain-body .code-block pre::-webkit-scrollbar {
@@ -1114,11 +1317,11 @@ footer.site .bar {
 
 .plain-body .code-block pre::-webkit-scrollbar-thumb {
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.22);
+  background: #ffffff38;
 }
 
 .plain-body .code-block pre::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.35);
+  background: #ffffff59;
 }
 
 .plain-body .code-block pre::-webkit-scrollbar-track {
@@ -1135,7 +1338,7 @@ footer.site .bar {
   border-radius: 0;
   overflow-x: visible;
   background: transparent;
-  font-family: 'JetBrains Mono', 'Noto Sans SC', monospace;
+  font-family: JetBrains Mono, Noto Sans SC, monospace;
   font-size: 13px;
   line-height: 1.8;
   direction: ltr;
@@ -1143,7 +1346,9 @@ footer.site .bar {
   white-space: pre;
   word-spacing: normal;
   word-break: normal;
+  -moz-tab-size: 2;
   tab-size: 2;
+  -webkit-hyphens: none;
   hyphens: none;
 }
 
@@ -1155,14 +1360,15 @@ footer.site .bar {
   white-space: pre;
 }
 
-.plain-body .code-block .numbered-code-line::before {
+.plain-body .code-block .numbered-code-line:before {
   content: attr(data-line-number);
   display: inline-block;
   width: 2.6em;
   margin-right: 1.5em;
   text-align: right;
   color: #8b949e;
-  opacity: 0.55;
+  opacity: .55;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -1174,21 +1380,22 @@ footer.site .bar {
   white-space: pre;
 }
 
-.plain-body .numbered-code-line::before {
+.plain-body .numbered-code-line:before {
   content: attr(data-line-number);
   display: inline-block;
   width: 2.6em;
   margin-right: 1.5em;
   text-align: right;
   color: #8b949e;
-  opacity: 0.55;
+  opacity: .55;
+  -webkit-user-select: none;
   user-select: none;
 }
 
 .plain-body .katex-display {
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 0.2em 0;
+  padding: .2em 0;
 }
 
 .plain-body .katex {
@@ -1207,12 +1414,19 @@ footer.site .bar {
   margin: 6px 0 14px;
 }
 
-
 /* Comments */
 .cmt-sec {
   margin-top: 44px;
   border-top: 1px solid var(--line);
   padding-top: 24px;
+  animation: comment-in var(--dur-fast) var(--ease-out-ios);
+}
+
+@keyframes comment-in {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 
 .cmt-sec h3 {
@@ -1224,7 +1438,7 @@ footer.site .bar {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--faint);
-  letter-spacing: 0.08em;
+  letter-spacing: .08em;
 }
 
 .cform {
@@ -1313,7 +1527,7 @@ footer.site .bar {
   font-size: 11px;
   line-height: 1;
   cursor: pointer;
-  transition: all 0.15s var(--ease);
+  transition: all .15s var(--ease);
 }
 
 .cmt .ops button:hover {
@@ -1324,17 +1538,17 @@ footer.site .bar {
 
 .cmt .ops button.on {
   color: var(--fg);
-  background: color-mix(in srgb, var(--fg) 8%, var(--bg));
-  border-color: color-mix(in srgb, var(--fg) 26%, var(--bg));
+  background: color-mix(in srgb,var(--fg) 8%,var(--bg));
+  border-color: color-mix(in srgb,var(--fg) 26%,var(--bg));
 }
 
 .cmt .ops .like-btn {
   position: relative;
-  letter-spacing: 0.02em;
+  letter-spacing: .02em;
 }
 
 .cmt .ops .reply-btn {
-  letter-spacing: 0.05em;
+  letter-spacing: .05em;
 }
 
 .cmt .ops .like-btn.admin-view {
@@ -1347,12 +1561,12 @@ footer.site .bar {
   color: var(--faint);
 }
 
-.cmt .ops .like-btn.admin-view::after {
+.cmt .ops .like-btn.admin-view:after {
   content: attr(data-tip);
   position: absolute;
   bottom: calc(100% + 9px);
   left: 50%;
-  transform: translateX(-50%);
+  transform: translate(-50%);
   z-index: 40;
   width: max-content;
   max-width: 240px;
@@ -1363,27 +1577,26 @@ footer.site .bar {
   font-family: var(--mono);
   font-size: 10.5px;
   line-height: 1.5;
-  letter-spacing: 0.03em;
+  letter-spacing: .03em;
   white-space: normal;
   text-align: center;
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
-  transition: opacity 0.15s ease, visibility 0.15s ease;
+  transition: opacity .15s ease, visibility .15s ease;
 }
 
-.cmt .ops .like-btn.admin-view:hover::after {
+.cmt .ops .like-btn.admin-view:hover:after {
   opacity: 1;
   visibility: visible;
 }
 
-/* Avatar */
 .avatar,
 .cav {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--fg) 88%, var(--bg)), color-mix(in srgb, var(--fg) 45%, var(--bg)));
+  background: linear-gradient(135deg,color-mix(in srgb,var(--fg) 88%,var(--bg)),color-mix(in srgb,var(--fg) 45%,var(--bg)));
   color: var(--bg);
   flex: none;
   font-family: var(--serif);
@@ -1412,7 +1625,7 @@ img.avatar {
 }
 
 .cav.alt {
-  background: linear-gradient(140deg, color-mix(in srgb, var(--fg) 30%, var(--bg)), color-mix(in srgb, var(--fg) 10%, var(--bg)));
+  background: linear-gradient(140deg,color-mix(in srgb,var(--fg) 30%,var(--bg)),color-mix(in srgb,var(--fg) 10%,var(--bg)));
   color: var(--fg);
   border: 1px solid var(--line);
 }
@@ -1455,14 +1668,11 @@ img.avatar {
   display: grid;
   place-items: center;
   padding: 30px;
-  background:
-    linear-gradient(color-mix(in srgb, var(--bg) 84%, transparent), color-mix(in srgb, var(--bg) 92%, transparent)),
-    repeating-linear-gradient(0deg, transparent 0 31px, color-mix(in srgb, var(--fg) 5%, transparent) 31px 32px),
-    repeating-linear-gradient(90deg, transparent 0 31px, color-mix(in srgb, var(--fg) 5%, transparent) 31px 32px);
+  background: linear-gradient(color-mix(in srgb,var(--bg) 84%,transparent),color-mix(in srgb,var(--bg) 92%,transparent)), repeating-linear-gradient(0deg,transparent 0 31px,color-mix(in srgb,var(--fg) 5%,transparent) 31px 32px), repeating-linear-gradient(90deg,transparent 0 31px,color-mix(in srgb,var(--fg) 5%,transparent) 31px 32px);
 }
 
 .login {
-  width: min(420px, 94vw);
+  width: min(420px,94vw);
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1485,7 +1695,7 @@ img.avatar {
 .login .sub {
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: 0.2em;
+  letter-spacing: .2em;
   color: var(--faint);
   margin-top: -6px;
 }
@@ -1513,7 +1723,7 @@ img.avatar {
   gap: 8px;
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: 0.08em;
+  letter-spacing: .08em;
   color: var(--faint);
 }
 
@@ -1550,7 +1760,7 @@ img.avatar {
 .fld label {
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: 0.14em;
+  letter-spacing: .14em;
   color: var(--faint);
   text-transform: uppercase;
 }
@@ -1587,7 +1797,7 @@ img.avatar {
   display: block;
   font-family: var(--mono);
   font-size: 8.5px;
-  letter-spacing: 0.16em;
+  letter-spacing: .16em;
   color: var(--faint);
   font-weight: 400;
 }
@@ -1612,12 +1822,16 @@ img.avatar {
   border-radius: var(--radius);
   font-size: 13.5px;
   color: var(--mut);
-  transition: all 0.18s var(--ease);
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), scale var(--dur-tap) var(--ease-ios);
 }
 
 .aside .anav a:hover {
   background: var(--hover);
   color: var(--fg);
+}
+
+.aside .anav a:active {
+  scale: .98;
 }
 
 .aside .anav a.on {
@@ -1627,12 +1841,20 @@ img.avatar {
 
 .aside .anav .bdg {
   margin-left: auto;
-  background: color-mix(in srgb, var(--bg) 22%, transparent);
+  background: color-mix(in srgb,var(--bg) 22%,transparent);
   color: inherit;
   border-radius: 99px;
   font-family: var(--mono);
   font-size: 10px;
   padding: 1px 6px;
+  animation: badge-pop var(--dur) var(--ease-spring);
+}
+
+@keyframes badge-pop {
+  0% {
+    opacity: 0;
+    scale: .7;
+  }
 }
 
 .a-user {
@@ -1708,13 +1930,13 @@ img.avatar {
   gap: 6px;
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 0.06em;
+  letter-spacing: .06em;
   line-height: 1;
   color: var(--mut);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 7px 13px;
-  transition: color 0.15s var(--ease), background 0.15s var(--ease), border-color 0.15s var(--ease);
+  transition: color .15s var(--ease), background .15s var(--ease), border-color .15s var(--ease);
 }
 
 .sbtn:hover {
@@ -1769,15 +1991,19 @@ img.avatar {
 .tb th,
 .tb td {
   text-align: left;
-  padding: 10px 10px;
+  padding: 10px;
   border-bottom: 1px solid var(--line);
   vertical-align: middle;
+}
+
+.tb td {
+  transition: background-color var(--dur-tap) var(--ease);
 }
 
 .tb th {
   font-family: var(--mono);
   font-size: 10px;
-  letter-spacing: 0.12em;
+  letter-spacing: .12em;
   color: var(--faint);
   text-transform: uppercase;
 }
@@ -1793,7 +2019,7 @@ img.avatar {
   display: inline-block;
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 0.05em;
+  letter-spacing: .05em;
   line-height: 1;
   color: var(--mut);
   background: transparent;
@@ -1801,7 +2027,7 @@ img.avatar {
   border-radius: var(--radius);
   padding: 5px 10px;
   cursor: pointer;
-  transition: color 0.15s var(--ease), background 0.15s var(--ease), border-color 0.15s var(--ease);
+  transition: color .15s var(--ease), background .15s var(--ease), border-color .15s var(--ease);
 }
 
 .miniact:hover {
@@ -1810,7 +2036,7 @@ img.avatar {
   border-color: var(--line-strong);
 }
 
-.miniact + .miniact {
+.miniact+.miniact {
   margin-left: 6px;
 }
 
@@ -1833,12 +2059,12 @@ img.avatar {
   color: var(--bg);
   border-radius: var(--radius);
   font-size: 13px;
-  box-shadow: 0 18px 44px color-mix(in srgb, var(--fg) 20%, transparent);
+  box-shadow: 0 18px 44px color-mix(in srgb,var(--fg) 20%,transparent);
 }
 
 .bulkbar .miniact {
   color: var(--bg);
-  border-color: color-mix(in srgb, var(--bg) 45%, transparent);
+  border-color: color-mix(in srgb,var(--bg) 45%,transparent);
 }
 
 .bulkbar .miniact:hover {
@@ -1849,7 +2075,7 @@ img.avatar {
 
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill,minmax(180px,1fr));
   gap: 16px;
 }
 
@@ -1858,13 +2084,13 @@ img.avatar {
   border-radius: var(--radius);
   padding: 22px;
   background: var(--bg);
-  transition: all 0.2s var(--ease);
+  transition: all .2s var(--ease);
 }
 
 .stat:hover {
   transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--fg) 38%, var(--bg));
-  box-shadow: 0 16px 40px color-mix(in srgb, var(--fg) 12%, transparent);
+  border-color: color-mix(in srgb,var(--fg) 38%,var(--bg));
+  box-shadow: 0 16px 40px color-mix(in srgb,var(--fg) 12%,transparent);
 }
 
 .stat .stat-body b {
@@ -1876,7 +2102,7 @@ img.avatar {
 .stat .stat-body span {
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 0.1em;
+  letter-spacing: .1em;
   color: var(--faint);
 }
 
@@ -1912,16 +2138,16 @@ img.avatar {
 }
 
 .ed-title {
-  border: 0 !important;
-  outline: none !important;
-  padding: 6px 0 !important;
-  font-size: 30px !important;
-  font-family: var(--serif) !important;
-  color: var(--fg) !important;
-  font-weight: 700 !important;
-  border-bottom: 1px solid var(--line) !important;
-  border-radius: 0 !important;
-  background: transparent !important;
+  border: 0!important;
+  outline: none!important;
+  padding: 6px 0!important;
+  font-size: 30px!important;
+  font-family: var(--serif)!important;
+  color: var(--fg)!important;
+  font-weight: 700!important;
+  border-bottom: 1px solid var(--line)!important;
+  border-radius: 0!important;
+  background: transparent!important;
 }
 
 .ed-meta {
@@ -1935,7 +2161,7 @@ img.avatar {
   color: var(--faint);
 }
 
-.ed-meta > .tagin {
+.ed-meta>.tagin {
   flex: 1;
   min-width: 260px;
 }
@@ -1959,7 +2185,7 @@ img.avatar {
 /* Media grid */
 .mgrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill,minmax(180px,1fr));
   gap: 14px;
   margin-top: 4px;
 }
@@ -1969,12 +2195,12 @@ img.avatar {
   border-radius: var(--radius);
   overflow: hidden;
   background: var(--bg);
-  transition: all 0.2s var(--ease);
+  transition: all .2s var(--ease);
 }
 
 .mtile:hover {
   transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--fg) 42%, var(--bg));
+  border-color: color-mix(in srgb,var(--fg) 42%,var(--bg));
 }
 
 .mtile .mth {
@@ -2002,8 +2228,8 @@ img.avatar {
 .mtile .mth .mact .cpbtn {
   width: 30px;
   height: 30px;
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255,255,255,.4);
+  background: #00000073;
   color: #fff;
   border-radius: var(--radius);
   display: grid;
@@ -2044,16 +2270,13 @@ img.avatar {
   border-bottom: 0;
 }
 
-/* Responsive */
 @media (max-width: 720px) {
   .shell {
     flex-direction: column;
   }
-
   .public-layout {
     padding: 0 18px;
   }
-
   .aside {
     width: 100%;
     border-right: 0;
@@ -2062,43 +2285,36 @@ img.avatar {
     align-items: center;
     overflow-x: auto;
   }
-
   .aside .anav {
     flex-direction: row;
     flex: 1;
   }
-
   .a-user {
     margin-top: 0;
     border-top: 0;
     padding-top: 0;
   }
-
   .topbar {
     padding: 0 16px;
   }
-
   .panel {
     padding: 18px 14px 30px;
   }
-
   .wrap {
     padding: 0 18px;
   }
-
   footer.site .cols {
     grid-template-columns: 1fr;
     gap: 24px;
   }
-
   .mast.slim {
-    padding: 22px 18px 8px;
+    padding: 12px 18px 4px;
   }
-
   .ed-grid {
-    grid-template-columns: 1fr !important;
+    grid-template-columns: 1fr!important;
   }
 }
+
 /* Media picker / lightbox */
 .media-picker-row {
   display: flex;
@@ -2128,17 +2344,17 @@ img.avatar {
   font-family: var(--mono);
   font-size: 11px;
   cursor: pointer;
-  transition: all 0.2s var(--ease);
+  transition: all .2s var(--ease);
 }
 
 .cover-empty:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--fg) 48%, var(--bg));
+  border-color: color-mix(in srgb,var(--fg) 48%,var(--bg));
   color: var(--fg);
   background: var(--softer);
 }
 
 .cover-empty:disabled {
-  opacity: 0.55;
+  opacity: .55;
   cursor: not-allowed;
 }
 
@@ -2187,17 +2403,17 @@ img.avatar {
   font-size: 20px;
   line-height: 1;
   cursor: pointer;
-  transition: all 0.2s var(--ease);
+  transition: all .2s var(--ease);
 }
 
 .avatar-picker-empty:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--fg) 48%, var(--bg));
+  border-color: color-mix(in srgb,var(--fg) 48%,var(--bg));
   color: var(--fg);
   background: var(--softer);
 }
 
 .avatar-picker-empty:disabled {
-  opacity: 0.55;
+  opacity: .55;
   cursor: not-allowed;
 }
 
@@ -2221,7 +2437,7 @@ img.avatar {
 .ed-hint {
   font-size: 10.5px;
   color: var(--faint);
-  opacity: 0.85;
+  opacity: .85;
 }
 
 .ed-cover-row {
@@ -2240,17 +2456,17 @@ img.avatar {
   font-size: 28px;
   line-height: 1;
   cursor: pointer;
-  transition: all 0.2s var(--ease);
+  transition: all .2s var(--ease);
 }
 
 .media-picker-add:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--fg) 48%, var(--bg));
+  border-color: color-mix(in srgb,var(--fg) 48%,var(--bg));
   color: var(--fg);
   background: var(--softer);
 }
 
 .media-picker-add:disabled {
-  opacity: 0.55;
+  opacity: .55;
   cursor: not-allowed;
 }
 
@@ -2260,7 +2476,7 @@ img.avatar {
   border: 2px solid var(--line);
   border-top-color: var(--fg);
   border-radius: 50%;
-  animation: media-picker-spin 0.8s linear infinite;
+  animation: media-picker-spin .8s linear infinite;
 }
 
 @keyframes media-picker-spin {
@@ -2295,6 +2511,12 @@ img.avatar {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: transform var(--dur) var(--ease-ios);
+}
+
+.media-thumb-open:hover img,
+.media-thumb-open:hover video {
+  transform: scale(1.08);
 }
 
 .media-gallery.sm .media-thumb {
@@ -2313,23 +2535,25 @@ img.avatar {
   margin-top: 10px;
 }
 
-
 .media-thumb-play {
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   display: grid;
   place-items: center;
   pointer-events: none;
 }
 
-.media-thumb-play::before {
-  content: '';
+.media-thumb-play:before {
+  content: "";
   width: 0;
   height: 0;
   border-left: 15px solid #fff;
   border-top: 9px solid transparent;
   border-bottom: 9px solid transparent;
-  filter: drop-shadow(0 0 6px rgba(0, 0, 0, 0.55));
+  filter: drop-shadow(0 0 6px rgba(0,0,0,.55));
 }
 
 .media-thumb-remove {
@@ -2342,13 +2566,13 @@ img.avatar {
   place-items: center;
   border: 0;
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.55);
+  background: #0000008c;
   color: #fff;
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity .15s ease;
 }
 
 .media-thumb:hover .media-thumb-remove,
@@ -2358,13 +2582,23 @@ img.avatar {
 
 .media-lightbox {
   position: fixed;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 1000;
-  background: rgba(0, 0, 0, 0.82);
+  background: rgba(0,0,0,calc(.82 * var(--lb-fade, 1)));
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 32px;
+  animation: lb-fade-in var(--dur-fast) var(--ease-out-ios);
+}
+
+@keyframes lb-fade-in {
+  0% {
+    opacity: 0;
+  }
 }
 
 .media-lightbox-close {
@@ -2375,53 +2609,199 @@ img.avatar {
   height: 42px;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  border: 1px solid rgba(255,255,255,.35);
   border-radius: 50%;
-  background: rgba(0, 0, 0, 0.35);
+  background: #00000059;
   color: #fff;
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
 }
 
 .media-lightbox-close:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: #ffffff26;
 }
 
 .media-lightbox-stage {
-  max-width: min(1080px, 94vw);
+  position: relative;
+  width: min(1080px,94vw);
   max-height: 88vh;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
+  transform: translateY(var(--lb-shift, 0px));
+  transition: transform var(--dur) var(--ease-in-out-ios);
+  animation: lb-pop .38s var(--ease-spring);
 }
 
-.media-lightbox-stage img,
-.media-lightbox-stage video {
+@keyframes lb-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(.965);
+  }
+}
+
+.media-lightbox-stage.zooming {
+  animation: none;
+}
+
+.media-lightbox-viewport {
+  position: relative;
+  width: 100%;
+  max-height: calc(88vh - 48px);
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.media-lightbox-track {
+  display: flex;
+  transition: transform var(--dur) var(--ease-out-ios);
+}
+
+.media-lightbox.dragging .media-lightbox-stage,
+.media-lightbox.dragging .media-lightbox-track {
+  transition: none;
+  animation: none;
+}
+
+.media-lightbox.closing {
+  animation: lb-fade-out .26s var(--ease-in-out-ios) forwards;
+}
+
+.media-lightbox.closing .media-lightbox-stage {
+  opacity: 0;
+  transform: translateY(45vh) scale(.94);
+  transition: transform .26s var(--ease-in-out-ios), opacity .2s linear;
+  animation: none;
+}
+
+@keyframes lb-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+.media-lightbox.zoom-out {
+  background: transparent;
+  transition: background-color var(--dur-fast) linear;
+}
+
+.media-lightbox.zoom-out .media-lightbox-meta,
+.media-lightbox.zoom-out .media-lightbox-close,
+.media-lightbox.zoom-out .media-lightbox-nav {
+  opacity: 0;
+  transition: opacity .14s linear;
+}
+
+.media-lightbox-slide {
+  position: relative;
+  flex: 0 0 100%;
+  min-width: 0;
+  display: grid;
+  place-items: center;
+}
+
+/* 灯箱里的图片同样等「下载 + 解码」完成才显示（见 MediaLightbox 的
+   LightboxImage）：尺寸未知时骨架按整块面板占位，而不是贴着图片——否则
+   图片还没加载时外框是 0 高，骨架也没地方画。 */
+.media-lightbox-slide>.img-skeleton {
+  top: 8%;
+  right: 12%;
+  bottom: 8%;
+  left: 12%;
+  border-radius: var(--radius);
+}
+
+.media-lightbox-slide>img {
+  position: relative;
+  z-index: 1;
+  opacity: 0;
+}
+
+.media-lightbox-slide[data-loaded=true]>.img-skeleton {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.media-lightbox-slide[data-loaded=true]>img {
+  animation: img-in var(--dur) var(--ease-out-ios) forwards;
+}
+
+.media-lightbox-slide img,
+.media-lightbox-slide video {
   display: block;
   max-width: 100%;
   max-height: calc(88vh - 48px);
   object-fit: contain;
   border-radius: var(--radius);
   background: #000;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.media-lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255,255,255,.35);
+  border-radius: 50%;
+  background: #00000059;
+  color: #fff;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.media-lightbox-nav:hover {
+  background: #ffffff26;
+}
+
+.media-lightbox-nav.prev {
+  left: 10px;
+}
+
+.media-lightbox-nav.next {
+  right: 10px;
 }
 
 .media-lightbox-meta {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: rgba(255, 255, 255, 0.75);
+  color: #ffffffbf;
   font-family: var(--mono);
   font-size: 12px;
 }
 
-/* ============ Admin · site settings ============ */
-/* 左写右看：描述最终落在四个位置（首页标语 / 页脚简介 / 标签页标题 / meta），
+.media-lightbox-count {
+  padding: 2px 8px;
+  border: 1px solid rgba(255,255,255,.22);
+  border-radius: 999px;
+  letter-spacing: .04em;
+  animation: lb-count-in var(--dur-fast) var(--ease-out-ios);
+}
+
+@keyframes lb-count-in {
+  0% {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+}
+
+/* ============ Admin · site settings ============ *//* 左写右看：描述最终落在四个位置（首页标语 / 页脚简介 / 标签页标题 / meta），
    只给一个文本框的话看不出写多长合适，所以右侧用与前台相同的排版做实时预览。 */
 .set-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0,1.35fr) minmax(0,1fr);
   gap: 16px;
   align-items: start;
 }
@@ -2435,7 +2815,7 @@ img.avatar {
 .set-count {
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 0.08em;
+  letter-spacing: .08em;
   color: var(--faint);
 }
 
@@ -2447,7 +2827,7 @@ img.avatar {
 .set-state {
   font-family: var(--mono);
   font-size: 10.5px;
-  letter-spacing: 0.1em;
+  letter-spacing: .1em;
   text-transform: uppercase;
   color: var(--faint);
 }
@@ -2497,7 +2877,7 @@ img.avatar {
   height: 44px;
   padding: 0 16px;
   font-size: 12.5px;
-  transition: border-radius 0.15s var(--ease);
+  transition: border-radius .15s var(--ease);
 }
 
 .radius-preview-item {
@@ -2558,6 +2938,7 @@ img.avatar {
    免得预览块比左边的输入框高出一大截。 */
 .set-sidebar {
   position: static;
+  display: block;
   max-height: none;
   overflow: visible;
 }
@@ -2572,8 +2953,7 @@ img.avatar {
   font-size: 17px;
 }
 
-/* ============ Admin · users list ============ */
-/* 行与行之间只用一条分隔线，最后一行不再画线（否则会和卡片下边框叠成双线）。
+/* ============ Admin · users list ============ *//* 行与行之间只用一条分隔线，最后一行不再画线（否则会和卡片下边框叠成双线）。
    头像用全站同一套 .cav，昵称与 @用户名分行，视觉上才看得出「展示名 / 登录名」
    是两个不同的东西。 */
 .ulist {
@@ -2587,7 +2967,7 @@ img.avatar {
   gap: 12px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--line);
-  transition: background 0.18s var(--ease);
+  transition: background .18s var(--ease);
 }
 
 .urow:last-child {
@@ -2647,39 +3027,14 @@ img.avatar {
   padding: 2px 0;
 }
 
-/* ============================================================
-   站点统一圆角（--radius）的适用面
-   ------------------------------------------------------------
-   站长在「站点设置」里设的圆角只作用于**目标元素**——卡片、按钮、输入框、
-   下拉、浮层、菜单项、分页器这类方形排版件。以下**特殊元素**保持自身形状、
-   不跟随统一设置：
-
-     ① 头像与圆形控件（50%）：.avatar / .cav / .radius-preview-avatar、
-        灯箱与缩略图上的圆形按钮、加载指示器；
-     ② 标签与徽章：.utag、.aside .anav .bdg，以及 InkUI 的 .badge / .st；
-     ③ 代码框内部：kbd、行内 code、代码块里的复制按钮与滚动条；
-     ④ 下划线输入框（.inp）与滚动条。
-
-   ink-design 是只读依赖（站点不改它的源码），组件内写死数值的目标元素在
-   下面一节覆盖回 --radius。
-   ============================================================ */
-
-/* ink-design 里的目标元素：把硬编码圆角拉回站点设置。
-   这里必须用 !important，不能靠「app.css 是最后一条样式导入」。Toolbar / Select /
-   CopyButton 只在**懒加载页面**里用（后台编辑器、媒体库），它们的样式片段会被
-   拆进各自的异步 chunk（Editor-*.css、MediaAdmin-*.css），由 __vitePreload 在
-   路由切换时才插入 <link>——**晚于** main.css。同特异性下后加载者胜，于是
-   InkUI 的 .tbtn{4px} 会反过来盖住这里的变量。ink-design 自身只对
-   prefers-reduced-motion 用过 !important，没有一处用它设 border-radius，
-   所以这样覆盖不会打架。 */
-.inp.box,                      /* 多行输入框（原 3px） */
-.cpbtn,                        /* 复制按钮（原 3px） */
-.tbtn,                         /* 工具栏按钮（原 4px） */
-.tbtn[data-tip]:hover::after,  /* 工具栏按钮的浮层提示（原 3px） */
-.modal-close,                  /* 模态关闭按钮（原 3px） */
-.select-tag,                   /* 下拉框里的已选标签（原 3px） */
-.anav a                        /* 后台导航项（原 4px） */ {
-  border-radius: var(--radius) !important;
+.inp.box,
+.cpbtn,
+.tbtn,
+.tbtn[data-tip]:hover:after,
+.modal-close,
+.select-tag,
+.anav a {
+  border-radius: var(--radius)!important;
 }
 
 /* 分页器与上下内容保持 16px 呼吸间距。
@@ -2689,4 +3044,816 @@ img.avatar {
 .pagination {
   margin-top: 16px;
   margin-bottom: 16px;
+}
+
+:root .modal-mask {
+  animation-duration: var(--dur-fast);
+  animation-timing-function: var(--ease-out-ios);
+}
+
+:root .modal {
+  animation: modal-pop var(--dur) var(--ease-spring);
+}
+
+@keyframes modal-pop {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(.96);
+  }
+}
+
+:root .message-enter {
+  animation: toast-in var(--dur) var(--ease-spring);
+}
+
+@keyframes toast-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-8px) scale(.96);
+  }
+}
+
+.mode-icon {
+  display: inline-flex;
+  animation: mode-swap var(--dur-fast) var(--ease-spring);
+}
+
+@keyframes mode-swap {
+  0% {
+    opacity: 0;
+    transform: rotate(-40deg) scale(.7);
+  }
+}
+
+/* 等待态：慢呼吸。用不透明度而不是转圈——多数情况下这里只出现一瞬。 */
+.loading-pulse {
+  animation: loading-pulse 1.4s var(--ease-in-out-ios) infinite;
+}
+
+@keyframes loading-pulse {
+  50% {
+    opacity: .35;
+  }
+}
+
+/* 整块等待提示同样由 data-visible 控制（见 components/common.tsx）：
+   不可见时保留高度、只把不透明度降到 0；呼吸动画一并停掉。 */
+.loading-screen {
+  transition: opacity var(--dur-fast) var(--ease-out-ios);
+}
+
+.loading-screen[data-visible='false'] {
+  opacity: 0;
+}
+
+.loading-screen[data-visible='false'] .loading-pulse {
+  animation: none;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--dur);
+  animation-timing-function: var(--ease-ios);
+}
+
+/* ============================================================
+   图片占位：骨架 → 淡入（ProgressiveImage / ContentView.enhanceImages）
+   ------------------------------------------------------------
+   图片是页面上最晚到达的东西：接口早回来了，正文已经排好，头图 / 缩略图 /
+   头像还要再等一次解码。什么都不画的代价是「一块空白突然变成一张图」——
+   高度一跳，正在读的那一行也跟着移动。这里把这段等待画出来。
+
+   骨架只能作为 <img> 的兄弟节点：替换元素没有可用于 ::before/::after 的盒子。
+   ============================================================ */
+.img-frame {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: var(--softer);
+}
+
+.img-frame>img {
+  position: relative;
+  z-index: 1;
+  opacity: 0;
+}
+
+.img-frame.loaded>img {
+  animation: img-in var(--dur) var(--ease-out-ios) forwards;
+}
+
+@keyframes img-in {
+  to {
+    opacity: 1;
+  }
+}
+
+.img-skeleton {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 0;
+  overflow: hidden;
+  background: var(--soft);
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.img-skeleton:after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  transform: translate(-100%);
+  background: linear-gradient(90deg,transparent,color-mix(in srgb,var(--fg) 7%,transparent),transparent);
+  animation: shimmer 1.5s linear infinite;
+}
+
+@keyframes shimmer {
+  to {
+    transform: translate(100%);
+  }
+}
+
+.img-frame.loaded .img-skeleton,
+.img-frame.failed .img-skeleton {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.img-frame.failed {
+  background: repeating-linear-gradient(135deg,transparent 0 6px,color-mix(in srgb,var(--fg) 5%,transparent) 6px 7px), var(--softer);
+}
+
+.img-frame.failed:after {
+  content: "IMG";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .22em;
+  color: var(--faint);
+}
+
+.acard .cover .img-frame,
+.mth .img-frame {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+
+.media-thumb-open .img-frame {
+  width: 100%;
+  height: 100%;
+}
+
+.mth .img-frame>img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.img-frame.round {
+  border-radius: 50%;
+  flex: none;
+}
+
+.cover-preview .img-frame {
+  border-radius: var(--radius);
+  flex: none;
+}
+
+.post-cover .img-frame {
+  max-height: var(--post-banner-height, 400px);
+}
+
+.plain-body .img-frame {
+  margin: 1.2em 0;
+  border-radius: var(--radius);
+}
+
+.plain-body .img-frame>img {
+  margin: 0 auto;
+}
+
+.media-thumb-open[data-video-ready=true] .img-skeleton {
+  opacity: 0;
+}
+
+.a-user .img-frame {
+  width: 34px;
+  height: 34px;
+  flex: none;
+}
+
+/* ============================================================
+   列表骨架屏
+   ------------------------------------------------------------
+   加载中用「内容将要占的位置」代替一句 LOADING：结构与真实卡片同构，
+   到达时不跳版；扫光复用图片骨架那条 shimmer，全站的等待是同一个动作。
+   ============================================================ */
+.skl {
+  position: relative;
+  overflow: hidden;
+  background: var(--soft);
+  border-radius: var(--radius);
+}
+
+.skl:after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  transform: translate(-100%);
+  background: linear-gradient(90deg,transparent,color-mix(in srgb,var(--fg) 7%,transparent),transparent);
+  animation: shimmer 1.5s linear infinite;
+}
+
+/* 骨架根：始终占位，data-visible 决定是否显示（见 lib/loading.ts）。
+   opacity 走过渡：阈值到了之后它是淡出来的，不是突然铺满。 */
+.skl-view {
+  transition: opacity var(--dur-fast) var(--ease-out-ios);
+}
+
+.skl-view[data-visible='false'] {
+  opacity: 0;
+}
+
+/* 不可见时把子树里的动画全部停掉：扫光与行列入场在 opacity: 0 的子树里继续
+   跑只会白白占着合成器，而且带着 fill: both 的入场动画会把不可见的 opacity
+   覆盖回去——那正是「阈值内还是闪了一下」的成因。 */
+.skl-view[data-visible='false'] * {
+  animation: none !important;
+}
+
+/* 可见时整块淡入一次。旧版把这条挂在骨架类名上，等于加载第 0 帧就开始播，
+   现在挪到「真的该显示」之后，才与阈值对齐。 */
+.skl-view[data-visible='true'] {
+  animation: skl-in var(--dur-fast) var(--ease-out-ios);
+}
+
+.skl-cards {
+  display: grid;
+  gap: 24px;
+}
+
+/* 卡片骨架直接复用 .acard.has-cover：封面定宽、正文内边距、标题与页脚的间距
+   全部来自内容自己的规则，骨架与内容的高度因此只有一个来源。
+   下面几条只补「灰条没有文字」造成的行高缺口：flex 行里没有文字就没有行盒，
+   不补的话每行都会矮掉几个像素，一列叠起来就是明显的跳版。 */
+.skl-cards .top {
+  min-height: 14px;
+  align-items: center;
+}
+
+.skl-title {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  margin: 8px 0;
+}
+
+.skl-cards .tags {
+  min-height: 26px;
+  align-items: center;
+}
+
+.skl-cards .ft {
+  min-height: 28px;
+  align-items: center;
+}
+
+.skl-cover {
+  position: absolute;
+  inset: 0;
+  border-radius: 0;
+}
+
+/* 文字改成的灰条：高度用 em，字号一变它跟着变。inline-block + middle 让行高
+   仍由原来的文字规则决定——「骨架与内容一样高」靠的就是这一点。 */
+.skl-t {
+  display: inline-block;
+  height: 0.72em;
+  vertical-align: middle;
+  border-radius: 3px;
+}
+
+.skl-t-title {
+  height: 18px;
+}
+
+.skl-t-hero {
+  width: 78%;
+  height: 0.62em;
+}
+
+.skl-t-year {
+  width: 84px;
+  height: 24px;
+}
+
+.skl-pill {
+  display: inline-block;
+  height: 26px;
+  vertical-align: middle;
+  border-radius: 999px;
+}
+
+.skl-chip {
+  height: 30px;
+}
+
+.skl-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.skl-grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.skl-line {
+  height: 12px;
+  border-radius: 3px;
+}
+
+.cmt {
+  animation: cmt-in var(--dur-fast) var(--ease-out-ios) both;
+  animation-delay: var(--d, 0s);
+}
+
+@keyframes cmt-in {
+  0% {
+    opacity: 0;
+    translate: 0 6px;
+  }
+}
+
+.cmt .cform {
+  animation: cmt-in var(--dur-fast) var(--ease-out-ios);
+}
+
+.cmt .ops button.on {
+  animation: like-pop var(--dur) var(--ease-spring);
+}
+
+@keyframes like-pop {
+  40% {
+    scale: 1.16;
+  }
+}
+
+@keyframes fade-up {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.toc-list a {
+  animation: toc-in var(--dur-fast) var(--ease-out-ios) both;
+  animation-delay: calc(var(--i, 0) * 22ms);
+}
+
+@keyframes toc-in {
+  0% {
+    opacity: 0;
+    transform: translate(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.media-picker-row>.media-thumb {
+  animation: thumb-in var(--dur) var(--ease-out-ios) both;
+}
+
+.media-picker-row>.media-thumb:nth-child(2) {
+  animation-delay: 40ms;
+}
+
+.media-picker-row>.media-thumb:nth-child(3) {
+  animation-delay: 80ms;
+}
+
+.media-picker-row>.media-thumb:nth-child(4) {
+  animation-delay: .12s;
+}
+
+.media-picker-row>.media-thumb:nth-child(5) {
+  animation-delay: .16s;
+}
+
+.media-picker-row>.media-thumb:nth-child(6) {
+  animation-delay: .2s;
+}
+
+.media-picker-row>.media-thumb:nth-child(n+7) {
+  animation-delay: .24s;
+}
+
+@keyframes thumb-in {
+  0% {
+    opacity: 0;
+    scale: .92;
+  }
+}
+
+.tb tbody tr {
+  animation: row-in var(--dur-fast) var(--ease-out-ios) both;
+}
+
+.tb tbody tr:nth-child(2) {
+  animation-delay: 22ms;
+}
+
+.tb tbody tr:nth-child(3) {
+  animation-delay: 44ms;
+}
+
+.tb tbody tr:nth-child(4) {
+  animation-delay: 66ms;
+}
+
+.tb tbody tr:nth-child(5) {
+  animation-delay: 88ms;
+}
+
+.tb tbody tr:nth-child(6) {
+  animation-delay: .11s;
+}
+
+.tb tbody tr:nth-child(n+7) {
+  animation-delay: 132ms;
+}
+
+@keyframes row-in {
+  0% {
+    opacity: 0;
+    translate: 0 4px;
+  }
+}
+
+.bulkbar {
+  animation: bulk-in var(--dur) var(--ease-spring);
+}
+
+@keyframes bulk-in {
+  0% {
+    opacity: 0;
+    translate: 0 14px;
+  }
+}
+
+.empty-state {
+  animation: fade-up var(--dur) var(--ease-out-ios);
+}
+
+.code-copy.copied {
+  animation: copy-pop var(--dur-fast) var(--ease-spring);
+}
+
+@keyframes copy-pop {
+  40% {
+    scale: 1.12;
+  }
+}
+
+.chip:active {
+  scale: .96;
+}
+
+.sres h3 {
+  transition: translate var(--dur-fast) var(--ease-ios);
+}
+
+.sres:hover h3 {
+  translate: 2px 0;
+}
+
+.mth .img-frame>img,
+.mth>img {
+  transition: transform var(--dur-slow) var(--ease-ios);
+}
+
+.mtile:hover .mth img {
+  transform: scale(1.04);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .img-skeleton:after {
+    display: none;
+  }
+}
+
+.toc-list a.on {
+  color: var(--fg);
+  border-left-color: var(--fg);
+  background: var(--softer);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+/* 文章骨架：顶部直接复用 .phead（内边距、标题字号、meta 下边线都来自内容），
+   正文用行宽不等的灰条，块与块之间留一段空白代替段落间距。 */
+.skl-article {
+  display: grid;
+  gap: 12px;
+}
+
+.skl-article .meta {
+  min-height: 34px;
+}
+
+.skl-tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.skl-lines {
+  display: grid;
+  gap: 12px;
+}
+
+.skl-line-gap {
+  height: 14px;
+}
+
+.mgrid>.mtile {
+  animation: thumb-in var(--dur) var(--ease-out-ios) both;
+}
+
+.mgrid>.mtile:nth-child(2) {
+  animation-delay: 30ms;
+}
+
+.mgrid>.mtile:nth-child(3) {
+  animation-delay: 60ms;
+}
+
+.mgrid>.mtile:nth-child(4) {
+  animation-delay: 90ms;
+}
+
+.mgrid>.mtile:nth-child(5) {
+  animation-delay: .12s;
+}
+
+.mgrid>.mtile:nth-child(6) {
+  animation-delay: .15s;
+}
+
+.mgrid>.mtile:nth-child(n+7) {
+  animation-delay: .18s;
+}
+
+/* 侧栏的盒子只做透明度入场。fade-up 那个 translateY(8px) 不参与布局，却参与
+   可滚动溢出：目录盒恰好是最后一个盒子，目录出现的那一瞬侧栏会多出 8px 的
+   可滚区域，滑条闪一下、随动画结束再消失。换成纯透明度就没有这一段。 */
+.public-sidebar .box {
+  animation: fade-in var(--dur) var(--ease-out-ios);
+}
+
+@keyframes fade-in {
+  0% {
+    opacity: 0;
+  }
+}
+
+.tl-row b {
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.post-wrap .phead,
+.post-wrap .plain-body,
+.gpage .plain-body {
+  animation: fade-up var(--dur) var(--ease-out-ios);
+}
+
+.cmt-sec h3 span {
+  display: inline-block;
+  animation: count-pop var(--dur-fast) var(--ease-spring);
+}
+
+@keyframes count-pop {
+  40% {
+    scale: 1.12;
+  }
+}
+
+/* ============================================================
+   刷新不闪：旧内容留在原位
+   ------------------------------------------------------------
+   后台翻页 / 删除 / 保存，以及前台翻页、换标签、发评论，都会重新请求同一块
+   列表。过去的写法是「加载一开始就把列表换成 LOADING 或骨架」：一次请求被画
+   成两次跳变——内容先整块消失，再重新长出来。
+   现在的约定是：列表里已经有内容时**不清空**，只把这块淡到 55%；新数据到达
+   后原地替换。只有「第一次加载」（列表本来就是空的）才画骨架。
+   ============================================================ */
+[data-busy] {
+  transition: opacity var(--dur-fast) var(--ease-ios);
+}
+
+[data-busy=true] {
+  opacity: .55;
+}
+
+/* 骨架本身淡入：等待不是「啪」地铺满，而是内容先退成灰条。 */
+@keyframes skl-in {
+  0% {
+    opacity: 0;
+  }
+}
+
+.ulist .urow,
+.frow {
+  animation: row-in var(--dur-fast) var(--ease-out-ios) both;
+}
+
+.ulist .urow:nth-child(2),
+.frow:nth-child(2) {
+  animation-delay: 22ms;
+}
+
+.ulist .urow:nth-child(3),
+.frow:nth-child(3) {
+  animation-delay: 44ms;
+}
+
+.ulist .urow:nth-child(4),
+.frow:nth-child(4) {
+  animation-delay: 66ms;
+}
+
+.ulist .urow:nth-child(5),
+.frow:nth-child(5) {
+  animation-delay: 88ms;
+}
+
+.ulist .urow:nth-child(6),
+.frow:nth-child(6) {
+  animation-delay: .11s;
+}
+
+.ulist .urow:nth-child(n+7),
+.frow:nth-child(n+7) {
+  animation-delay: 132ms;
+}
+
+.uedit {
+  animation: fade-up var(--dur-fast) var(--ease-out-ios);
+}
+
+.stat {
+  animation: stat-in var(--dur) var(--ease-out-ios) both;
+}
+
+.stat:nth-child(2) {
+  animation-delay: 35ms;
+}
+
+.stat:nth-child(3) {
+  animation-delay: 70ms;
+}
+
+.stat:nth-child(4) {
+  animation-delay: 105ms;
+}
+
+.stat:nth-child(5) {
+  animation-delay: .14s;
+}
+
+@keyframes stat-in {
+  0% {
+    opacity: 0;
+    translate: 0 8px;
+  }
+}
+
+.set-count {
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.set-count.over {
+  animation: count-pop var(--dur-fast) var(--ease-spring);
+}
+
+.swap-text,
+.bc b {
+  display: inline-block;
+  animation: swap-text var(--dur-fast) var(--ease-out-ios);
+}
+
+.cloud .chip {
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), scale var(--dur-fast) var(--ease-spring);
+}
+
+.cloud .chip:hover {
+  scale: 1.04;
+}
+
+/* 标签云：悬停时轻微撑开；被选中的那一枚在类名落到身上的瞬间弹一下
+   （CSS 动画在元素开始匹配声明时播放，切换标签不需要重挂载）。 */
+.chip.solid {
+  animation: chip-pop var(--dur-fast) var(--ease-spring);
+}
+
+@keyframes chip-pop {
+  40% {
+    scale: 1.06;
+  }
+}
+
+@keyframes swap-text {
+  0% {
+    opacity: 0;
+    translate: 0 2px;
+  }
+}
+
+.pagination-item,
+.pagination-prev,
+.pagination-next,
+.pagination-jump {
+  transition: background-color var(--dur-tap) var(--ease), color var(--dur-tap) var(--ease), border-color var(--dur-tap) var(--ease);
+}
+
+.cmt-sec>.cform,
+.mom .cmt-sec {
+  animation: fade-up var(--dur-fast) var(--ease-out-ios);
+}
+
+/* ============================================================
+   行式骨架与内容条目的行高对齐
+   ------------------------------------------------------------
+   flex 行里没有文字就没有行盒（.nm / .ops / .mom-ft 都是这种行），灰条本身
+   只有 0.7em 高，不补 min-height 的话骨架会比真实条目矮一截。这里只补
+   「文字撑起来的」那部分高度，尺寸仍以内容规则为准。
+   ============================================================ */
+.skl-view .nm {
+  min-height: 22px;
+}
+
+.skl-view .ops {
+  min-height: 16px;
+  align-items: center;
+}
+
+.skl-view .mom-ft {
+  min-height: 24px;
+  align-items: center;
+}
+
+.skl-archive .tl-row {
+  min-height: 42px;
+}
+
+.skl-moments,
+.skl-results {
+  display: grid;
+}
+
+.skl-cloud {
+  justify-content: center;
+}
+
+/* ============================================================
+   减少动态效果（系统级偏好）
+   ------------------------------------------------------------
+   动画与过渡压到 0.001ms 而不是 0：0 会让 animationend 不触发，依赖它收尾的
+   逻辑会挂住；0.001ms 仍然是一次「立即完成」。迭代次数锁 1，滚动回到瞬时。
+
+   这一条只是 CSS 兜底，不代表 JS 可以省判断：路由入场走 Web Animations API，
+   CSS 管不到它（见 lib/motion.ts 的 prefersReducedMotion 与灯箱的退场时长）。
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *:before,
+  *:after {
+    animation-duration: .001ms!important;
+    animation-delay: 0s!important;
+    animation-iteration-count: 1!important;
+    transition-duration: .001ms!important;
+    transition-delay: 0s!important;
+    scroll-behavior: auto!important;
+  }
 }

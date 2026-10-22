@@ -38,7 +38,13 @@ export default defineConfig({
       // 「未被测试导入的文件也计入」现在由 include 独立保证——A/B 实测：
       // 去掉前后覆盖率表逐行完全一致（见 debug/cov-table-*.txt）。
       include: ['src/**/*.{ts,tsx}'],
-      exclude: ['src/vite-env.d.ts', 'src/test/**'],
+      // src/types 只放纯类型声明（.d.ts），没有可执行语句；留着会让覆盖率表
+      // 多一行 0/0 的噪音。0.1.4 之后这里已经空了（ink-design 的类型补丁随
+      // 上游重建 dist 一起删除），规则留着是为了下次有声明文件时不必再想起来加。
+      // src/lib/dialog.tsx 同理：它只是 `export { ... } from 'ink-design'` 这一行
+      // 纯转发，v8 会给「零语句模块」记一条空记录并算成 0%，把整站阈值拖垮。
+      // 它没有可覆盖的代码；文件头注明了「加逻辑就把它移出 exclude」。
+      exclude: ['src/vite-env.d.ts', 'src/types/**', 'src/test/**', 'src/lib/dialog.tsx'],
       thresholds: {
         lines: 100,
         functions: 100,

@@ -55,6 +55,13 @@ func NewClient(baseURL, apiKey string) *Client {
 	}
 }
 
+// 任务轮询参数。默认 30 秒 / 100 毫秒；测试把它们调小，才能在毫秒级
+// 验证「超时」与「ctx 取消」两条退出路径。
+var (
+	taskPollTimeout  = 30 * time.Second
+	taskPollInterval = 100 * time.Millisecond
+)
+
 // EnsureIndex 幂等地建索引并应用可搜索字段设置。
 //
 // 索引已存在时 Meilisearch 返回 index_already_exists，这里按成功路径放行，
@@ -268,15 +275,23 @@ func articleDoc(article *model.Article) map[string]any {
 	if tags == nil {
 		tags = []string{}
 	}
+	tagsEN := article.TagsEN
+	if tagsEN == nil {
+		tagsEN = []string{}
+	}
 	doc := map[string]any{
-		"doc_id":     docID("article", article.ID),
-		"kind":       "article",
-		"id":         article.ID,
-		"title":      article.Title,
-		"content":    article.Content,
-		"created_at": article.CreatedAt,
-		"updated_at": article.UpdatedAt,
-		"tags":       tags,
+		"doc_id":       docID("article", article.ID),
+		"kind":         "article",
+		"id":           article.ID,
+		"title":        article.Title,
+		"content":      article.Content,
+		"title_en":     article.TitleEN,
+		"content_en":   article.ContentEN,
+		"ai_generated": article.AIGenerated,
+		"created_at":   article.CreatedAt,
+		"updated_at":   article.UpdatedAt,
+		"tags":         tags,
+		"tags_en":      tagsEN,
 	}
 	if article.CoverMediaID != nil {
 		doc["cover_media_id"] = *article.CoverMediaID
@@ -337,7 +352,7 @@ func (c *Client) waitTask(ctx context.Context, taskUID int64) error {
 		return nil
 	}
 	logging.Debugf("[search] waiting for meilisearch task %d", taskUID)
-	const timeout = 30 * time.Second
+	timeout := taskPollTimeout
 	deadline := time.Now().Add(timeout)
 	for {
 		var task taskStatus
@@ -361,7 +376,7 @@ func (c *Client) waitTask(ctx context.Context, taskUID int64) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(taskPollInterval):
 		}
 	}
 }

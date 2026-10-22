@@ -147,7 +147,7 @@ func TestRepositoriesSurfaceClosedDatabaseErrors(t *testing.T) {
 		func() { _, _ = tagRepo.GetByID(ctx, 1) },
 		func() { _, _, _ = tagRepo.ListArticlesByTag(ctx, 1, Pagination{}) },
 		func() { _, _ = tagRepo.CountByTag(ctx, 1) },
-		func() { _ = tagRepo.Rename(ctx, 1, "x") },
+		func() { _ = tagRepo.Rename(ctx, 1, "x", "") },
 	} {
 		call()
 	}
