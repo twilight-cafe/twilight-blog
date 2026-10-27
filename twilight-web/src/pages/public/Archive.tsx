@@ -2,7 +2,7 @@
 // 注意 fetchAllArticles 一次性拉取所有文章（翻完所有分页），不做分页/虚拟滚动，
 // 文章量很大时这一页会一次性请求很多接口并持有全部数据——属于已知瓶颈。
 // 年份计算复用「时间戳 >1e12 视为毫秒否则视为秒」的隐式约定（见 lib/format）。
-// 列表按创建时间倒序、再按年聚合；标签为空时用空 <span /> 占位以保持布局对齐。
+// 列表按创建时间倒序、再按年聚合；归档行只展示日期与标题，不展示标签。
 
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -66,7 +66,6 @@ export default function Archive() {
       {/* 篇数/年数要到数据到达才有，但它们是 h1 里的行内 small：出现时只改这
           一行里的内容，不改变页头高度。 */}
       <PageHero
-        kicker="ARCHIVE"
         title={<>{t('归档', 'Archive')}{loading ? null : <small>{t(`共 ${total} 篇 · ${groups.length} 年`, `${total} posts · ${groups.length} years`)}</small>}</>}
         subtitle={t('所有文字按时间封存，随时可以回头。', 'Everything written, sealed by date and ready to revisit.')}
       />
@@ -79,7 +78,6 @@ export default function Archive() {
               <Link to={`/post/${article.id}`} style={{ display: 'contents' }}>
                 <time>{fmtMonthDay(article.created_at)}</time>
                 <b>{articleTitle(article, locale)}</b>
-                {article.tags[0] ? <span className="chip">{article.tags[0]}</span> : <span />}
               </Link>
             </Reveal>
           ))}

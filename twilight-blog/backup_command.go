@@ -68,6 +68,15 @@ type backupOptions struct {
 }
 
 // runBackupCommand 执行 backup 子命令，返回进程退出码。
+var (
+	configureBackupLogging = logging.Configure
+	backupCreateFn         = backup.Create
+	closeArchiveTemp       = func(f *os.File) error { return f.Close() }
+	hashArchiveFn          = backup.HashFile
+	absPathForBackup       = filepath.Abs
+	readBuildInfoFn        = debug.ReadBuildInfo
+)
+
 func runBackupCommand(args []string) int {
 	opts, err := parseBackupArgs(args)
 	if err != nil {
@@ -77,7 +86,7 @@ func runBackupCommand(args []string) int {
 
 	// 与 admin / email 子命令一致：先让日志可用，这样一次备份（以及它引出的那些
 	// 警告）会在 log.txt 里留下痕迹。
-	if err := logging.Configure(""); err != nil {
+	if err := configureBackupLogging(""); err != nil {
 		fmt.Fprintf(stderr(), "configure logging: %v\n", err)
 		return exitFailure
 	}
@@ -237,10 +246,9 @@ func performBackup(opts backupOptions) (*backup.Manifest, error) {
 	if opts.withLogs {
 		// 轮转过的日志（log.txt.1 …）也要带上：只带当前那一个，最老的那批
 		// 恰恰是「出问题之前」的记录。
-		matches, err := filepath.Glob(logging.DefaultLogFile + "*")
-		if err != nil {
-			return nil, fmt.Errorf("find the log files: %w", err)
-		}
+		// 模式是固定字面量，Glob 不会因为调用方输入而失败；不再写一个
+		// 永远不可达的错误分支。
+		matches, _ := filepath.Glob(logging.DefaultLogFile + "*")
 		sort.Strings(matches)
 		for _, path := range matches {
 			info, err := os.Stat(path)
@@ -290,8 +298,8 @@ func writeArchive(opts backupOptions, entries []backup.Entry, builtBy backup.Bui
 		}
 	}()
 
-	manifest, createErr := backup.Create(temp, entries, builtBy, time.Now())
-	closeErr := temp.Close()
+	manifest, createErr := backupCreateFn(temp, entries, builtBy, time.Now())
+	closeErr := closeArchiveTemp(temp)
 	if createErr != nil {
 		return nil, createErr
 	}
@@ -306,7 +314,7 @@ func writeArchive(opts backupOptions, entries []backup.Entry, builtBy backup.Bui
 
 	// 旁文件记下整卷的 sha256。传输之后核对一次是很便宜的保险，
 	// 而一份没被校验过的备份只能算「很可能完整」。
-	sum, err := backup.HashFile(opts.output)
+	sum, err := hashArchiveFn(opts.output)
 	if err != nil {
 		logging.Warnf("[backup] could not hash the new archive: %v", err)
 		return manifest, nil
@@ -350,11 +358,11 @@ func checkOutputTarget(output, mediaDir string) error {
 	if output == "" || output == "-" {
 		return nil
 	}
-	absOutput, err := filepath.Abs(output)
+	absOutput, err := absPathForBackup(output)
 	if err != nil {
 		return nil // 规范化不了就交给后面写文件时报错，那里有更具体的上下文
 	}
-	absMedia, err := filepath.Abs(mediaDir)
+	absMedia, err := absPathForBackup(mediaDir)
 	if err != nil {
 		return nil
 	}
@@ -417,7 +425,7 @@ func readSiteSetting(path, key, fallback string) string {
 // 不需要构建脚本额外传 -ldflags。从 VCS 之外的目录、或用 -buildvcs=false 构建时
 // 读不到值，此时如实留空——**不要编一个假的**：一个错的版本号会让排障方向完全跑偏。
 func buildRevision() string {
-	info, ok := debug.ReadBuildInfo()
+	info, ok := readBuildInfoFn()
 	if !ok {
 		return ""
 	}

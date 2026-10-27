@@ -74,6 +74,24 @@ export function resetClientMock(mock: ClientMock): void {
   for (const fn of Object.values(mock.__blogTarget)) {
     if (fn && typeof fn.mockReset === 'function') fn.mockReset()
   }
+  // SiteSettings 挂载时会拉一次翻译配置。给它一个稳定的默认响应，
+  // 免得每个渲染该页面的用例都要记得 mock —— 默认值就是「未配置」。
+  ;(mock.blog.getTranslateConfig as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+    enabled: true,
+    url: '',
+    model: '',
+    timeout_seconds: 60,
+    max_tokens: 4096,
+    prompt_template: '',
+    thinking_effort: '',
+    api_key_configured: false,
+    configured: false,
+  })
+  // SiteSettings 挂载时拉取管理端快照（评论通知地址）。默认给一个成功响应，
+  // 与真实服务端一致；需要模拟加载失败的用例再自行 mockRejectedValue。
+  ;(mock.blog.getAdminSite as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+    comment_notify_to: '',
+  })
   mock.refreshAuth.mockReset()
   mock.refreshAuth.mockImplementation(() => Promise.resolve(mock.getCurrentUser()))
   mock.logout.mockReset()
@@ -119,6 +137,7 @@ export function makeArticle(overrides: Partial<import('twilight-blog-api').Artic
     title_en: '',
     content_en: '',
     ai_generated: false,
+    ai_generated_en: false,
     created_at: NOW,
     updated_at: NOW,
     // 默认没有头图。它是**必填**字段（服务端恒输出 null），所以构造器也必须给出，
@@ -135,6 +154,8 @@ export function makePage(overrides: Partial<import('twilight-blog-api').Page> = 
     id: 1,
     title: '关于',
     content: '# 关于\n正文',
+    title_en: '',
+    content_en: '',
     created_at: NOW,
     updated_at: NOW,
     ...overrides,

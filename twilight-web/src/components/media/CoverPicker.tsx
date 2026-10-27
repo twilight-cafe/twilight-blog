@@ -46,7 +46,7 @@ export default function CoverPicker({ value, onChange, onBusyChange, disabled = 
     try {
       const [uploaded] = await blog.uploadMedia([file])
       if (!uploaded) {
-        toast('上传失败')
+        toast(t('上传失败', 'Upload failed'))
         return
       }
       if (uploaded.media_type !== 'image') {
@@ -57,7 +57,7 @@ export default function CoverPicker({ value, onChange, onBusyChange, disabled = 
         } catch {
           // 忽略：清理失败不影响这里的用户提示。
         }
-        toast('头图必须是图片')
+        toast(t('头图必须是图片', 'The cover must be an image'))
         return
       }
       onChange(uploaded.id)

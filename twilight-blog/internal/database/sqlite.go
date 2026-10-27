@@ -35,6 +35,7 @@ var (
 	rowsErr                      = (*sql.Rows).Err
 	rowsAffected                 = func(result sql.Result) (int64, error) { return result.RowsAffected() }
 	ensureColumnFn               = ensureColumn
+	columnExistsFn               = columnExists
 	execMigration                = func(db *sql.DB, statement string) (sql.Result, error) { return db.Exec(statement) }
 	backfillUsernamesFn          = backfillUsernames
 	selectUsersWithoutUsernameFn = selectUsersWithoutUsername
@@ -300,9 +301,24 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("migrate database: %w", err)
 	}
 
+	// ai_generated_en 是后加的「拆分」列。老库在此之前只有一个全局 ai_generated，
+	// 补列后必须把那个值复制到英文列一次，否则历史上被标成 AI 的文章在英文界面
+	// 会突然失去声明。只在「这次才加列」时回填：之后再回填会把站长明确取消掉的
+	// 英文标记又改回 true。
+	hadAIGeneratedEN, err := columnExistsFn(db, "articles", "ai_generated_en")
+	if err != nil {
+		return err
+	}
+
 	for _, column := range addedColumns {
 		if err := ensureColumnFn(db, column.table, column.name, column.definition); err != nil {
 			return err
+		}
+	}
+
+	if !hadAIGeneratedEN {
+		if _, err := execMigration(db, "UPDATE articles SET ai_generated_en = ai_generated"); err != nil {
+			return fmt.Errorf("backfill ai_generated_en: %w", err)
 		}
 	}
 
@@ -493,10 +509,31 @@ func uniqueUsername(candidate string, taken map[string]struct{}) string {
 // 用 PRAGMA table_info 主动探测，而不是「直接 ALTER 再忽略 duplicate column 错误」，
 // 是为了让日志能准确区分「本次新增了列」与「本来就有」。
 func ensureColumn(db *sql.DB, table, column, definition string) error {
+	found, err := columnExists(db, table, column)
+	if err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+
+	logging.Debugf("[database] adding column %s.%s %s", table, column, definition)
+	if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
+	}
+	return nil
+}
+
+// columnExists 报告表里是否已经有这一列。
+//
+// 它被 ensureColumn 与「只在补列时执行一次的数据回填」共用：后者需要知道
+// **补列之前**的状态，否则每次启动都会把回填再跑一遍，把用户明确取消掉的
+// 标记又改回去。
+func columnExists(db *sql.DB, table, column string) (bool, error) {
 	logging.Debugf("[database] checking column %s.%s", table, column)
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
-		return fmt.Errorf("check column %s.%s: %w", table, column, err)
+		return false, fmt.Errorf("check column %s.%s: %w", table, column, err)
 	}
 	defer rows.Close()
 
@@ -508,23 +545,17 @@ func ensureColumn(db *sql.DB, table, column, definition string) error {
 		var defaultValue any
 		var pk int
 		if err := rowsScan(rows, &cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
-			return fmt.Errorf("scan column %s.%s: %w", table, column, err)
+			return false, fmt.Errorf("scan column %s.%s: %w", table, column, err)
 		}
 		if name == column {
 			found = true
 			break
 		}
 	}
+	// rowsErr 必须在提前退出之后也检查一次：遍历中断（驱动/连接故障）与
+	// 「确实没这一列」是两件事，把前者当成后者的结果就是一次静默的误判。
 	if err := rowsErr(rows); err != nil {
-		return fmt.Errorf("iterate columns %s: %w", table, err)
+		return false, fmt.Errorf("iterate columns %s: %w", table, err)
 	}
-	if found {
-		return nil
-	}
-
-	logging.Debugf("[database] adding column %s.%s %s", table, column, definition)
-	if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)); err != nil {
-		return fmt.Errorf("add column %s.%s: %w", table, column, err)
-	}
-	return nil
+	return found, nil
 }

@@ -304,6 +304,7 @@ describe('Editor 头图与发布时间', () => {
       titleEn: '',
       contentEn: '',
       aiGenerated: false,
+      aiGeneratedEn: false,
       tags: ['Go'],
       coverMediaId: 42,
       publishedAt: expected,
@@ -333,6 +334,7 @@ describe('Editor 头图与发布时间', () => {
       titleEn: '',
       contentEn: '',
       aiGenerated: false,
+      aiGeneratedEn: false,
       tags: ['Go'],
       coverMediaId: null,
     }))
@@ -369,6 +371,7 @@ describe('Editor 头图与发布时间', () => {
       titleEn: '',
       contentEn: '',
       aiGenerated: false,
+      aiGeneratedEn: false,
       tags: [],
       coverMediaId: 55,
     }))
@@ -390,6 +393,7 @@ describe('Editor 头图与发布时间', () => {
       titleEn: '',
       contentEn: '',
       aiGenerated: false,
+      aiGeneratedEn: false,
       tags: [],
       coverMediaId: null,
       publishedAt: expected,

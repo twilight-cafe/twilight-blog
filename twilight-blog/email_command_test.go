@@ -62,6 +62,21 @@ func TestParseTarget(t *testing.T) {
 			args:    []string{"-target", "not-an-email"},
 			wantErr: true,
 		},
+		{
+			name:    "unknown argument",
+			args:    []string{"-target", "abc@def.com", "--cc", "x@y.com"},
+			wantErr: true,
+		},
+		{
+			name:    "duplicate target",
+			args:    []string{"-target", "abc@def.com", "-target", "other@def.com"},
+			wantErr: true,
+		},
+		{
+			name: "display name is normalised",
+			args: []string{"--target=Someone <someone@example.com>"},
+			want: "someone@example.com",
+		},
 	}
 
 	for _, tt := range tests {

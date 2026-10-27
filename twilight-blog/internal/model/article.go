@@ -18,21 +18,23 @@ package model
 //
 //   - Title / Content 是**中文**（也是唯一必填的一份）；TitleEN / ContentEN 是
 //     附加的英文版本，空串表示没有。前台按当前语言取用，英文缺失时逐字段回退中文。
-//   - AIGenerated 是站长在编辑器里显式勾选的标记，服务端不做任何推断（不根据
-//     内容猜、不根据来源猜）。前台据此显示「本文由 AI 生成」的提示条。
+//   - AIGenerated / AIGeneratedEN 是**按语言独立**的 AI 声明：中文版与英文版
+//     各有一个开关，互不影响。旧库只有一列 ai_generated，迁移时把它复制到
+//     ai_generated_en，保持升级前的显示结果不变。
 //   - TagsEN 与 Tags **等长同序**，由 repository 在同一次 JOIN 里装配；某一项为空串
 //     表示该标签没有英文名。它不是表上的列（标签名住在 tags 表）。
 type Article struct {
-	ID           int64
-	Title        string
-	Content      string
-	TitleEN      string
-	ContentEN    string
-	AIGenerated  bool
-	CreatedAt    int64
-	UpdatedAt    int64
-	DeletedAt    *int64
-	CoverMediaID *int64
-	Tags         []string
-	TagsEN       []string
+	ID            int64
+	Title         string
+	Content       string
+	TitleEN       string
+	ContentEN     string
+	AIGenerated   bool
+	AIGeneratedEN bool
+	CreatedAt     int64
+	UpdatedAt     int64
+	DeletedAt     *int64
+	CoverMediaID  *int64
+	Tags          []string
+	TagsEN        []string
 }

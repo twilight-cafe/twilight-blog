@@ -64,7 +64,7 @@ func scanUser(row scanner) (*User, error) {
 	// is_admin 扫进 int64 再转换，而不是直接扫 *bool：SQLite 的 INTEGER 到 Go 的
 	// bool 依赖驱动实现，赌错的话错误只会在运行期出现。一次显式转换换掉这个不确定性。
 	var isAdmin int64
-	if err := row.Scan(&user.ID, &user.Email, &user.Username, &user.Nickname, &user.PasswordHash, &isAdmin, &user.AvatarMediaID, &user.CreatedAt, &user.UpdatedAt); err != nil {
+	if err := scanValuesFn(row, &user.ID, &user.Email, &user.Username, &user.Nickname, &user.PasswordHash, &isAdmin, &user.AvatarMediaID, &user.CreatedAt, &user.UpdatedAt); err != nil {
 		return nil, err
 	}
 	user.IsAdmin = isAdmin != 0
@@ -151,7 +151,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
 		return fmt.Errorf("insert user: %w", err)
 	}
 
-	id, err := res.LastInsertId()
+	id, err := lastInsertIDFn(res)
 	if err != nil {
 		return fmt.Errorf("get last insert id: %w", err)
 	}
@@ -226,7 +226,7 @@ WHERE id = ? AND is_admin = 0
 		return fmt.Errorf("update user profile: %w", err)
 	}
 
-	affected, err := res.RowsAffected()
+	affected, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("update user profile rows affected: %w", err)
 	}
@@ -235,8 +235,8 @@ WHERE id = ? AND is_admin = 0
 	}
 
 	// 一行都没改到。区分两种情况，让操作员知道该改 id 还是该换入口。
-	var isAdmin int
-	switch scanErr := r.db.QueryRowContext(ctx, `SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin); {
+	isAdmin, scanErr := classifyUpdateTargetFn(ctx, r.db, userID)
+	switch {
 	case errors.Is(scanErr, sql.ErrNoRows):
 		return ErrUserNotFound
 	case scanErr != nil:
@@ -251,6 +251,17 @@ WHERE id = ? AND is_admin = 0
 		return ErrUserNotFound
 	}
 }
+
+// classifyUpdateTarget 回查「影响 0 行」的目标到底是哪种账号。
+// 独立成函数是为了让这条分类查询的失败分支可测（列改名无法只影响它，
+// 因为 UPDATE 自己也用到了同一个 is_admin 列）。
+func classifyUpdateTarget(ctx context.Context, db *sql.DB, userID int64) (int, error) {
+	var isAdmin int
+	err := db.QueryRowContext(ctx, `SELECT is_admin FROM users WHERE id = ?`, userID).Scan(&isAdmin)
+	return isAdmin, err
+}
+
+var classifyUpdateTargetFn = classifyUpdateTarget
 
 // List 返回一页**访客**账号，按创建时间倒序。
 // total 与当页在同一个读事务里取出（见 query.go 的 readTx），两者不会不一致。
@@ -289,7 +300,7 @@ LIMIT ? OFFSET ?
 			}
 			users = append(users, *user)
 		}
-		if err := rows.Err(); err != nil {
+		if err := rowsErrFn(rows); err != nil {
 			return fmt.Errorf("iterate users: %w", err)
 		}
 		return nil
@@ -301,7 +312,7 @@ LIMIT ? OFFSET ?
 }
 
 func requireAffected(res sql.Result, notFound error) error {
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
 	}

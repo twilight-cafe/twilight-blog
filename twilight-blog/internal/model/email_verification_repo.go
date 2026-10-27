@@ -75,7 +75,7 @@ VALUES (?, ?, ?, NULL, 0, ?)
 		return fmt.Errorf("insert email verification code: %w", err)
 	}
 
-	id, err := res.LastInsertId()
+	id, err := lastInsertIDFn(res)
 	if err != nil {
 		return fmt.Errorf("get last insert id: %w", err)
 	}
@@ -110,10 +110,9 @@ LIMIT 1
 		}
 		return nil, fmt.Errorf("find active verification code: %w", err)
 	}
-	if consumedAt.Valid {
-		value := consumedAt.Int64
-		code.ConsumedAt = &value
-	}
+	// 查询条件带 consumed_at IS NULL，所以这里永远扫到 NULL。保留列本身是因为
+	// SELECT 的列顺序与结构体对齐；不再写一个永远不可达的赋值分支。
+	_ = consumedAt
 	return &code, nil
 }
 
@@ -136,7 +135,7 @@ WHERE id = ? AND consumed_at IS NULL
 	if err != nil {
 		return fmt.Errorf("claim verification code: %w", err)
 	}
-	affected, err := res.RowsAffected()
+	affected, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("claim verification code: %w", err)
 	}
@@ -231,7 +230,7 @@ WHERE id = ? AND consumed_at IS NULL AND attempts < ?
 		return false, fmt.Errorf("reserve verification attempt: %w", err)
 	}
 
-	affected, err := res.RowsAffected()
+	affected, err := rowsAffectedFn(res)
 	if err != nil {
 		return false, fmt.Errorf("reserve verification attempt rows affected: %w", err)
 	}

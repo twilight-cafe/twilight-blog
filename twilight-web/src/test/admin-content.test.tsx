@@ -1,7 +1,7 @@
 // admin-content.test.tsx —— Posts / PagesAdmin(+PageEdit/NewPage) / MomentsAdmin / Editor / Profile / SiteSettings
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 
 import Posts from '../pages/admin/Posts'
 import PagesAdmin, { NewPage, PageEdit } from '../pages/admin/PagesAdmin'
@@ -12,7 +12,8 @@ import SiteSettings from '../pages/admin/SiteSettings'
 import { DialogProvider } from '../lib/dialog'
 import { ToastProvider } from '../lib/toast'
 import { resetSiteCacheForTests } from '../lib/site'
-import { NOW, adminMe, getSharedClientMock, makeArticle, makeMedia, makeMoment, makePage, resetClientMock, visitorMe } from './helpers'
+import { setLocale } from '../lib/i18n'
+import { NOW, adminMe, getSharedClientMock, makeArticle, makeMedia, makeMoment, makePage, makeTag, resetClientMock, visitorMe } from './helpers'
 
 vi.mock('../lib/client', async () => {
   const { getSharedClientMock } = await import('./helpers')
@@ -42,12 +43,18 @@ function renderRouted(ui: React.ReactElement, route: string, pattern: string) {
   )
 }
 
-function renderPlain(ui: React.ReactElement) {
+function renderPlain(ui: React.ReactElement, route = '/') {
   return render(
-    <ToastProvider>
-      <DialogProvider>{ui}</DialogProvider>
-    </ToastProvider>,
+    <MemoryRouter initialEntries={[route]}>
+      <ToastProvider>
+        <DialogProvider>{ui}</DialogProvider>
+      </ToastProvider>
+    </MemoryRouter>,
   )
+}
+
+function LocationProbe() {
+  return <div data-testid="location-search">{useLocation().search}</div>
 }
 
 beforeEach(() => {
@@ -110,6 +117,15 @@ describe('Posts', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Page 2' }))
     await waitFor(() => expect(client.blog.listArticles).toHaveBeenLastCalledWith({ page: 2, pageSize: 12 }))
     expect(screen.queryByText(/已选/)).toBeNull()
+  })
+
+  it('页码从 URL 恢复：带 ?page=2 打开后台文章列表直接请求第 2 页', async () => {
+    client.blog.listArticles.mockResolvedValue(paged([makeArticle({ id: 5, title: '第二页文章' })], 2, 3, 25))
+
+    renderRouted(<Posts />, '/admin/posts?page=2', '/admin/posts')
+    await waitFor(() => expect(client.blog.listArticles).toHaveBeenCalledWith({ page: 2, pageSize: 12 }))
+    expect(screen.getByText('第二页文章')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Page 2' }).getAttribute('aria-current')).toBe('page')
   })
 
   // 这条用例覆盖「选中项裁剪」这个 effect（Posts.tsx 列表刷新后剔除已消失的 id）。
@@ -198,7 +214,7 @@ describe('PagesAdmin', () => {
     fireEvent.change((document.querySelector('input[placeholder=页面标题]') as HTMLInputElement), { target: { value: '新标题' } })
     client.blog.updatePage.mockResolvedValueOnce({ message: 'ok' })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() => expect(client.blog.updatePage).toHaveBeenCalledWith(4, { title: '新标题', content: '旧内容' }))
+    await waitFor(() => expect(client.blog.updatePage).toHaveBeenCalledWith(4, { title: '新标题', content: '旧内容', titleEn: '', contentEn: '' }))
     await waitFor(() => expect(screen.getByText('PAGES-LIST')).toBeTruthy(), { timeout: 3000 })
     first.unmount()
 
@@ -220,7 +236,7 @@ describe('PagesAdmin', () => {
     fireEvent.change(textarea, { target: { value: '正文' } })
     client.blog.createPage.mockResolvedValueOnce(makePage({ id: 5 }))
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() => expect(client.blog.createPage).toHaveBeenCalledWith({ title: '新页面', content: '正文' }))
+    await waitFor(() => expect(client.blog.createPage).toHaveBeenCalledWith({ title: '新页面', content: '正文', titleEn: '', contentEn: '' }))
     await waitFor(() => expect(screen.getByText('PAGES-LIST')).toBeTruthy(), { timeout: 3000 })
   })
 })
@@ -273,7 +289,7 @@ describe('Editor', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
     // coverMediaId: null 必须出现：它是「这篇没有头图」的**指令**，缺了字段服务端
     // 会当成「别动头图」。新建时两者恰好等价，编辑时不等价（见下一条用例）。
-    await waitFor(() => expect(client.blog.createArticle).toHaveBeenCalledWith({ title: '标题X', content: '****', titleEn: '', contentEn: '', aiGenerated: false, tags: [], coverMediaId: null }))
+    await waitFor(() => expect(client.blog.createArticle).toHaveBeenCalledWith({ title: '标题X', content: '****', titleEn: '', contentEn: '', aiGenerated: false, aiGeneratedEn: false, tags: [], coverMediaId: null }))
     await waitFor(() => expect(screen.getByText('EDITOR-REPLACED')).toBeTruthy(), { timeout: 3000 })
   })
 
@@ -293,12 +309,52 @@ describe('Editor', () => {
     //  - coverMediaId: null —— 这篇本来就没头图，保存后必须还是没头图；
     //  - publishedAt: NOW/1000 —— 编辑器把 created_at 回填进日期选择器，保存时按
     //    「所见即所存」原样送回，单位从毫秒收敛成秒（服务端 created_at 就是秒）。
-    await waitFor(() => expect(client.blog.updateArticle).toHaveBeenCalledWith(7, { title: '旧文', content: '旧正文', titleEn: '', contentEn: '', aiGenerated: false, tags: ['Go'], coverMediaId: null, publishedAt: NOW / 1000 }))
+    await waitFor(() => expect(client.blog.updateArticle).toHaveBeenCalledWith(7, { title: '旧文', content: '旧正文', titleEn: '', contentEn: '', aiGenerated: false, aiGeneratedEn: false, tags: ['Go'], coverMediaId: null, publishedAt: NOW / 1000 }))
     first.unmount()
 
     renderRouted(<Editor />, '/admin/editor/404', '/admin/editor/:id')
     await waitFor(() => expect(screen.getByText('POSTS-LIST')).toBeTruthy(), { timeout: 3000 })
     expect(screen.getAllByText('没了').length).toBeGreaterThan(0)
+  })
+
+  it('标签输入：已有标签进入下拉建议并可点选；读取失败仍能手输创建', async () => {
+    client.blog.listTags.mockResolvedValueOnce(paged([
+      makeTag({ id: 1, name: '前端', name_en: 'Frontend' }),
+      makeTag({ id: 2, name: 'Go', name_en: 'Golang' }),
+    ]))
+    const first = renderRouted(<Editor />, '/admin/editor', '/admin/editor')
+    await waitFor(() => expect(client.blog.listTags).toHaveBeenCalledWith({ page: 1, pageSize: 12 }))
+
+    // 输入过滤词：下拉里应该出现匹配的已有标签，而不是恒为「无数据」。
+    const combo = screen.getByRole('combobox')
+    fireEvent.change(combo, { target: { value: '前' } })
+    const option = screen.getByRole('option')
+    expect(option.textContent).toBe('前端')
+    fireEvent.click(option)
+    expect(first.container.querySelector('.select-tag')?.textContent).toContain('前端')
+    first.unmount()
+
+    // 标签列表读不到：建议为空，但输入 + 回车创建新标签的主路径不受影响。
+    client.blog.listTags.mockRejectedValueOnce(new Error('down'))
+    const second = renderRouted(<Editor />, '/admin/editor', '/admin/editor')
+    const manual = screen.getByRole('combobox')
+    fireEvent.change(manual, { target: { value: '新标签' } })
+    fireEvent.keyDown(manual, { key: 'Enter' })
+    expect(second.container.querySelector('.select-tag')?.textContent).toContain('新标签')
+    second.unmount()
+
+    // 标签请求在卸载之后才落地（成功 / 失败各一次）：alive 守卫必须阻止写状态。
+    let resolveTags!: (value: unknown) => void
+    client.blog.listTags.mockImplementationOnce(() => new Promise((resolve) => { resolveTags = resolve }) as never)
+    const third = renderRouted(<Editor />, '/admin/editor', '/admin/editor')
+    third.unmount()
+    await act(async () => { resolveTags(paged([makeTag({ id: 3, name: 'React' })])) })
+
+    let rejectTags!: (reason: unknown) => void
+    client.blog.listTags.mockImplementationOnce(() => new Promise((_, reject) => { rejectTags = reject }) as never)
+    const fourth = renderRouted(<Editor />, '/admin/editor', '/admin/editor')
+    fourth.unmount()
+    await act(async () => { rejectTags(new Error('late down')) })
   })
 })
 
@@ -359,6 +415,102 @@ describe('Profile', () => {
 })
 
 describe('SiteSettings', () => {
+  it('页签：默认站点文案；外观与 AI 翻译写入 ?tab=，切回默认页签删除参数', async () => {
+    const { container } = render(
+      <MemoryRouter initialEntries={['/admin/site-settings']}>
+        <ToastProvider>
+          <DialogProvider>
+            <LocationProbe />
+            <SiteSettings />
+          </DialogProvider>
+        </ToastProvider>
+      </MemoryRouter>,
+    )
+    await screen.findByRole('tab', { name: '站点文案' })
+    // 默认页签不写 URL：地址保持干净。
+    expect(screen.getByTestId('location-search').textContent).toBe('')
+    expect(container.querySelectorAll('textarea')).toHaveLength(2)
+
+    fireEvent.click(screen.getByRole('tab', { name: '外观参数' }))
+    await waitFor(() => expect(screen.getByTestId('location-search').textContent).toBe('?tab=appearance'))
+    expect(container.querySelectorAll('textarea')).toHaveLength(0)
+    expect(container.querySelectorAll('input[type=number]')).toHaveLength(4)
+
+    fireEvent.click(screen.getByRole('tab', { name: 'AI 翻译' }))
+    await waitFor(() => expect(screen.getByTestId('location-search').textContent).toBe('?tab=translate'))
+    expect(screen.getByRole('button', { name: '保存翻译设置' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('tab', { name: '站点文案' }))
+    await waitFor(() => expect(screen.getByTestId('location-search').textContent).toBe(''))
+    expect(container.querySelectorAll('textarea')).toHaveLength(2)
+  })
+
+  it('页签：无法识别的 ?tab= 回退到站点文案', async () => {
+    renderPlain(<SiteSettings />, '/admin/site-settings?tab=bogus')
+    const tab = await screen.findByRole('tab', { name: '站点文案' })
+    expect(tab.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('跨页签校验：描述超长时从「外观参数」保存会跳回文案页签并提示', async () => {
+    const { container } = renderPlain(<SiteSettings />)
+    await screen.findByRole('tab', { name: '站点文案' })
+    fireEvent.change(container.querySelector('textarea') as HTMLTextAreaElement, {
+      target: { value: '长'.repeat(201) },
+    })
+
+    fireEvent.click(screen.getByRole('tab', { name: '外观参数' }))
+    // 本页签的字段都合法：按钮不能被另一页签的错误无声禁用。
+    expect(screen.getByRole('button', { name: '保存' }).hasAttribute('disabled')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() => expect(screen.getAllByText('网站描述不能超过 200 个字符').length).toBeGreaterThan(0))
+    expect(screen.getByRole('tab', { name: '站点文案' }).getAttribute('aria-selected')).toBe('true')
+    expect(client.blog.updateSite).not.toHaveBeenCalled()
+  })
+
+  it('跨页签校验：外观参数非法时从「站点文案」保存会跳到外观页签并提示', async () => {
+    const { container } = renderPlain(<SiteSettings />)
+    await screen.findByRole('tab', { name: '站点文案' })
+
+    fireEvent.click(screen.getByRole('tab', { name: '外观参数' }))
+    const radiusInput = () => container.querySelectorAll('input[type=number]')[2] as HTMLInputElement
+    fireEvent.change(radiusInput(), { target: { value: '25' } })
+    // 出错的字段就在当前页签：按钮禁用是合理的。
+    expect(screen.getByRole('button', { name: '保存' }).hasAttribute('disabled')).toBe(true)
+
+    fireEvent.click(screen.getByRole('tab', { name: '站点文案' }))
+    fireEvent.change(container.querySelector('textarea') as HTMLTextAreaElement, {
+      target: { value: '新的描述' },
+    })
+    // 副本页签自身合法：保存按钮可用，点击后会自动跳到出错的页签。
+    const save = screen.getByRole('button', { name: '保存' })
+    expect(save.hasAttribute('disabled')).toBe(false)
+    fireEvent.click(save)
+
+    await waitFor(() => expect(screen.getAllByText('圆角必须是 0 到 24 之间的整数').length).toBeGreaterThan(0))
+    expect(screen.getByRole('tab', { name: '外观参数' }).getAttribute('aria-selected')).toBe('true')
+    expect(client.blog.updateSite).not.toHaveBeenCalled()
+  })
+
+  it('保存进行中重复提交只发一次请求', async () => {
+    let resolveSave: (value: { description: string }) => void = () => {}
+    client.blog.updateSite.mockReturnValueOnce(new Promise((resolve) => { resolveSave = resolve }))
+    const { container } = renderPlain(<SiteSettings />)
+    await screen.findByRole('tab', { name: '站点文案' })
+    fireEvent.change(container.querySelector('textarea') as HTMLTextAreaElement, {
+      target: { value: '新描述' },
+    })
+    const form = container.querySelector('form') as HTMLFormElement
+    fireEvent.submit(form)
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledTimes(1))
+
+    // Enter 可以绕过 disabled 的按钮：busy 期间再提交一次不能再发请求。
+    fireEvent.submit(form)
+    expect(client.blog.updateSite).toHaveBeenCalledTimes(1)
+
+    await act(async () => { resolveSave({ description: '新描述' }) })
+  })
+
   it('加载现有描述 → 编辑计数按折叠空白 → 保存后服务端值回填', async () => {
     client.blog.updateSite.mockResolvedValue({ description: '保存后的描述' })
     const { container } = renderPlain(<SiteSettings />)
@@ -379,18 +531,29 @@ describe('SiteSettings', () => {
       post_banner_height: 400,
       moments_enabled: true,
       comment_notify_to: '',
+      description_en: '',
     }))
     await waitFor(() => expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('保存后的描述'))
     await waitFor(() => expect(screen.getAllByText('已保存').length).toBeGreaterThan(0))
   })
 
-  it('清空按钮 + 保存空值走「已清空」提示', async () => {
+  it('清空按钮同时清空中英文描述；保存空值走「已清空」提示', async () => {
+    client.blog.getSite.mockResolvedValue({ description: '测试站', description_en: 'Test site' })
     client.blog.updateSite.mockResolvedValue({ description: '' })
     const { container } = renderPlain(<SiteSettings />)
+    const descriptionEN = () => container.querySelectorAll('textarea')[1] as HTMLTextAreaElement
     await waitFor(() => expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('测试站'))
+    await waitFor(() => expect(descriptionEN().value).toBe('Test site'))
 
-    fireEvent.click(screen.getByRole('button', { name: '清空描述' }))
+    const clear = screen.getByRole('button', { name: '清空描述' }) as HTMLButtonElement
+    expect(clear.disabled).toBe(false)
+    fireEvent.click(clear)
+    // 「清空描述」清的是站点文案整张卡：英文描述不能留在原地，
+    // 否则英文界面会继续展示刚被「清空」的旧文案。
     expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('')
+    expect(descriptionEN().value).toBe('')
+    // 两份都空时按钮再次点击没有意义，置灰。
+    expect(clear.disabled).toBe(true)
     fireEvent.submit(container.querySelector('form') as HTMLFormElement)
     // 圆角也随同一次保存下发（来自 getSite 回的缺省值 4）。
     await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({
@@ -401,14 +564,105 @@ describe('SiteSettings', () => {
       post_banner_height: 400,
       moments_enabled: true,
       comment_notify_to: '',
+      description_en: '',
     }))
     await waitFor(() => expect(screen.getAllByText('已清空网站描述，前台将使用内置文案').length).toBeGreaterThan(0))
+  })
+
+  it('只清空中文描述时英文仍在：提示「已更新」而不是「已清空」', async () => {
+    client.blog.getSite.mockResolvedValue({ description: '中文简介', description_en: 'English intro' })
+    client.blog.updateSite.mockResolvedValue({ description: '', description_en: 'English intro' })
+    const { container } = renderPlain(<SiteSettings />)
+    const description = () => container.querySelector('textarea') as HTMLTextAreaElement
+    await waitFor(() => expect(description().value).toBe('中文简介'))
+
+    fireEvent.change(description(), { target: { value: '' } })
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith(expect.objectContaining({
+      description: '',
+      description_en: 'English intro',
+    })))
+    // 英文描述还在，前台并没有回退到内置文案——不能给出「已清空」的错误结论。
+    await waitFor(() => expect(screen.getAllByText('站点设置已更新').length).toBeGreaterThan(0))
+    expect(screen.queryByText('已清空网站描述，前台将使用内置文案')).toBeNull()
+  })
+
+  it('英文界面预览显示英文描述；英文为空时回退中文', async () => {
+    setLocale('en')
+    client.blog.getSite.mockResolvedValue({ description: '中文简介', description_en: 'English intro' })
+    const first = renderPlain(<SiteSettings />)
+    await waitFor(() => expect(first.container.querySelector('.set-slogan')?.textContent).toBe('English intro'))
+    first.unmount()
+
+    // 第二次渲染会命中 site.ts 的模块缓存，必须先清掉才能换一份服务端响应。
+    resetSiteCacheForTests()
+    client.blog.getSite.mockResolvedValue({ description: '中文简介', description_en: '' })
+    const second = renderPlain(<SiteSettings />)
+    await waitFor(() => expect(second.container.querySelector('.set-slogan')?.textContent).toBe('中文简介'))
+  })
+
+  it('英文描述超限：中文计数不误报，英文计数单独变红', async () => {
+    const longEN = 'E'.repeat(201)
+    client.blog.getSite.mockResolvedValue({ description: '中文简介', description_en: longEN })
+    const { container } = renderPlain(<SiteSettings />)
+    await waitFor(() => expect((container.querySelectorAll('textarea')[1] as HTMLTextAreaElement).value).toBe(longEN))
+
+    const counts = container.querySelectorAll('.set-count')
+    // 第一份是中文计数的标题栏，第二份是英文描述下方的计数。
+    expect(counts[0].classList.contains('over')).toBe(false)
+    expect(counts[1].classList.contains('over')).toBe(true)
+    expect((screen.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('站点设置加载失败：显示错误，编辑后也不能保存', async () => {
+    client.blog.getSite.mockRejectedValue(new Error('down'))
+    const { container } = renderPlain(<SiteSettings />)
+    const textarea = () => container.querySelector('textarea') as HTMLTextAreaElement
+    await waitFor(() => expect(screen.getByText(/站点设置加载失败/)).toBeTruthy())
+
+    // 表单里只是默认值；哪怕用户改了描述，也不能把其余默认值一起写回服务端。
+    fireEvent.change(textarea(), { target: { value: '新描述' } })
+    const save = screen.getByRole('button', { name: '保存' }) as HTMLButtonElement
+    expect(save.disabled).toBe(true)
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+    await waitFor(() =>
+      expect(screen.getAllByText('站点设置尚未加载成功，请刷新页面后重试').length).toBeGreaterThan(0),
+    )
+    expect(client.blog.updateSite).not.toHaveBeenCalled()
+  })
+
+  it('英文描述：加载回显、编辑后随站点设置一并保存、服务端值回填', async () => {
+    client.blog.getSite.mockResolvedValue({ description: '中文简介', description_en: 'English intro' })
+    client.blog.updateSite.mockResolvedValue({ description: '中文简介', description_en: 'New English' })
+    const { container } = renderPlain(<SiteSettings />)
+    // 第一张表单里依次是中文描述与英文描述两个多行输入框。
+    const descriptionEN = () => container.querySelectorAll('textarea')[1] as HTMLTextAreaElement
+    await waitFor(() => expect(descriptionEN().value).toBe('English intro'))
+
+    fireEvent.change(descriptionEN(), { target: { value: '  New   English  ' } })
+    expect(document.body.textContent).toContain('有未保存的修改')
+    fireEvent.submit(container.querySelector('form') as HTMLFormElement)
+
+    // 英文描述与中文描述同一次保存；空白按同一规则折叠。
+    await waitFor(() => expect(client.blog.updateSite).toHaveBeenCalledWith({
+      description: '中文简介',
+      description_en: 'New English',
+      code_block_max_lines: 20,
+      home_page_size: 12,
+      border_radius: 4,
+      post_banner_height: 400,
+      moments_enabled: true,
+      comment_notify_to: '',
+    }))
+    await waitFor(() => expect(descriptionEN().value).toBe('New English'))
   })
 
   it('代码块行数：加载回填、修改后随描述一并保存、越界拦截', async () => {
     client.blog.getSite.mockResolvedValue({ description: '测试站', code_block_max_lines: 35 })
     client.blog.updateSite.mockResolvedValue({ description: '测试站', code_block_max_lines: 35 })
     const { container } = renderPlain(<SiteSettings />)
+    // 数字输入框都在「外观参数」页签里。
+    fireEvent.click(await screen.findByRole('tab', { name: '外观参数' }))
     // 页面上有两个数字输入框（行数在前、首页每页篇数在后），按顺序取更稳。
     const numberInputs = () => container.querySelectorAll('input[type=number]')
     const linesInput = () => numberInputs()[0] as HTMLInputElement
@@ -425,6 +679,7 @@ describe('SiteSettings', () => {
       post_banner_height: 400,
       moments_enabled: true,
       comment_notify_to: '',
+      description_en: '',
     }))
     // 服务端返回的最终值回填输入框（mock 返回 35）。
     await waitFor(() => expect(linesInput().value).toBe('35'))
@@ -432,10 +687,17 @@ describe('SiteSettings', () => {
     // 越界（500 之外）→ 保存按钮禁用 + 直接提交被拦截
     fireEvent.change(linesInput(), { target: { value: '501' } })
     expect(container.querySelector('.act-row button[type=submit]')?.hasAttribute('disabled')).toBe(true)
+
+    // 小数不能被 parseInt 静默截成 60：输入什么就应当按什么校验。
+    fireEvent.change(linesInput(), { target: { value: '60.5' } })
+    expect(container.querySelector('.act-row button[type=submit]')?.hasAttribute('disabled')).toBe(true)
+    // 指数写法同理不能被 Number() 读成 1000。
+    fireEvent.change(linesInput(), { target: { value: '1e3' } })
+    expect(container.querySelector('.act-row button[type=submit]')?.hasAttribute('disabled')).toBe(true)
     expect(client.blog.updateSite).toHaveBeenCalledTimes(1)
 
     // 按钮 disabled 挡不住 form 的 submit 事件：防御分支用 toast 拦截、不发请求。
-    // 覆盖两条非法路径：越界整数（501）与非整数（空串 parse 出 NaN）。
+    // 这里直接提交的是非法数字；随后再覆盖空串路径。
     fireEvent.submit(container.querySelector('form') as HTMLFormElement)
     await waitFor(() => expect(screen.getAllByText('代码块行数必须是 3 到 500 之间的整数').length).toBeGreaterThan(0))
     fireEvent.change(linesInput(), { target: { value: '' } })
@@ -448,6 +710,7 @@ describe('SiteSettings', () => {
     client.blog.getSite.mockResolvedValue({ description: '测试站', home_page_size: 6 })
     client.blog.updateSite.mockResolvedValue({ description: '测试站', home_page_size: 6 })
     const { container } = renderPlain(<SiteSettings />)
+    fireEvent.click(await screen.findByRole('tab', { name: '外观参数' }))
     const pageSizeInput = () => container.querySelectorAll('input[type=number]')[1] as HTMLInputElement
     await waitFor(() => expect(pageSizeInput().value).toBe('6'))
 
@@ -462,6 +725,7 @@ describe('SiteSettings', () => {
       post_banner_height: 400,
       moments_enabled: true,
       comment_notify_to: '',
+      description_en: '',
     }))
     // 服务端返回的最终值回填输入框（mock 返回 6）。
     await waitFor(() => expect(pageSizeInput().value).toBe('6'))
@@ -483,6 +747,7 @@ describe('SiteSettings', () => {
     client.blog.getSite.mockResolvedValue({ description: '测试站', border_radius: 8 })
     client.blog.updateSite.mockResolvedValue({ description: '测试站', border_radius: 8 })
     const { container } = renderPlain(<SiteSettings />)
+    fireEvent.click(await screen.findByRole('tab', { name: '外观参数' }))
     // 圆角输入框是第三个数字框（行数、每页篇数之后）。
     const radiusInput = () => container.querySelectorAll('input[type=number]')[2] as HTMLInputElement
     await waitFor(() => expect(radiusInput().value).toBe('8'))
@@ -498,6 +763,7 @@ describe('SiteSettings', () => {
       post_banner_height: 400,
       moments_enabled: true,
       comment_notify_to: '',
+      description_en: '',
     }))
     // 服务端返回 8 → 回填。
     await waitFor(() => expect(radiusInput().value).toBe('8'))
@@ -517,12 +783,14 @@ describe('SiteSettings', () => {
       post_banner_height: 400,
       moments_enabled: true,
       comment_notify_to: '',
+      description_en: '',
     }))
   })
 
   it('圆角越界（24 之外）拦截：按钮禁用，直接提交被 toast 挡下', async () => {
     client.blog.getSite.mockResolvedValue({ description: '测试站', border_radius: 4 })
     const { container } = renderPlain(<SiteSettings />)
+    fireEvent.click(await screen.findByRole('tab', { name: '外观参数' }))
     const radiusInput = () => container.querySelectorAll('input[type=number]')[2] as HTMLInputElement
     await waitFor(() => expect(radiusInput().value).toBe('4'))
 

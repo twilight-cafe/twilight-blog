@@ -55,6 +55,7 @@ export function createArticlesApi(http: HttpClient): ArticlesApi {
       if (input.titleEn !== undefined) json.title_en = input.titleEn;
       if (input.contentEn !== undefined) json.content_en = input.contentEn;
       if (input.aiGenerated !== undefined) json.ai_generated = input.aiGenerated;
+      if (input.aiGeneratedEn !== undefined) json.ai_generated_en = input.aiGeneratedEn;
       // publishedAt 与 coverMediaId 在这里都不用 `??` 兜底成一个默认值：
       // 省略就该让字段**消失**，由服务端决定「用当前时间 / 没有头图」，
       // 而不是由客户端替它猜一个（比如 0）。
@@ -95,6 +96,9 @@ export function createArticlesApi(http: HttpClient): ArticlesApi {
       }
       if (input.aiGenerated !== undefined) {
         json.ai_generated = input.aiGenerated;
+      }
+      if (input.aiGeneratedEn !== undefined) {
+        json.ai_generated_en = input.aiGeneratedEn;
       }
       // 只有当调用方显式给了 tags 才下发该字段。若把「省略」也强制成 []，
       // 服务端会理解为「清空标签」，从而误删文章现有的全部标签。

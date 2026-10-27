@@ -32,6 +32,9 @@ func bootForTests(t *testing.T) bootHooks {
 	if err != nil {
 		t.Fatalf("open scratch database: %v", err)
 	}
+	// Windows 不允许删除仍被进程占用的文件；不关掉它就只会看到
+	// TempDir cleanup 报 "being used by another process"，把真正的断言失败盖住。
+	t.Cleanup(func() { _ = db.Close() })
 	hooks := defaultBootHooks()
 	hooks.configureLogging = func(string) error { return nil }
 	hooks.acquireLock = func() (func(), error) { return func() {}, nil }

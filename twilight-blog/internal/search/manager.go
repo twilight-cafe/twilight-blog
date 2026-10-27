@@ -44,6 +44,7 @@ var (
 	osGetwd          = os.Getwd
 	absPath          = filepath.Abs
 	statFile         = os.Stat
+	candidateIsSafe  = candidateIsSafelyOwned
 	readFile         = os.ReadFile
 	writeFile        = os.WriteFile
 	chmodFile        = os.Chmod
@@ -219,13 +220,10 @@ func FindExecutable() (string, error) {
 
 	for _, item := range candidates {
 		info, err := statFile(item.path)
-		if err != nil || info.IsDir() {
+		if err != nil || !usableCandidate(runtime.GOOS, info) {
 			continue
 		}
-		if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
-			continue
-		}
-		if !candidateIsSafelyOwned(item.path, info) {
+		if !candidateIsSafe(item.path, info) {
 			logging.Warnf("[search] ignoring %s (%s): the file is writable by group or others, "+
 				"so it cannot be trusted as an executable; continuing the search", item.path, item.origin)
 			continue
@@ -265,6 +263,28 @@ func candidateIsSafelyOwnedFor(goos string, info os.FileInfo) bool {
 		return true
 	}
 	return info.Mode().Perm()&0o022 == 0
+}
+
+// usableCandidate 判断一个候选是否值得继续检查：目录永远不行，常规文件
+// 在非 Windows 上还需要执行位。把两条判断合成一个函数，是为了让候选循环
+// 只剩一个 `continue`，而不是两个在 Windows 上永远为真/为假的条件。
+func usableCandidate(goos string, info os.FileInfo) bool {
+	if info.IsDir() {
+		return false
+	}
+	return hasExecutableBit(goos, info.Mode())
+}
+
+// hasExecutableBit 判断一个候选文件的权限位是否允许执行。
+//
+// 与 candidateIsSafelyOwnedFor 一样把 goos 作为参数：Windows 的 os.FileMode
+// 不携带执行位，所有常规文件都应当是候选；把这条规则留在 `runtime.GOOS != "windows"`
+// 的条件里，非 Windows 的那半边在 Windows 开发机上就永远没有被执行过。
+func hasExecutableBit(goos string, mode os.FileMode) bool {
+	if goos == "windows" {
+		return true
+	}
+	return mode&0o111 != 0
 }
 
 // logExecutableChoice 记录最终选中的本地二进制及其来源，并在它来自

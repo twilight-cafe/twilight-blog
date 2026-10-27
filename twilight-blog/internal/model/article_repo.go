@@ -68,22 +68,23 @@ func NewSQLiteArticleRepository(db *sql.DB) *SQLiteArticleRepository {
 
 func (r *SQLiteArticleRepository) Create(ctx context.Context, article *Article) error {
 	logging.Debugf("[article-repo] Create called")
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := beginTxFn(r.db, ctx)
 	if err != nil {
 		return fmt.Errorf("begin create transaction: %w", err)
 	}
 	defer tx.Rollback()
 
 	res, err := tx.ExecContext(ctx, `
-INSERT INTO articles (title, content, title_en, content_en, ai_generated, created_at, updated_at, cover_media_id, deleted_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
-`, article.Title, article.Content, article.TitleEN, article.ContentEN, boolToInt(article.AIGenerated),
+INSERT INTO articles (title, content, title_en, content_en, ai_generated, ai_generated_en, created_at, updated_at, cover_media_id, deleted_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+`, article.Title, article.Content, article.TitleEN, article.ContentEN,
+		boolToInt(article.AIGenerated), boolToInt(article.AIGeneratedEN),
 		article.CreatedAt, article.UpdatedAt, nullableID(article.CoverMediaID))
 	if err != nil {
 		return fmt.Errorf("insert article: %w", err)
 	}
 
-	id, err := res.LastInsertId()
+	id, err := lastInsertIDFn(res)
 	if err != nil {
 		return fmt.Errorf("get last insert id: %w", err)
 	}
@@ -93,7 +94,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
 		return err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := commitTxFn(tx); err != nil {
 		return fmt.Errorf("commit create article: %w", err)
 	}
 	return nil
@@ -113,7 +114,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
 // 标签关联的替换与主表更新在同一事务内，要么全成、要么全不成。
 func (r *SQLiteArticleRepository) Update(ctx context.Context, article *Article) error {
 	logging.Debugf("[article-repo] Update called")
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := beginTxFn(r.db, ctx)
 	if err != nil {
 		return fmt.Errorf("begin update transaction: %w", err)
 	}
@@ -121,16 +122,17 @@ func (r *SQLiteArticleRepository) Update(ctx context.Context, article *Article) 
 
 	res, err := tx.ExecContext(ctx, `
 UPDATE articles
-SET title = ?, content = ?, title_en = ?, content_en = ?, ai_generated = ?,
+SET title = ?, content = ?, title_en = ?, content_en = ?, ai_generated = ?, ai_generated_en = ?,
     created_at = ?, updated_at = ?, cover_media_id = ?
 WHERE id = ? AND deleted_at IS NULL
-`, article.Title, article.Content, article.TitleEN, article.ContentEN, boolToInt(article.AIGenerated),
+`, article.Title, article.Content, article.TitleEN, article.ContentEN,
+		boolToInt(article.AIGenerated), boolToInt(article.AIGeneratedEN),
 		article.CreatedAt, article.UpdatedAt, nullableID(article.CoverMediaID), article.ID)
 	if err != nil {
 		return fmt.Errorf("update article: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
 	}
@@ -142,7 +144,7 @@ WHERE id = ? AND deleted_at IS NULL
 		return err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := commitTxFn(tx); err != nil {
 		return fmt.Errorf("commit update article: %w", err)
 	}
 	return nil
@@ -180,7 +182,7 @@ WHERE id IN (` + strings.Join(placeholders, ", ") + `) AND deleted_at IS NULL
 		return 0, fmt.Errorf("soft delete articles: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
 	}
@@ -200,7 +202,7 @@ WHERE id = ? AND deleted_at IS NOT NULL
 		return fmt.Errorf("restore article: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
 	}
@@ -237,7 +239,7 @@ WHERE id IN (` + strings.Join(placeholders, ", ") + `) AND deleted_at IS NOT NUL
 		return 0, fmt.Errorf("batch restore articles: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
 	}
@@ -277,7 +279,7 @@ WHERE id IN (` + strings.Join(placeholders, ", ") + `) AND deleted_at IS NOT NUL
 		return 0, fmt.Errorf("hard delete articles: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
 	}
@@ -358,12 +360,12 @@ ORDER BY a.cover_media_id
 	mediaIDs := make([]int64, 0)
 	for rows.Next() {
 		var mediaID int64
-		if err := rows.Scan(&mediaID); err != nil {
+		if err := scanValuesFn(rows, &mediaID); err != nil {
 			return nil, fmt.Errorf("scan cover media id: %w", err)
 		}
 		mediaIDs = append(mediaIDs, mediaID)
 	}
-	if err := rows.Err(); err != nil {
+	if err := rowsErrFn(rows); err != nil {
 		return nil, fmt.Errorf("iterate cover media: %w", err)
 	}
 	return mediaIDs, nil
@@ -374,7 +376,7 @@ ORDER BY a.cover_media_id
 func (r *SQLiteArticleRepository) GetByID(ctx context.Context, id int64) (*Article, error) {
 	logging.Debugf("[article-repo] GetByID called")
 	row := r.db.QueryRowContext(ctx, `
-SELECT id, title, content, title_en, content_en, ai_generated, created_at, updated_at, cover_media_id, deleted_at
+SELECT id, title, content, title_en, content_en, ai_generated, ai_generated_en, created_at, updated_at, cover_media_id, deleted_at
 FROM articles
 WHERE id = ? AND deleted_at IS NULL
 `, id)
@@ -417,7 +419,7 @@ WHERE deleted_at IS NULL
 		}
 
 		rows, err := q.QueryContext(ctx, `
-SELECT id, title, content, title_en, content_en, ai_generated, created_at, updated_at, cover_media_id, deleted_at
+SELECT id, title, content, title_en, content_en, ai_generated, ai_generated_en, created_at, updated_at, cover_media_id, deleted_at
 FROM articles
 WHERE deleted_at IS NULL
 ORDER BY created_at DESC, id DESC
@@ -435,7 +437,7 @@ LIMIT ? OFFSET ?
 			}
 			articles = append(articles, *article)
 		}
-		if err := rows.Err(); err != nil {
+		if err := rowsErrFn(rows); err != nil {
 			return fmt.Errorf("iterate articles: %w", err)
 		}
 
@@ -464,7 +466,7 @@ WHERE deleted_at IS NOT NULL
 		}
 
 		rows, err := q.QueryContext(ctx, `
-SELECT id, title, content, title_en, content_en, ai_generated, created_at, updated_at, cover_media_id, deleted_at
+SELECT id, title, content, title_en, content_en, ai_generated, ai_generated_en, created_at, updated_at, cover_media_id, deleted_at
 FROM articles
 WHERE deleted_at IS NOT NULL
 ORDER BY deleted_at DESC, id DESC
@@ -482,7 +484,7 @@ LIMIT ? OFFSET ?
 			}
 			articles = append(articles, *article)
 		}
-		if err := rows.Err(); err != nil {
+		if err := rowsErrFn(rows); err != nil {
 			return fmt.Errorf("iterate deleted articles: %w", err)
 		}
 
@@ -508,13 +510,15 @@ func scanArticle(row scanner) (*Article, error) {
 	var deletedAt sql.NullInt64
 	var coverMediaID sql.NullInt64
 	var aiGenerated int
-	if err := row.Scan(
+	var aiGeneratedEN int
+	if err := scanValuesFn(row,
 		&article.ID,
 		&article.Title,
 		&article.Content,
 		&article.TitleEN,
 		&article.ContentEN,
 		&aiGenerated,
+		&aiGeneratedEN,
 		&article.CreatedAt,
 		&article.UpdatedAt,
 		&coverMediaID,
@@ -532,6 +536,7 @@ func scanArticle(row scanner) (*Article, error) {
 		article.CoverMediaID = &value
 	}
 	article.AIGenerated = aiGenerated != 0
+	article.AIGeneratedEN = aiGeneratedEN != 0
 
 	return &article, nil
 }
@@ -611,13 +616,13 @@ ORDER BY t.name COLLATE NOCASE
 	tagsEN := make([]string, 0)
 	for rows.Next() {
 		var name, nameEN string
-		if err := rows.Scan(&name, &nameEN); err != nil {
+		if err := scanValuesFn(rows, &name, &nameEN); err != nil {
 			return nil, nil, fmt.Errorf("scan article tag: %w", err)
 		}
 		tags = append(tags, name)
 		tagsEN = append(tagsEN, nameEN)
 	}
-	if err := rows.Err(); err != nil {
+	if err := rowsErrFn(rows); err != nil {
 		return nil, nil, fmt.Errorf("iterate article tags: %w", err)
 	}
 	return tags, tagsEN, nil
@@ -664,13 +669,13 @@ ORDER BY at.article_id ASC, t.name COLLATE NOCASE
 	for rows.Next() {
 		var articleID int64
 		var name, nameEN string
-		if err := rows.Scan(&articleID, &name, &nameEN); err != nil {
+		if err := scanValuesFn(rows, &articleID, &name, &nameEN); err != nil {
 			return fmt.Errorf("scan article tag: %w", err)
 		}
 		byArticle[articleID] = append(byArticle[articleID], name)
 		byArticleEN[articleID] = append(byArticleEN[articleID], nameEN)
 	}
-	if err := rows.Err(); err != nil {
+	if err := rowsErrFn(rows); err != nil {
 		return fmt.Errorf("iterate article tags: %w", err)
 	}
 

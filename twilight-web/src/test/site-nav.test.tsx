@@ -24,9 +24,12 @@ beforeEach(() => {
   delete document.documentElement.dataset.searchEnabled
   delete document.documentElement.dataset.homePageSize
   delete document.documentElement.dataset.borderRadius
-  // --radius 会被 applyBorderRadius 写进内联 style，跨用例必须清掉，
-  // 否则前一个用例设的圆角会留在下一个用例的 DOM 上。
+  delete document.documentElement.dataset.momentsEnabled
+  delete document.documentElement.dataset.postBannerHeight
+  // --radius / --post-banner-height 会被 apply* 写进内联 style，跨用例必须清掉，
+  // 否则前一个用例设的值会留在下一个用例的 DOM 上。
   document.documentElement.style.removeProperty('--radius')
+  document.documentElement.style.removeProperty('--post-banner-height')
 })
 
 describe('site.ts', () => {
@@ -82,6 +85,18 @@ describe('site.ts', () => {
     await waitFor(() => expect(result.current).toBe(site.FALLBACK_DESCRIPTION)) // 空串 → 兜底
   })
 
+  it('英文界面未设置描述时使用英文内置文案', async () => {
+    const { site, client } = await fresh()
+    const i18n = await import('../lib/i18n')
+    i18n.setLocale('en')
+    client.blog.getSite.mockResolvedValueOnce({ description: '' })
+    const { result } = renderHook(() => site.useSiteDescription())
+    await waitFor(() => expect(result.current).toBe(site.FALLBACK_DESCRIPTION_EN))
+    expect(document.querySelector('meta[name="description"]')?.getAttribute('content'))
+      .toBe('Written in code, sealed in time.')
+    i18n.setLocale('zh')
+  })
+
   it('useDocumentTitle / useHomeDocumentTitle', async () => {
     const { site } = await fresh()
     const { rerender } = renderHook(({ title }) => site.useDocumentTitle(title), { initialProps: { title: '归档' } })
@@ -106,7 +121,77 @@ describe('site.ts', () => {
     expect(document.querySelector('meta[name="description"]')?.getAttribute('content')).toBe('x')
   })
 
-  it('codeBlockMaxLines：正常下发、旧服务端缺键回退默认值、失败用内置值', async () => {
+  it('description_en：英文界面发布英文描述，缺译名回退中文', async () => {
+    const { site, client } = await fresh()
+    const i18n = await import('../lib/i18n')
+    i18n.setLocale('en')
+    client.blog.getSite.mockResolvedValueOnce({ description: '中文描述', description_en: 'English copy' })
+    await site.loadSiteDescription()
+    expect(document.querySelector('meta[name="description"]')?.getAttribute('content')).toBe('English copy')
+
+    // 没有英文版时沿用中文描述，而不是把 meta 留空。
+    const fresh2 = await fresh()
+    const i18n2 = await import('../lib/i18n')
+    i18n2.setLocale('en')
+    fresh2.client.blog.getSite.mockResolvedValueOnce({ description: '中文描述', description_en: '' })
+    await fresh2.site.loadSiteDescription()
+    expect(document.querySelector('meta[name="description"]')?.getAttribute('content')).toBe('中文描述')
+    i18n2.setLocale('zh')
+  })
+
+  it('saveSiteSettings：保存后把开关与外观参数写回外壳属性，后续导航无需硬刷新', async () => {
+    const { site, client } = await fresh()
+    client.blog.updateSite.mockResolvedValue({
+      description: 'd',
+      moments_enabled: false,
+      home_page_size: 6,
+      border_radius: 12,
+      post_banner_height: 300,
+    })
+    await site.saveSiteSettings({
+      description: 'd',
+      momentsEnabled: false,
+      homePageSize: 6,
+      borderRadius: 12,
+      postBannerHeight: 300,
+    })
+
+    const root = document.documentElement
+    expect(root.dataset.momentsEnabled).toBe('false')
+    expect(root.dataset.homePageSize).toBe('6')
+    expect(root.dataset.borderRadius).toBe('12')
+    expect(root.dataset.postBannerHeight).toBe('300')
+    expect(root.style.getPropertyValue('--radius')).toBe('12px')
+    expect(root.style.getPropertyValue('--post-banner-height')).toBe('300px')
+
+    // 页头 / 侧栏 / 页脚读的是同一条属性通道：返回公开站点时微语入口已经消失。
+    const flags = await import('../lib/flags')
+    expect(flags.isMomentsEnabled()).toBe(false)
+  })
+
+  it('saveSiteSettings：旧服务端缺少外观字段时保留外壳原值', async () => {
+    const root = document.documentElement
+    root.dataset.momentsEnabled = 'false'
+    root.dataset.homePageSize = '5'
+    root.dataset.borderRadius = '0'
+    root.dataset.postBannerHeight = '260'
+    root.style.setProperty('--radius', '0px')
+    root.style.setProperty('--post-banner-height', '260px')
+
+    const { site, client } = await fresh()
+    // 升级场景：前端已新、后端还是旧二进制，响应里没有这些键。
+    client.blog.updateSite.mockResolvedValue({ description: 'd' })
+    await site.saveSiteSettings({ description: 'd' })
+
+    expect(root.dataset.momentsEnabled).toBe('false')
+    expect(root.dataset.homePageSize).toBe('5')
+    expect(root.dataset.borderRadius).toBe('0')
+    expect(root.dataset.postBannerHeight).toBe('260')
+    expect(root.style.getPropertyValue('--radius')).toBe('0px')
+    expect(root.style.getPropertyValue('--post-banner-height')).toBe('260px')
+  })
+
+  it('codeBlockMaxLines：正常下发、旧服务端缺键回退默认值；设置页读取失败时 reject', async () => {
     const { site, client } = await fresh()
     client.blog.getSite.mockResolvedValueOnce({ description: 'd', code_block_max_lines: 35 })
     const meta = await site.loadSiteMeta()
@@ -117,9 +202,10 @@ describe('site.ts', () => {
     fresh2.client.blog.getSite.mockResolvedValueOnce({ description: 'd' })
     await expect(fresh2.site.loadSiteMeta()).resolves.toMatchObject({ codeBlockMaxLines: 20 })
 
+    // 设置页专用入口不兜底：拿默认值当服务端现值保存会覆盖真实配置。
     const fresh3 = await fresh()
     fresh3.client.blog.getSite.mockRejectedValueOnce(new Error('down'))
-    await expect(fresh3.site.loadSiteMeta()).resolves.toMatchObject({ codeBlockMaxLines: 20 })
+    await expect(fresh3.site.loadSiteMeta()).rejects.toThrow('down')
   })
 
   it('useSiteCodeLines：订阅快照并在保存后立即更新', async () => {
@@ -162,9 +248,10 @@ describe('site.ts', () => {
     fresh2.client.blog.getSite.mockResolvedValueOnce({ description: 'd' })
     await expect(fresh2.site.loadSiteMeta()).resolves.toMatchObject({ homePageSize: 12 })
 
+    // 设置页入口不兜底：请求失败必须被看到，否则默认值会被当成服务端现值。
     const fresh3 = await fresh()
     fresh3.client.blog.getSite.mockRejectedValueOnce(new Error('down'))
-    await expect(fresh3.site.loadSiteMeta()).resolves.toMatchObject({ homePageSize: 12 })
+    await expect(fresh3.site.loadSiteMeta()).rejects.toThrow('down')
   })
 
   it('saveSiteSettings：homePageSize 省略时不进请求体、带上时原样透传', async () => {
@@ -191,9 +278,10 @@ describe('site.ts', () => {
     fresh2.client.blog.getSite.mockResolvedValueOnce({ description: 'd' })
     await expect(fresh2.site.loadSiteMeta()).resolves.toMatchObject({ borderRadius: 4 })
 
+    // 同上：设置页入口失败时 reject，不拿 4 当服务端现值。
     const fresh3 = await fresh()
     fresh3.client.blog.getSite.mockRejectedValueOnce(new Error('down'))
-    await expect(fresh3.site.loadSiteMeta()).resolves.toMatchObject({ borderRadius: 4 })
+    await expect(fresh3.site.loadSiteMeta()).rejects.toThrow('down')
   })
 
   it('borderRadius：服务端回 0 时必须保留 0，不能被兜底成 4', async () => {
@@ -426,7 +514,7 @@ describe('nav.ts', () => {
     await fresh()
     const nav = await import('../lib/nav')
     const items = nav.buildNav([
-      { id: 9, title: '关于', content: '', created_at: 1, updated_at: 1 },
+      { id: 9, title: '关于', content: '', title_en: '', content_en: '', created_at: 1, updated_at: 1 },
     ])
     expect(items.slice(0, 5).map((item) => item.label)).toEqual(['首页', '归档', '标签', '搜索', '微语'])
     expect(items[5]).toEqual({ to: '/pages/9', label: '关于' })
@@ -435,6 +523,21 @@ describe('nav.ts', () => {
     expect(nav.isNavActive('/archive', '/')).toBe(false)
     expect(nav.isNavActive('/archive', '/archive')).toBe(true)
     expect(nav.isNavActive('/archive/2', '/archive')).toBe(false)
+  })
+
+  it('独立页面名称跟随语言：英文界面取 title_en，缺失时回退中文', async () => {
+    await fresh()
+    const nav = await import('../lib/nav')
+    const pages = [
+      { id: 1, title: '关于', content: '', title_en: 'About', content_en: '', created_at: 1, updated_at: 1 },
+      { id: 2, title: '友链', content: '', title_en: '', content_en: '', created_at: 1, updated_at: 1 },
+    ]
+    const pageLabels = (locale: 'zh' | 'en') => nav.buildNav(pages, locale)
+      .filter((item) => item.to.startsWith('/pages/'))
+      .map((item) => item.label)
+
+    expect(pageLabels('en')).toEqual(['About', '友链'])
+    expect(pageLabels('zh')).toEqual(['关于', '友链'])
   })
 
   it('搜索关闭时 buildNav 摘掉搜索项；开启或缺省时保留', async () => {

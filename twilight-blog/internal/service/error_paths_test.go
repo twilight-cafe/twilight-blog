@@ -52,9 +52,9 @@ func TestPageServiceSurfacesRepositoryErrors(t *testing.T) {
 	ctx := context.Background()
 	svc := NewPageService(brokenPageRepo{}, brokenPageIndexer{})
 
-	_, err := svc.Create(ctx, "t", "c")
+	_, err := svc.Create(ctx, "t", "", "c", "")
 	requireRepoError(t, "Create", err)
-	_, err = svc.Update(ctx, 1, "t", nil)
+	_, err = svc.Update(ctx, 1, "t", nil, nil, nil)
 	requireRepoError(t, "Update/GetByID", err)
 	requireRepoError(t, "SoftDelete", svc.SoftDelete(ctx, []int64{1}))
 	requireRepoError(t, "Restore", svc.Restore(ctx, 1))

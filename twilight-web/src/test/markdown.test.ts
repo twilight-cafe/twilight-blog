@@ -117,6 +117,8 @@ describe('nodeText（探针）', () => {
     expect(nodeText(42)).toBe('')
     expect(nodeText({ type: 'text', value: 'v' })).toBe('v')
     expect(nodeText({ type: 'inlineCode', value: 'c' })).toBe('c')
+    expect(nodeText({ type: 'inlineMath', value: 'x^2' })).toBe('x^2')
+    expect(nodeText({ type: 'math', value: '\\frac{a}{b}' })).toBe('\\frac{a}{b}')
     expect(nodeText({ type: 'element', children: [{ type: 'text', value: 'a' }, { type: 'text', value: 'b' }] })).toBe('ab')
     expect(nodeText([null, { type: 'text', value: 'x' }, 'skip'])).toBe('x')
     expect(nodeText({ type: 'unknown' })).toBe('')

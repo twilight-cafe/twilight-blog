@@ -53,6 +53,7 @@ export function createSiteApi(http: HttpClient): SiteApi {
         // 多透一个键就等于替调用方做了一个它没做的决定。
         json: {
           description: input.description,
+          description_en: input.description_en,
           code_block_max_lines: input.code_block_max_lines,
           home_page_size: input.home_page_size,
           border_radius: input.border_radius,

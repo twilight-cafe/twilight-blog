@@ -1,13 +1,14 @@
 // content-media.test.tsx —— ContentView 渲染后处理 与 媒体组件
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import ContentView from '../components/ContentView'
+import ContentView, { enhanceCodeBlocks } from '../components/ContentView'
 import MediaThumb from '../components/media/MediaThumb'
 import MediaLightbox from '../components/media/MediaLightbox'
 import MediaPicker from '../components/media/MediaPicker'
 import MediaGallery from '../components/media/MediaGallery'
 import { ToastProvider } from '../lib/toast'
 import { refreshSiteMeta, resetSiteCacheForTests } from '../lib/site'
+import { setLocale } from '../lib/i18n'
 import { getSharedClientMock, makeMedia } from './helpers'
 
 vi.mock('../lib/client', async () => {
@@ -27,6 +28,7 @@ describe('ContentView', () => {
   })
   afterEach(() => {
     resetSiteCacheForTests()
+    setLocale('zh')
   })
 
   it('默认走评论白名单管线；trusted 走文章管线', () => {
@@ -67,6 +69,111 @@ describe('ContentView', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('连续复制两次：第一次的还原计时器不会提前结束第二次反馈', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<ContentView text={'```ts\nconst a = 1\n```'} trusted />)
+      const copy = container.querySelector('.code-copy') as HTMLButtonElement
+
+      await act(async () => {
+        fireEvent.click(copy)
+      })
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+      await act(async () => {
+        fireEvent.click(copy)
+      })
+
+      // 第一次点击的 1600ms 计时器已被取消：到 1700ms 时仍应显示第二次的反馈。
+      await act(async () => {
+        vi.advanceTimersByTime(700)
+      })
+      expect(copy.textContent).toBe('已复制')
+
+      // 第二次点击自己的计时器照常生效。
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+      expect(copy.textContent).toBe('复制')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('复制反馈期间发生重渲染：计时器不会被提交时的 cleanup 提前清掉', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    vi.useFakeTimers()
+    try {
+      const { container, rerender } = render(<ContentView text={'```ts\nconst a = 1\n```'} trusted />)
+      const copy = () => container.querySelector('.code-copy') as HTMLButtonElement
+      await act(async () => {
+        fireEvent.click(copy())
+      })
+      expect(copy().textContent).toBe('已复制')
+
+      // 任意父级提交都会重跑无依赖的 layout effect；它的 cleanup 只能负责
+      // 卸载清理，不能把仍在计时的反馈取消。
+      rerender(<ContentView text={'```ts\nconst a = 1\n```'} trusted />)
+      await act(async () => {
+        vi.advanceTimersByTime(1700)
+      })
+      expect(copy().textContent).toBe('复制')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('语言切换后已增强的复制按钮文案跟着更新', () => {
+    const { container, rerender } = render(<ContentView text={'```ts\nconst a = 1\n```'} trusted />)
+    // 每次查询都重新取：React 19 在部分提交里会重设 innerHTML，
+    // 旧按钮可能已经被替换成新的 DOM 节点。
+    const copy = () => container.querySelector('.code-copy') as HTMLButtonElement
+    expect(copy().textContent).toBe('复制')
+
+    act(() => setLocale('en'))
+    // 真实场景里是订阅了语言的父组件触发这次重渲染；这里直接重渲染同内容。
+    rerender(<ContentView text={'```ts\nconst a = 1\n```'} trusted />)
+    expect(copy().textContent).toBe('Copy')
+    expect(copy().title).toBe('Copy code')
+    expect(copy().getAttribute('aria-label')).toBe('Copy code')
+  })
+
+  it('已包壳的代码块重跑增强时更新复制按钮文案', () => {
+    act(() => setLocale('en'))
+    const root = document.createElement('div')
+    root.innerHTML = '<div class="code-block"><pre><code class="language-ts">x</code></pre>' +
+      '<button class="code-copy">复制</button></div>'
+    enhanceCodeBlocks(root, new Set())
+    const copy = root.querySelector('.code-copy') as HTMLButtonElement
+    expect(copy.textContent).toBe('Copy')
+    expect(copy.title).toBe('Copy code')
+    expect(copy.getAttribute('aria-label')).toBe('Copy code')
+  })
+
+  it('已包壳但复制按钮缺失时重跑增强不报错', () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<div class="code-block"><pre><code class="language-ts">x</code></pre></div>'
+    expect(() => enhanceCodeBlocks(root, new Set())).not.toThrow()
+  })
+
+  it('复制成功的反馈期间重跑增强不覆盖按钮文案，但标题与 aria 跟随语言', () => {
+    act(() => setLocale('en'))
+    const root = document.createElement('div')
+    root.innerHTML = '<div class="code-block"><pre><code class="language-ts">x</code></pre>' +
+      '<button class="code-copy copied" title="复制代码" aria-label="复制代码">已复制</button></div>'
+    enhanceCodeBlocks(root, new Set())
+    const copy = root.querySelector('.code-copy') as HTMLButtonElement
+    // 短暂的成功反馈不能被打断……
+    expect(copy.textContent).toBe('已复制')
+    // ……但悬浮提示与读屏标签不该停在旧语言。
+    expect(copy.title).toBe('Copy code')
+    expect(copy.getAttribute('aria-label')).toBe('Copy code')
   })
 
   it('clipboard 缺失时回退 textarea+execCommand；execCommand 抛错显示失败', async () => {

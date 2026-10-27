@@ -149,10 +149,11 @@ func installRelease(target string, release githubRelease, asset releaseAsset, so
 	if err := copyFileFn(binaryPath, target); err != nil {
 		return fmt.Errorf("install binary to %s: %w", target, err)
 	}
-	if runtime.GOOS != "windows" {
-		if err := chmodFile(target, 0o755); err != nil {
-			return fmt.Errorf("mark %s executable: %w", target, err)
-		}
+	// 无条件调用：Unix 上它设置可执行位；Windows 上 os.Chmod 只调整只读位，
+	// 0755 不会让文件变成只读，因此同样安全。保留一条统一的错误路径，
+	// 也让「权限设置失败」在任何平台都有一条可测试的分支。
+	if err := chmodFile(target, 0o755); err != nil {
+		return fmt.Errorf("mark %s executable: %w", target, err)
 	}
 	logging.Infof("[search] meilisearch installed to %s", target)
 	return nil

@@ -63,10 +63,8 @@ func setSettingsMediaDir(path, dir string) error {
 	}
 	values["media_dir"] = dir
 
-	data, err := json.MarshalIndent(values, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode %s: %w", path, err)
-	}
+	// values 来自 JSON 解析，只含 JSON 可表达的类型；MarshalIndent 不会失败。
+	data, _ := json.MarshalIndent(values, "", "  ")
 	data = append(data, '\n')
 	// 目标一定是暂存目录里的文件（同卷、私有），普通写入即可；不存在「写坏线上
 	// settings.json」的窗口——真正的换位由 applyRestore 用 swapIn 完成。

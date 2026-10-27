@@ -272,14 +272,14 @@ func TestSearchErrorAndEstimatedTotal(t *testing.T) {
 	failing := newSearchClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
-	if _, _, err := failing.Search(context.Background(), "q", 1, 12); err == nil {
+	if _, _, err := failing.Search(context.Background(), "q", 1, 12, LanguageChinese); err == nil {
 		t.Fatal("search failure must surface")
 	}
 
 	estimated := newSearchClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"hits": []any{}, "estimatedTotalHits": 42})
 	}))
-	_, total, err := estimated.Search(context.Background(), "q", 1, 12)
+	_, total, err := estimated.Search(context.Background(), "q", 1, 12, LanguageChinese)
 	if err != nil || total != 42 {
 		t.Fatalf("estimated total = (%d, %v)", total, err)
 	}

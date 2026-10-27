@@ -76,12 +76,13 @@ describe('common.tsx', () => {
     rerender(<Avatar letter="" />)
     expect(screen.getByText('匿')).toBeTruthy()
 
-    const { unmount } = render(<PageHero kicker="K" title={<b>T</b>} subtitle={<i>S</i>} />)
-    expect(screen.getByText('K')).toBeTruthy()
+    const { unmount } = render(<PageHero title={<b>T</b>} subtitle={<i>S</i>} />)
     expect(screen.getByText('T')).toBeTruthy()
     expect(screen.getByText('S')).toBeTruthy()
+    // kicker 已移除：页头不再渲染那行英文小标签。
+    expect(document.querySelector('.phero .kicker')).toBeNull()
     unmount()
-    render(<PageHero kicker="K2" title="只有标题" />)
+    render(<PageHero title="只有标题" />)
     expect(screen.getByText('只有标题')).toBeTruthy()
   })
 })

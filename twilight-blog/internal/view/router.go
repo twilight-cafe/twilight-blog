@@ -201,6 +201,7 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 	emailHandler := handler.NewEmailHandler(emailService)
 	installHandler := handler.NewInstallHandler(adminAuth, cfg)
 	siteHandler := handler.NewSiteHandler(cfg, settingsPath, adminAuth)
+	translateHandler := handler.NewTranslateHandler(cfg, settingsPath)
 
 	limits := cfg.EffectiveRateLimit()
 	limiters := middleware.NewRateLimiters(middleware.RateLimitOptions{
@@ -317,6 +318,11 @@ func Register(e *echo.Echo, cfg *config.Config, db *sql.DB, settingsPath string,
 	// 管理端读接口比公开的 GET /api/site 多一个评论通知收件地址。
 	// 那个字段是站长的私人联系方式，不能随公开快照下发。
 	admin.GET("/site", siteHandler.GetAdmin)
+	// AI 翻译：执行与配置都只在管理员分组里。配置响应不含密钥（见 viewmodel）。
+	admin.POST("/translate", translateHandler.Translate)
+	admin.POST("/translate/models", translateHandler.ListModels)
+	admin.GET("/translate/config", translateHandler.GetConfig)
+	admin.PUT("/translate/config", translateHandler.UpdateConfig)
 	admin.GET("/users", userHandler.List)
 	admin.PUT("/users/:id", userHandler.Update)
 

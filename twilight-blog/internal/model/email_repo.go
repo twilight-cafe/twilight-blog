@@ -37,7 +37,7 @@ VALUES (?, ?, ?, ?, ?, ?)
 		return fmt.Errorf("insert email: %w", err)
 	}
 
-	id, err := res.LastInsertId()
+	id, err := lastInsertIDFn(res)
 	if err != nil {
 		return fmt.Errorf("get last insert id: %w", err)
 	}
@@ -91,7 +91,7 @@ LIMIT ? OFFSET ?
 			}
 			emails = append(emails, *email)
 		}
-		if err := rows.Err(); err != nil {
+		if err := rowsErrFn(rows); err != nil {
 			return fmt.Errorf("iterate emails: %w", err)
 		}
 		return nil
@@ -122,7 +122,7 @@ WHERE id = ?
 
 func scanEmail(row scanner) (*Email, error) {
 	var email Email
-	if err := row.Scan(
+	if err := scanValuesFn(row,
 		&email.ID,
 		&email.FromEmail,
 		&email.ToEmail,

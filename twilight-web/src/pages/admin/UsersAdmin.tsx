@@ -14,6 +14,7 @@ import { NICKNAME_MAX, USERNAME_MAX, emailError, nicknameError, usernameError } 
 import { Empty, Loading } from '../../components/common'
 import { useDelayedLoading } from '../../lib/loading'
 import { useI18n } from '../../lib/i18n'
+import { usePageParam } from '../../lib/page-param'
 
 const PAGE_SIZE = 12
 
@@ -27,7 +28,8 @@ export default function UsersAdmin() {
   const { t } = useI18n()
   const toast = useToast()
   const [list, setList] = useState<UserResponse[]>([])
-  const [page, setPage] = useState(1)
+  // 页码进 URL：浏览用户资料再后退，列表保持原来的页。
+  const [page, setPage] = usePageParam()
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
   const [loading, setLoading] = useState(true)

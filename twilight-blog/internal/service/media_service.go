@@ -74,12 +74,25 @@ var (
 // 与 restore_command.go 里的 isTerminal 是同一种做法：给一条无法从外部伪造的分支
 // 留一个可替换的钩子。
 var removeFile = os.Remove
-
-// mkdirAll 是 os.MkdirAll 的间接层，用途与 removeFile 相同：saveFile 开头那一步
-// 「媒体目录建不出来」在 POSIX 上很难稳定构造（目录一旦存在 MkdirAll 就成功，而
-// 源文件必须先在同一个目录里存在），而它正是 UpgradeToWebP 里 saveFile 失败那一支
-// 的入口。钩子让这条分支在任何平台上都能被钉住，与 removeFile 是同一套做法。
 var mkdirAll = os.MkdirAll
+
+// 文件系统底层调用的间接层：正常磁盘上这些失败极难构造，但每一条都对应
+// 「上传到一半失败时会不会留下孤儿文件」的答案。
+var (
+	// readUploadHeadFn 读取上传文件的前 512 字节。单独提出来是为了覆盖
+	// 「读了一半就失败」：multipart.FileHeader 的底层 reader 由标准库构造，
+	// 测试无法让它返回一个非 EOF 的错误。
+	readUploadHeadFn = io.ReadFull
+	seekStreamFn     = func(s io.Seeker, offset int64, whence int) (int64, error) {
+		return s.Seek(offset, whence)
+	}
+	openFileFn  = os.OpenFile
+	copyStream  = func(dst io.Writer, src io.Reader) (int64, error) { return io.Copy(dst, src) }
+	closeFileFn = func(c io.Closer) error { return c.Close() }
+	statPathFn  = os.Stat
+	lstatPathFn = os.Lstat
+	chmodPathFn = os.Chmod
+)
 
 // 解码资源闸门。这三个常量共同决定「一次上传最坏能吃掉多少内存」，改动任何一个
 // 都要重新算一遍：maxImagePixels × 4 字节 × maxConcurrentTranscodes。
@@ -318,7 +331,7 @@ func (s *MediaService) StoreFile(ctx context.Context, header *multipart.FileHead
 	defer src.Close()
 
 	head := make([]byte, 512)
-	n, err := io.ReadFull(src, head)
+	n, err := readUploadHeadFn(src, head)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		logging.Errorf("[media] read uploaded file failed filename=%q: %v", header.Filename, err)
 		return nil, fmt.Errorf("read uploaded file: %w", err)
@@ -335,7 +348,7 @@ func (s *MediaService) StoreFile(ctx context.Context, header *multipart.FileHead
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedMediaType, detectedMime)
 	}
 
-	if _, err := src.Seek(0, io.SeekStart); err != nil {
+	if _, err := seekStreamFn(src, 0, io.SeekStart); err != nil {
 		logging.Errorf("[media] rewind uploaded file failed filename=%q: %v", header.Filename, err)
 		return nil, fmt.Errorf("rewind uploaded file: %w", err)
 	}
@@ -356,7 +369,7 @@ func (s *MediaService) StoreFile(ctx context.Context, header *multipart.FileHead
 			return nil, err
 		}
 		// 头部解析消费掉了前若干字节，拷贝到最终位置之前要重新回到起点。
-		if _, err := src.Seek(0, io.SeekStart); err != nil {
+		if _, err := seekStreamFn(src, 0, io.SeekStart); err != nil {
 			logging.Errorf("[media] rewind after the dimension check failed filename=%q: %v", header.Filename, err)
 			return nil, fmt.Errorf("rewind uploaded file: %w", err)
 		}
@@ -383,16 +396,16 @@ func (s *MediaService) StoreFile(ctx context.Context, header *multipart.FileHead
 	defer os.RemoveAll(tmpDir)
 
 	tmpInputName := filepath.Join(tmpDir, "input"+safeExt(header.Filename))
-	tmpInput, err := os.OpenFile(tmpInputName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	tmpInput, err := openFileFn(tmpInputName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("create temp input: %w", err)
 	}
 
-	if _, err := io.Copy(tmpInput, src); err != nil {
-		tmpInput.Close()
+	if _, err := copyStream(tmpInput, src); err != nil {
+		_ = closeFileFn(tmpInput)
 		return nil, fmt.Errorf("copy uploaded file to temp: %w", err)
 	}
-	if err := tmpInput.Close(); err != nil {
+	if err := closeFileFn(tmpInput); err != nil {
 		return nil, fmt.Errorf("close temp input: %w", err)
 	}
 
@@ -464,7 +477,7 @@ func (s *MediaService) StoreFile(ctx context.Context, header *multipart.FileHead
 	}
 
 	finalPath := filepath.Join(s.mediaDir, storageName)
-	info, err := os.Stat(finalPath)
+	info, err := statPathFn(finalPath)
 	if err != nil {
 		removeQuietly(finalPath)
 		logging.Errorf("[media] stat stored file failed path=%s: %v", finalPath, err)
@@ -556,7 +569,7 @@ func (s *MediaService) UpgradeToWebP(ctx context.Context, media *model.Media) (*
 	}
 	newPath := filepath.Join(s.mediaDir, newName)
 
-	info, err := os.Stat(newPath)
+	info, err := statPathFn(newPath)
 	if err != nil {
 		removeQuietly(newPath)
 		return nil, fmt.Errorf("stat the converted file: %w", err)
@@ -773,7 +786,7 @@ func (s *MediaService) Path(media *model.Media) (string, error) {
 	}
 
 	full := filepath.Join(s.mediaDir, name)
-	if info, err := os.Lstat(full); err == nil && info.Mode()&os.ModeSymlink != 0 {
+	if info, err := lstatPathFn(full); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return "", fmt.Errorf("%w: %q is a symbolic link", ErrInvalidStorageName, media.StorageName)
 	}
 	return full, nil
@@ -828,7 +841,7 @@ func (s *MediaService) saveFile(srcName, dstName string) error {
 	if err := mkdirAll(s.mediaDir, 0o700); err != nil {
 		return fmt.Errorf("create media dir: %w", err)
 	}
-	if err := os.Chmod(s.mediaDir, 0o700); err != nil {
+	if err := chmodPathFn(s.mediaDir, 0o700); err != nil {
 		logging.Warnf("[media] tightening media dir permissions failed dir=%s: %v", s.mediaDir, err)
 	}
 
@@ -849,7 +862,7 @@ func (s *MediaService) saveFile(srcName, dstName string) error {
 		removeQuietly(dstPath)
 		return fmt.Errorf("copy stored media: %w", err)
 	}
-	if err := dst.Close(); err != nil {
+	if err := closeFileFn(dst); err != nil {
 		removeQuietly(dstPath)
 		return fmt.Errorf("close stored media: %w", err)
 	}

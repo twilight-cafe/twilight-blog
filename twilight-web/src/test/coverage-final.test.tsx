@@ -33,7 +33,7 @@ import MediaLightbox from '../components/media/MediaLightbox'
 import { enhanceCodeBlocks, enhanceImages } from '../components/ContentView'
 import AdminLayout from '../components/AdminLayout'
 import { collectToc, extractToc, isSafeUrl, nodeText, rehypeCommentSanitize, rehypeHeadingIds, renderCommentMarkdown } from '../lib/markdown'
-import { saveSiteDescription, resetSiteCacheForTests } from '../lib/site'
+import { saveSiteDescription, saveSiteSettings, resetSiteCacheForTests } from '../lib/site'
 import { excerpt } from '../lib/format'
 import { DialogProvider } from '../lib/dialog'
 import { ToastProvider, useToast } from '../lib/toast'
@@ -77,11 +77,13 @@ function renderRouted(ui: React.ReactElement, route: string, pattern: string) {
   )
 }
 
-function renderPlain(ui: React.ReactElement) {
+function renderPlain(ui: React.ReactElement, route = '/') {
   return render(
-    <ToastProvider>
-      <DialogProvider>{ui}</DialogProvider>
-    </ToastProvider>,
+    <MemoryRouter initialEntries={[route]}>
+      <ToastProvider>
+        <DialogProvider>{ui}</DialogProvider>
+      </ToastProvider>
+    </MemoryRouter>,
   )
 }
 
@@ -249,7 +251,7 @@ describe('ContentView 增强 effect 源码形态（React 19 重设 innerHTML 的
 
   it('增强走无依赖的 useLayoutEffect', () => {
     expect(source).toContain('useLayoutEffect(() => {')
-    expect(source).toContain('enhanceCodeBlocks(ref.current, pending)')
+    expect(source).toContain('enhanceCodeBlocks(ref.current, timers.current)')
   })
 
   it('增强 effect 不得依赖 [html]（真机壳丢失的根源）', () => {
@@ -458,6 +460,30 @@ describe('AdminLayout 计数缓存与守卫补缺', () => {
     client.refreshAuth.mockResolvedValue(null)
     const { container } = renderRouted(<AdminLayout />, '/admin/posts', '/admin/posts')
     expect(container.textContent).toContain('LOGIN-STUB')
+  })
+})
+
+describe('AdminLayout 外壳开关的会话内更新', () => {
+  it('保存站点设置关闭微语后，侧栏菜单立即消失（无需换页或刷新）', async () => {
+    // dataset 变化不会触发 React 重渲染，菜单必须靠 notifyShellFlagsChanged
+    // 的订阅事件更新——这正是本次修复的缺陷。
+    document.documentElement.dataset.momentsEnabled = 'true'
+    client.setCurrentUser(adminMe)
+    client.blog.getSite.mockResolvedValue({ description: 'd', moments_enabled: true })
+    client.blog.updateSite.mockResolvedValue({ description: 'd', moments_enabled: false })
+    const { container, unmount } = renderRouted(<AdminLayout />, '/admin/posts', '/admin/posts')
+    try {
+      await waitFor(() => expect(container.querySelector('a[href="/admin/moments"]')).toBeTruthy())
+
+      await act(async () => {
+        await saveSiteSettings({ description: 'd', momentsEnabled: false })
+      })
+
+      await waitFor(() => expect(container.querySelector('a[href="/admin/moments"]')).toBeNull())
+    } finally {
+      unmount()
+      delete document.documentElement.dataset.momentsEnabled
+    }
   })
 })
 
@@ -721,7 +747,7 @@ describe('Editor 补缺', () => {
     fireEvent.change(container.querySelector('input.ed-title, .ed-title input, input') as HTMLInputElement, { target: { value: '标题T' } })
     client.blog.createArticle.mockResolvedValueOnce(makeArticle({ id: 3 }))
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() => expect(client.blog.createArticle).toHaveBeenCalledWith({ title: '标题T', content: '', titleEn: '', contentEn: '', aiGenerated: false, tags: ['新标签'], coverMediaId: null }))
+    await waitFor(() => expect(client.blog.createArticle).toHaveBeenCalledWith({ title: '标题T', content: '', titleEn: '', contentEn: '', aiGenerated: false, aiGeneratedEn: false, tags: ['新标签'], coverMediaId: null }))
   })
 })
 
@@ -1071,6 +1097,16 @@ describe('PagesAdmin 补缺', () => {
     })
   })
 
+  it('列表成功但已卸载：同样不写状态', async () => {
+    const gate = deferred<ReturnType<typeof paged>>()
+    client.blog.listPages.mockImplementation(() => gate.promise as never)
+    const { unmount } = renderWithRouter(<PagesAdmin />)
+    unmount()
+    await act(async () => {
+      gate.resolve(paged([makePage({ id: 1, title: '迟到的页面' })]))
+    })
+  })
+
   it('删除/彻底删除取消；删除失败；恢复失败', async () => {
     client.blog.listPages.mockResolvedValue(paged([makePage({ id: 1, title: '关于' })]))
     client.blog.listTrashPages.mockResolvedValue(paged([makePage({ id: 2, title: '旧页' })]))
@@ -1133,9 +1169,9 @@ describe('PagesAdmin 补缺', () => {
     client.blog.createPage.mockResolvedValue(makePage({ id: 5 }))
     renderRouted(<NewPage />, '/admin/pages/new', '/admin/pages/new')
     fireEvent.change(screen.getByPlaceholderText('页面标题'), { target: { value: '新页' } })
-    fireEvent.change(screen.getByPlaceholderText('内容（纯文本 / 后续可扩展）'), { target: { value: '正文内容' } })
+    fireEvent.change(screen.getByPlaceholderText('页面内容（Markdown）'), { target: { value: '正文内容' } })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() => expect(client.blog.createPage).toHaveBeenCalledWith({ title: '新页', content: '正文内容' }))
+    await waitFor(() => expect(client.blog.createPage).toHaveBeenCalledWith({ title: '新页', content: '正文内容', titleEn: '', contentEn: '' }))
   })
 
   it('列表失败（挂载中）→ toast 且空态；trash 彻底删除失败；切回「页面」tab', async () => {

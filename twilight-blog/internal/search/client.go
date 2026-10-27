@@ -80,14 +80,17 @@ func (c *Client) EnsureIndex(ctx context.Context) error {
 	return c.configureIndex(ctx)
 }
 
-// configureIndex 只把 title 与 content 设为可搜索字段。
+// configureIndex 把两种语言的标题与正文设为可搜索字段。
 //
-// 这点值得留意：其余字段（tags、kind、created_at、id）仍随文档存储、
-// 也会被搜到结果里返回，但不参与全文匹配。否则搜索「2024」会意外命中
-// 时间戳，「article」会命中所有文章——把结构化字段排除在匹配之外才对。
+// 其余字段（tags、kind、created_at、id）仍随文档存储、也会被搜到结果里返回，
+// 但不参与全文匹配。否则搜索「2024」会意外命中时间戳，「article」会命中
+// 所有文章——把结构化字段排除在匹配之外才对。
+//
+// 中英文都登记进来，真正的「只搜当前语言」由 Search 的 attributesToSearchOn
+// 决定：站点是中文时只匹配 title/content，英文时只匹配 title_en/content_en。
 func (c *Client) configureIndex(ctx context.Context) error {
 	settings := map[string]any{
-		"searchableAttributes": []string{"title", "content"},
+		"searchableAttributes": []string{"title", "content", "title_en", "content_en"},
 	}
 	var task taskEnvelope
 	if err := c.do(ctx, http.MethodPatch, "/indexes/"+IndexName+"/settings", settings, &task); err != nil {
@@ -280,18 +283,19 @@ func articleDoc(article *model.Article) map[string]any {
 		tagsEN = []string{}
 	}
 	doc := map[string]any{
-		"doc_id":       docID("article", article.ID),
-		"kind":         "article",
-		"id":           article.ID,
-		"title":        article.Title,
-		"content":      article.Content,
-		"title_en":     article.TitleEN,
-		"content_en":   article.ContentEN,
-		"ai_generated": article.AIGenerated,
-		"created_at":   article.CreatedAt,
-		"updated_at":   article.UpdatedAt,
-		"tags":         tags,
-		"tags_en":      tagsEN,
+		"doc_id":          docID("article", article.ID),
+		"kind":            "article",
+		"id":              article.ID,
+		"title":           article.Title,
+		"content":         article.Content,
+		"title_en":        article.TitleEN,
+		"content_en":      article.ContentEN,
+		"ai_generated":    article.AIGenerated,
+		"ai_generated_en": article.AIGeneratedEN,
+		"created_at":      article.CreatedAt,
+		"updated_at":      article.UpdatedAt,
+		"tags":            tags,
+		"tags_en":         tagsEN,
 	}
 	if article.CoverMediaID != nil {
 		doc["cover_media_id"] = *article.CoverMediaID
@@ -308,6 +312,8 @@ func pageDoc(page *model.Page) map[string]any {
 		"id":         page.ID,
 		"title":      page.Title,
 		"content":    page.Content,
+		"title_en":   page.TitleEN,
+		"content_en": page.ContentEN,
 		"created_at": page.CreatedAt,
 		"updated_at": page.UpdatedAt,
 	}
@@ -386,6 +392,8 @@ type searchRequest struct {
 	Offset                int      `json:"offset"`
 	Limit                 int      `json:"limit"`
 	AttributesToHighlight []string `json:"attributesToHighlight,omitempty"`
+	// AttributesToSearchOn 把匹配范围限制在当前语言的两列上。
+	AttributesToSearchOn []string `json:"attributesToSearchOn,omitempty"`
 }
 
 type searchResponse struct {
@@ -400,10 +408,14 @@ type searchResponse struct {
 // 注意其中含 HTML 标签，前端渲染时必须转义或走受控的白名单，
 // 不能直接当 HTML 插入。
 type Result struct {
-	Type      string `json:"type"`
-	ID        int64  `json:"id"`
-	Title     string `json:"title"`
-	Content   string `json:"content"`
+	Type    string `json:"type"`
+	ID      int64  `json:"id"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+	// TitleEN / ContentEN 让前端按当前语言取用（空串表示没有英文版，回退中文）。
+	// 搜索命中同样必须带这两项，否则英文界面搜到的文章标题会退回中文。
+	TitleEN   string `json:"title_en"`
+	ContentEN string `json:"content_en"`
 	CreatedAt int64  `json:"created_at"`
 	UpdatedAt int64  `json:"updated_at"`
 
@@ -416,6 +428,18 @@ type Result struct {
 	// 必填且前端直接读 `result.tags.length`，缺字段会抛 TypeError 把整个搜索页
 	// 打空。指针让「文章」这一侧始终输出数组（空也是 []）。
 	Tags *[]string `json:"tags,omitempty"`
+	// TagsEN 与 Tags 等长同序，仅文章命中存在；页面命中保持 nil。
+	TagsEN *[]string `json:"tags_en,omitempty"`
+
+	// AIGenerated / AIGeneratedEN 是按语言独立的 AI 声明，分别对应
+	// Article 的 ai_generated 与 ai_generated_en。
+	//
+	// 与 cover_media_id 同理：ArticleSearchResult 继承 Article，而 Article 把
+	// 这两个布尔字段声明为必填，所以文章命中必须恒输出它们（缺失的索引字段
+	// 读成 false）。页面命中也会带上两个 false——PageSearchResult 不声明它们，
+	// 多两个字段不会让任何调用方出错，而为类型分支再造一种形状代价更大。
+	AIGenerated   bool `json:"ai_generated"`
+	AIGeneratedEN bool `json:"ai_generated_en"`
 
 	// CoverMediaID 是文章头图的媒体 id，没有头图时是 null。
 	//
@@ -429,7 +453,37 @@ type Result struct {
 	Highlight map[string]any `json:"highlight,omitempty"`
 }
 
+// Language 是搜索要匹配的语言。只支持站点已有的中文与英文两套字段。
+type Language string
+
+const (
+	LanguageChinese Language = "zh"
+	LanguageEnglish Language = "en"
+)
+
+// ParseLanguage 解析语言代码；空串与未知值都回退中文。
+//
+// 搜索接口的 lang 是可选参数：旧客户端不带它时必须保持升级前的行为
+// （只搜中文），而不是报错。
+func ParseLanguage(value string) Language {
+	if Language(value) == LanguageEnglish {
+		return LanguageEnglish
+	}
+	return LanguageChinese
+}
+
+// searchAttributes 返回该语言参与匹配与高亮的字段。
+func (l Language) searchAttributes() []string {
+	if l == LanguageEnglish {
+		return []string{"title_en", "content_en"}
+	}
+	return []string{"title", "content"}
+}
+
 // Search 执行一次查询，返回结果与总数。
+//
+// lang 决定只匹配哪一套标题/正文：站点是中文时搜中文列，英文时搜英文列，
+// 两种语言不会互相命中（例如英文界面不会因为某篇文章的中文标题含关键词而命中）。
 //
 // page / pageSize 在这里再兜一次默认值（默认 12，与 handler 的 maxPageSize 一致），
 // 因为本方法也可能被非 HTTP 调用方使用；正常 HTTP 路径上已经由 parsePagination 校验过。
@@ -438,20 +492,22 @@ type Result struct {
 // Meilisearch 只给后者，而它名字里的 estimated 是认真的：**它是估算值**。
 // 所以搜索页的总页数可能与实际略有偏差，前端不要把它当精确计数用
 // （数据库侧的分页是精确 COUNT，两者性质不同）。
-func (c *Client) Search(ctx context.Context, query string, page, pageSize int) ([]Result, int64, error) {
+func (c *Client) Search(ctx context.Context, query string, page, pageSize int, lang Language) ([]Result, int64, error) {
 	if page < 1 {
 		page = 1
 	}
 	if pageSize < 1 {
 		pageSize = 12
 	}
-	logging.Debugf("[search] searching query=%q page=%d page_size=%d", query, page, pageSize)
+	attributes := lang.searchAttributes()
+	logging.Debugf("[search] searching query=%q page=%d page_size=%d lang=%s", query, page, pageSize, lang)
 
 	reqBody := searchRequest{
 		Query:                 query,
 		Offset:                (page - 1) * pageSize,
 		Limit:                 pageSize,
-		AttributesToHighlight: []string{"title", "content"},
+		AttributesToHighlight: attributes,
+		AttributesToSearchOn:  attributes,
 	}
 
 	var resp searchResponse
@@ -484,12 +540,16 @@ func (c *Client) Search(ctx context.Context, query string, page, pageSize int) (
 func resultFromHit(hit map[string]any) Result {
 	kind := sourceString(hit, "kind")
 	item := Result{
-		Type:      kind,
-		ID:        sourceInt64(hit, "id"),
-		Title:     sourceString(hit, "title"),
-		Content:   sourceString(hit, "content"),
-		CreatedAt: sourceInt64(hit, "created_at"),
-		UpdatedAt: sourceInt64(hit, "updated_at"),
+		Type:          kind,
+		ID:            sourceInt64(hit, "id"),
+		Title:         sourceString(hit, "title"),
+		Content:       sourceString(hit, "content"),
+		TitleEN:       sourceString(hit, "title_en"),
+		ContentEN:     sourceString(hit, "content_en"),
+		AIGenerated:   sourceBool(hit, "ai_generated"),
+		AIGeneratedEN: sourceBool(hit, "ai_generated_en"),
+		CreatedAt:     sourceInt64(hit, "created_at"),
+		UpdatedAt:     sourceInt64(hit, "updated_at"),
 	}
 
 	if kind == "article" {
@@ -502,6 +562,16 @@ func resultFromHit(hit map[string]any) Result {
 			}
 		}
 		item.Tags = &tags
+
+		tagsEN := []string{}
+		if list, ok := hit["tags_en"].([]any); ok {
+			for _, tag := range list {
+				if s, ok := tag.(string); ok {
+					tagsEN = append(tagsEN, s)
+				}
+			}
+		}
+		item.TagsEN = &tagsEN
 
 		if coverID := sourceInt64(hit, "cover_media_id"); coverID > 0 {
 			item.CoverMediaID = &coverID
@@ -516,6 +586,13 @@ func resultFromHit(hit map[string]any) Result {
 
 func sourceString(source map[string]any, key string) string {
 	value, _ := source[key].(string)
+	return value
+}
+
+// sourceBool 读取布尔字段；缺失或类型不对时按 false。
+// 与 sourceInt64 同一取舍：搜索结果的单个字段不该让整次查询失败。
+func sourceBool(source map[string]any, key string) bool {
+	value, _ := source[key].(bool)
 	return value
 }
 

@@ -10,6 +10,7 @@ import RouteTransition from '../components/RouteTransition'
 import PublicSidebar from '../components/PublicSidebar'
 import { resetCountsCacheForTests } from '../components/AdminLayout'
 import { resetSiteCacheForTests } from '../lib/site'
+import { setLocale } from '../lib/i18n'
 import { readFile } from '../shims/fs-promises'
 import { adminMe, getSharedClientMock, makePage, resetClientMock, visitorMe } from './helpers'
 
@@ -279,7 +280,9 @@ describe('PublicShell + PublicSidebar', () => {
     await waitFor(() => expect(screen.getByText('OUTLET-PROBE')).toBeTruthy(), { timeout: 3000 })
 
     expect(document.querySelector('header[data-header="home"]')).toBeTruthy()
-    expect(screen.getAllByText('测试站').length).toBeGreaterThan(0) // 标语来自站点描述
+    expect(screen.getAllByText('测试站').length).toBeGreaterThan(0) // 页脚 / 作者卡仍展示站点描述
+    // 首页大标题下不再有标语：那段描述已按设计移除。
+    expect(document.querySelector('.mast .slogan')).toBeNull()
     expect(screen.getAllByText('归档').length).toBeGreaterThan(0) // 默认导航
     expect(screen.getAllByText('独立页').length).toBeGreaterThan(0) // listPages 拉回的独立页面
     expect(screen.getByText('登录 / 注册').getAttribute('href')).toBe('/admin/login')
@@ -291,11 +294,17 @@ describe('PublicShell + PublicSidebar', () => {
     await waitFor(() => expect(screen.getByText('OUTLET-PROBE')).toBeTruthy(), { timeout: 3000 })
 
     expect(document.querySelector('header[data-header="home"]')).toBeNull()
-    // 内页页头右侧现在是语言切换器（原「TWILIGHT BLOG — INK & CODE」已按要求替换）。
+    // 语言切换器已移入侧栏工具行，内页页头里不再保留第二份。
     expect(screen.getByRole('group', { name: '语言' })).toBeTruthy()
+    expect(document.querySelector('.mast .lang-switch')).toBeNull()
     // 所有内页共用紧凑头（post/page 以及归档、标签等）。
     expect(document.querySelector('.mast.slim.compact')).toBeTruthy()
     expect(document.querySelector('.nav-slim.compact')).toBeTruthy()
+    // 菜单并入紧凑头，紧跟在品牌右侧（不再单独占一行）。
+    const slimMast = document.querySelector('.wrap.mast.slim') as HTMLElement
+    const brand = slimMast.querySelector('.brand') as HTMLElement
+    const nav = slimMast.querySelector('.nav-slim') as HTMLElement
+    expect(brand.nextElementSibling).toBe(nav)
     expect(screen.getByRole('button', { name: '中' }).getAttribute('aria-pressed')).toBe('true')
 
     // 模拟文章页回传目录 → 侧栏渲染 TOC（缩进按层级）
@@ -412,6 +421,82 @@ describe('PublicSidebar 直渲染', () => {
     expect(screen.getByText('Twilight')).toBeTruthy()
     expect(screen.getByText('关于')).toBeTruthy() // 独立页面进导航
     expect(screen.getByText('标签').className).toContain('on')
+  })
+
+  it('语言切换器在侧栏工具行，紧挨亮/暗按钮左侧', () => {
+    render(
+      <MemoryRouter initialEntries={['/tags']}>
+        <PublicSidebar pages={[]} />
+      </MemoryRouter>,
+    )
+    const tools = document.querySelector('.public-sidebar .tools') as HTMLElement
+    const lang = tools.querySelector('.lang-switch') as HTMLElement
+    const mode = tools.querySelector('.iconbtn') as HTMLElement
+    expect(lang).toBeTruthy()
+    expect(mode).toBeTruthy()
+    // 紧邻在左侧：两个显示偏好控件排在同一行，语言在前、明暗在后。
+    expect(lang.nextElementSibling).toBe(mode)
+    // 页头不再保留第二份切换器。
+    expect(document.querySelector('.mast .lang-switch')).toBeNull()
+  })
+
+  it('页脚 Navigation 的独立页面名称随语言切换，缺译名回退中文', async () => {
+    act(() => setLocale('zh'))
+    client.blog.listPages.mockResolvedValue({
+      items: [
+        makePage({ id: 3, title: '关于', title_en: 'About' }),
+        makePage({ id: 4, title: '友链', title_en: '' }),
+      ],
+      page: 1, page_size: 12, total: 2, total_pages: 1,
+    })
+    const { container } = render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route element={<PublicShell />}>
+            <Route path="*" element={<div>OUTLET-PROBE</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(screen.getByText('OUTLET-PROBE')).toBeTruthy(), { timeout: 3000 })
+    const footer = container.querySelector('footer.site') as HTMLElement
+    await waitFor(() => expect(footer.querySelector('a[href="/pages/3"]')?.textContent).toBe('关于'))
+
+    act(() => setLocale('en'))
+    await waitFor(() => expect(footer.querySelector('a[href="/pages/3"]')?.textContent).toBe('About'))
+    // 没有英文译名的页面保留中文名（与页头、侧栏同一套回退规则）。
+    expect(footer.querySelector('a[href="/pages/4"]')?.textContent).toBe('友链')
+    // 回到顶部按钮的 aria-label / title 也跟随语言（库默认是中文）。
+    expect(screen.getByTitle('Back to top')).toBeTruthy()
+    act(() => setLocale('zh'))
+  })
+
+  it('侧栏独立页面名与目录标题随语言切换，无译名时保留中文', () => {
+    render(
+      <MemoryRouter initialEntries={['/tags']}>
+        <PublicSidebar
+          pages={[
+            makePage({ id: 3, title: '关于', title_en: 'About' }),
+            makePage({ id: 4, title: '友链', title_en: '' }),
+          ]}
+          toc={[{ id: 'h1', level: 1, text: '第一节' }]}
+        />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('关于')).toBeTruthy()
+    expect(screen.getByText('目录')).toBeTruthy()
+    expect(screen.getByLabelText('侧边栏')).toBeTruthy()
+    expect(screen.getByRole('navigation', { name: '文章目录' })).toBeTruthy()
+
+    act(() => setLocale('en'))
+    expect(screen.getByText('About')).toBeTruthy()
+    expect(screen.getByText('友链')).toBeTruthy()
+    expect(screen.queryByText('关于')).toBeNull()
+    // 目录标题与两个 aria-label 也必须跟着语言走。
+    expect(screen.getByText('Contents')).toBeTruthy()
+    expect(screen.queryByText('目录')).toBeNull()
+    expect(screen.getByLabelText('Sidebar')).toBeTruthy()
+    expect(screen.getByRole('navigation', { name: 'Table of contents' })).toBeTruthy()
   })
 })
 

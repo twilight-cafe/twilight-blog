@@ -58,6 +58,19 @@ var newMailerForCommand = func(cfg *config.Config) (mail.Mailer, error) {
 	return newMailer(cfg)
 }
 
+// 配置/数据库读取的间接层：这些步骤的失败分支都对应运维会遇到的真实故障，
+// 但命令自己打开文件与连接，测试只能靠替换这一层来触发。
+var (
+	configureEmailLogging = logging.Configure
+	loadEmailSettings     = config.Load
+	saveEmailSettings     = func(cfg *config.Config, path string) error { return cfg.Save(path) }
+	openEmailDatabase     = database.Open
+	migrateEmailAdmin     = model.MigrateAdminCredentials
+	emailAdminExists      = func(db *sql.DB) (bool, error) {
+		return model.NewSQLiteAdminRepository(db).Exists(context.Background())
+	}
+)
+
 // runEmailTest 解析 -target 并发送一封测试邮件。
 //
 // 发送前逐项确认 mail.from 与 mail.api_key 已配置，给出的错误比
@@ -111,26 +124,26 @@ func runEmailTest(args []string) error {
 // 顺带的好处是 `main.exe email ...` 也会把老的 settings.json 凭据搬进库，
 // 与主进程行为一致。
 func loadInstalledConfig() (*config.Config, *sql.DB, error) {
-	if err := logging.Configure(""); err != nil {
+	if err := configureEmailLogging(""); err != nil {
 		return nil, nil, fmt.Errorf("configure default logging: %w", err)
 	}
-	cfg, err := config.Load(settingsPath)
+	cfg, err := loadEmailSettings(settingsPath)
 	if err != nil && !errors.Is(err, config.ErrNotInstalled) {
 		return nil, nil, fmt.Errorf("load settings: %w", err)
 	}
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	if err := logging.Configure(cfg.LogLevel); err != nil {
+	if err := configureEmailLogging(cfg.LogLevel); err != nil {
 		return nil, nil, fmt.Errorf("configure log level: %w", err)
 	}
 	// Keep settings.json synchronized even when the email subcommand is used.
 	// 与 main 一样，这一步**不能**清掉管理员凭据：下面的迁移还要读它们。
-	if err := cfg.Save(settingsPath); err != nil {
+	if err := saveEmailSettings(cfg, settingsPath); err != nil {
 		return nil, nil, fmt.Errorf("sync settings: %w", err)
 	}
 
-	db, err := database.Open(databasePath)
+	db, err := openEmailDatabase(databasePath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open database: %w", err)
 	}
@@ -138,17 +151,17 @@ func loadInstalledConfig() (*config.Config, *sql.DB, error) {
 	// 与 main.go 相同的一条顺序约束：凭据必须在任何「已安装吗」的判断之前搬进库。
 	// 这里的调用方只是发邮件，但如果跳过它，一个还没迁移过的老站点会被判成
 	// 「未安装」而被拒绝——而那与真实状态不符。
-	if err := model.MigrateAdminCredentials(context.Background(), db, cfg); err != nil {
+	if err := migrateEmailAdmin(context.Background(), db, cfg); err != nil {
 		db.Close()
 		return nil, nil, fmt.Errorf("migrate administrator credentials: %w", err)
 	}
 	cfg.ClearLegacyCredentials()
-	if err := cfg.Save(settingsPath); err != nil {
+	if err := saveEmailSettings(cfg, settingsPath); err != nil {
 		db.Close()
 		return nil, nil, fmt.Errorf("remove migrated credentials from settings: %w", err)
 	}
 
-	installed, err := model.NewSQLiteAdminRepository(db).Exists(context.Background())
+	installed, err := emailAdminExists(db)
 	if err != nil {
 		db.Close()
 		return nil, nil, fmt.Errorf("check installation state: %w", err)

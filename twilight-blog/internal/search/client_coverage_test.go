@@ -190,7 +190,7 @@ func TestClientSearchAndDefaults(t *testing.T) {
 	server := httptest.NewServer(fake)
 	defer server.Close()
 	client := NewClient(server.URL, "")
-	results, total, err := client.Search(context.Background(), "q", 0, 0)
+	results, total, err := client.Search(context.Background(), "q", 0, 0, LanguageChinese)
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}

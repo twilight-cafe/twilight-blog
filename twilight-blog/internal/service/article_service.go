@@ -59,8 +59,10 @@ type ArticleWrite struct {
 	// TitleEN / ContentEN 与 Content 同一条规则：nil = Create 视为空 / Update 不改。
 	TitleEN   *string
 	ContentEN *string
-	// AIGenerated 为 nil：Create 视为 false；Update 视为「不改标记」。
-	AIGenerated *bool
+	// AIGenerated / AIGeneratedEN 为 nil：Create 视为 false；Update 视为「不改标记」。
+	// 两者**按语言独立**：中文标记不会影响英文，反之亦然。
+	AIGenerated   *bool
+	AIGeneratedEN *bool
 	// Tags 为 nil：Create 视为无标签；Update 视为「不改标签」。
 	Tags *[]string
 	// PublishedAt 为 nil：Create 用当前时间；Update 保持原值。
@@ -145,10 +147,10 @@ func (s *ArticleService) Create(ctx context.Context, in ArticleWrite) (*model.Ar
 	if in.ContentEN != nil {
 		contentEN = *in.ContentEN
 	}
-	aiGenerated := false
-	if in.AIGenerated != nil {
-		aiGenerated = *in.AIGenerated
-	}
+	// AI 声明按语言独立：中文版与英文版各存各的，互不覆盖。
+	// 客户端没传的那一份按「未标记」处理。
+	aiGeneratedZH := in.AIGenerated != nil && *in.AIGenerated
+	aiGeneratedEN := in.AIGeneratedEN != nil && *in.AIGeneratedEN
 
 	cover, err := s.usableCoverID(ctx, in.CoverMediaID)
 	if err != nil {
@@ -164,15 +166,16 @@ func (s *ArticleService) Create(ctx context.Context, in ArticleWrite) (*model.Ar
 	}
 
 	article := &model.Article{
-		Title:        in.Title,
-		Content:      content,
-		TitleEN:      titleEN,
-		ContentEN:    contentEN,
-		AIGenerated:  aiGenerated,
-		CreatedAt:    publishedAt,
-		UpdatedAt:    now,
-		CoverMediaID: cover,
-		Tags:         tags,
+		Title:         in.Title,
+		Content:       content,
+		TitleEN:       titleEN,
+		ContentEN:     contentEN,
+		AIGenerated:   aiGeneratedZH,
+		AIGeneratedEN: aiGeneratedEN,
+		CreatedAt:     publishedAt,
+		UpdatedAt:     now,
+		CoverMediaID:  cover,
+		Tags:          tags,
 	}
 
 	if err := s.repo.Create(ctx, article); err != nil {
@@ -220,8 +223,13 @@ func (s *ArticleService) Update(ctx context.Context, id int64, in ArticleWrite) 
 	if in.ContentEN != nil {
 		article.ContentEN = *in.ContentEN
 	}
+	// AI 标记与正文一样是三态（nil = 不改），但**两种语言各自独立**：
+	// 只改英文不会影响中文的声明，反之亦然。
 	if in.AIGenerated != nil {
 		article.AIGenerated = *in.AIGenerated
+	}
+	if in.AIGeneratedEN != nil {
+		article.AIGeneratedEN = *in.AIGeneratedEN
 	}
 	if in.Tags != nil {
 		article.Tags = normalizeTags(*in.Tags)

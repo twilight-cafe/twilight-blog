@@ -17,7 +17,8 @@ import { useToast } from '../../lib/toast'
 import { Empty, Loading } from '../../components/common'
 import { useDelayedLoading } from '../../lib/loading'
 import { useI18n, useLocale } from '../../lib/i18n'
-import { articleTags, articleTitle } from '../../lib/localize'
+import { articleAIGenerated, articleTags, articleTitle } from '../../lib/localize'
+import { usePageParam } from '../../lib/page-param'
 
 type Tab = 'active' | 'trash'
 
@@ -28,7 +29,8 @@ export default function Posts() {
   const { confirm } = useDialog()
   const [tab, setTab] = useState<Tab>('active')
   const [list, setList] = useState<Article[]>([])
-  const [page, setPage] = useState(1)
+  // 页码进 URL：从列表翻到第 2 页、进文章编辑再后退，回来仍是第 2 页。
+  const [page, setPage] = usePageParam()
   const [totalPages, setTotalPages] = useState(1)
   const [selected, setSelected] = useState<number[]>([])
   const [loading, setLoading] = useState(true)
@@ -217,7 +219,7 @@ export default function Posts() {
                   <td>
                     <Link to={tab === 'active' ? `/admin/editor/${item.id}` : '#'}>
                       <b style={{ fontFamily: 'var(--serif)', fontSize: 14.5 }}>{articleTitle(item, locale)}</b>
-                      {item.ai_generated ? <span className="chip" style={{ marginLeft: 6 }}>{t('AI 生成', 'AI')}</span> : null}
+                      {articleAIGenerated(item, locale) ? <span className="chip" style={{ marginLeft: 6 }}>{t('AI 生成', 'AI')}</span> : null}
                     </Link>
                   </td>
                   <td><div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{articleTags(item, locale).slice(0, 3).map((tag) => <span key={tag} className="chip">{tag}</span>)}</div></td>

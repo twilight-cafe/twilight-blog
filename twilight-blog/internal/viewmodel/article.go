@@ -31,9 +31,11 @@ type CreateArticleRequest struct {
 	// TitleEN / ContentEN 是英文版本；省略或空串表示没有英文版。
 	TitleEN   string `json:"title_en"`
 	ContentEN string `json:"content_en"`
-	// AIGenerated 由站长显式标记，服务端不做任何推断。
-	AIGenerated bool     `json:"ai_generated"`
-	Tags        []string `json:"tags"`
+	// AIGenerated / AIGeneratedEN 是按语言独立的 AI 声明入口：中文版与英文版
+	// 各传各的，互不影响；省略的那一份按「未标记」处理。
+	AIGenerated   bool     `json:"ai_generated"`
+	AIGeneratedEN bool     `json:"ai_generated_en"`
+	Tags          []string `json:"tags"`
 	// PublishedAt 是发布时间（Unix 秒）。缺失（或显式 null）表示「用服务器当前
 	// 时间」——新建时「不指定」与「置空」没有区别，文章总得有个发布时间，
 	// 因此这里不需要 UpdateArticleRequest.CoverMediaID 那种三态。
@@ -49,9 +51,11 @@ type UpdateArticleRequest struct {
 	// 用指针而不是 string 的理由与 Content 完全相同：只改标题的 PUT 不该清空英文正文。
 	TitleEN   *string `json:"title_en"`
 	ContentEN *string `json:"content_en"`
-	// AIGenerated 是 nil 表示「这次不改」。用指针是为了让「没提这件事」与
-	// 「明确取消 AI 标记」可区分。
-	AIGenerated *bool `json:"ai_generated"`
+	// AIGenerated / AIGeneratedEN 是 nil 表示「这次不改」。用指针是为了让
+	// 「没提这件事」与「明确取消 AI 标记」可区分；两种语言各自独立，
+	// 只改一份不会影响另一份。
+	AIGenerated   *bool `json:"ai_generated"`
+	AIGeneratedEN *bool `json:"ai_generated_en"`
 	// Content 用指针的理由与 Tags 完全一致：让「字段缺失」与「显式传空串」可区分。
 	// 非指针时期，一个只改标题的 PUT（前端保存草稿、脚本批量改标题都会这么发）
 	// 会把正文静默清空并返回 200——数据没了、日志里也没有任何异常。
@@ -133,14 +137,18 @@ type ArticleResponse struct {
 	Content string `json:"content"`
 	// TitleEN / ContentEN 恒输出（空串表示没有英文版）。前端按语言选择，
 	// 英文缺失时回退到中文，因此不能让字段缺席。
-	TitleEN      string   `json:"title_en"`
-	ContentEN    string   `json:"content_en"`
-	AIGenerated  bool     `json:"ai_generated"`
-	CreatedAt    int64    `json:"created_at"`
-	UpdatedAt    int64    `json:"updated_at"`
-	DeletedAt    *int64   `json:"deleted_at,omitempty"`
-	CoverMediaID *int64   `json:"cover_media_id"`
-	Tags         []string `json:"tags"`
+	TitleEN   string `json:"title_en"`
+	ContentEN string `json:"content_en"`
+	// AIGenerated / AIGeneratedEN 是**按语言**独立的 AI 声明：中文版与英文版
+	// 各自一个开关，互不影响。前端按当前语言取用，因此同一条文章在不同语言下
+	// 可以显示不同的声明状态。
+	AIGenerated   bool     `json:"ai_generated"`
+	AIGeneratedEN bool     `json:"ai_generated_en"`
+	CreatedAt     int64    `json:"created_at"`
+	UpdatedAt     int64    `json:"updated_at"`
+	DeletedAt     *int64   `json:"deleted_at,omitempty"`
+	CoverMediaID  *int64   `json:"cover_media_id"`
+	Tags          []string `json:"tags"`
 	// TagsEN 与 Tags 等长，空串表示该标签没有英文名。
 	TagsEN []string `json:"tags_en"`
 }
@@ -163,18 +171,19 @@ func NewArticleResponse(article *model.Article) ArticleResponse {
 		tagsEN = append(tagsEN, "")
 	}
 	return ArticleResponse{
-		ID:           article.ID,
-		Title:        article.Title,
-		Content:      article.Content,
-		TitleEN:      article.TitleEN,
-		ContentEN:    article.ContentEN,
-		AIGenerated:  article.AIGenerated,
-		CreatedAt:    article.CreatedAt,
-		UpdatedAt:    article.UpdatedAt,
-		DeletedAt:    article.DeletedAt,
-		CoverMediaID: article.CoverMediaID,
-		Tags:         tags,
-		TagsEN:       tagsEN,
+		ID:            article.ID,
+		Title:         article.Title,
+		Content:       article.Content,
+		TitleEN:       article.TitleEN,
+		ContentEN:     article.ContentEN,
+		AIGenerated:   article.AIGenerated,
+		AIGeneratedEN: article.AIGeneratedEN,
+		CreatedAt:     article.CreatedAt,
+		UpdatedAt:     article.UpdatedAt,
+		DeletedAt:     article.DeletedAt,
+		CoverMediaID:  article.CoverMediaID,
+		Tags:          tags,
+		TagsEN:        tagsEN,
 	}
 }
 

@@ -18,6 +18,7 @@ export function createSearchApi(http: HttpClient): SearchApi {
           q: options.q,
           page: pagination.page,
           page_size: pagination.page_size,
+          lang: options.lang,
         },
       });
     },

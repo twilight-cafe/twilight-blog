@@ -58,7 +58,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
 		return fmt.Errorf("insert media: %w", err)
 	}
 
-	id, err := res.LastInsertId()
+	id, err := lastInsertIDFn(res)
 	if err != nil {
 		return fmt.Errorf("get last insert id: %w", err)
 	}
@@ -118,7 +118,7 @@ LIMIT ? OFFSET ?
 			}
 			mediaList = append(mediaList, *media)
 		}
-		if err := rows.Err(); err != nil {
+		if err := rowsErrFn(rows); err != nil {
 			return fmt.Errorf("iterate media: %w", err)
 		}
 		return nil
@@ -262,7 +262,7 @@ ORDER BY id
 		}
 		images = append(images, *media)
 	}
-	if err := rows.Err(); err != nil {
+	if err := rowsErrFn(rows); err != nil {
 		return nil, fmt.Errorf("iterate images: %w", err)
 	}
 	return images, nil
@@ -308,7 +308,7 @@ func (r *mediaRow) apply(media *Media) {
 func scanMedia(row scanner) (*Media, error) {
 	var media Media
 	var raw mediaRow
-	if err := row.Scan(raw.dests(&media)...); err != nil {
+	if err := scanValuesFn(row, raw.dests(&media)...); err != nil {
 		return nil, err
 	}
 	raw.apply(&media)

@@ -397,7 +397,9 @@ svg {
 }
 
 .phero {
-  padding: 36px 0 8px;
+  /* 紧凑头之下不再保留 kicker 那一行，标题直接贴着页头；上边距从 36px
+     收到 16px，避免正文顶部空出一大块。 */
+  padding: 16px 0 8px;
 }
 
 .phero h1 {
@@ -471,15 +473,6 @@ svg {
   animation: pulse 3s infinite 1.2s;
 }
 
-.mast.big .sub {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  margin-top: 16px;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
 .mast .latin {
   font-family: var(--mono);
   font-size: 12px;
@@ -487,31 +480,57 @@ svg {
   color: var(--mut);
 }
 
-/* 语言切换器：替代内页页头原来的拉丁文副标题。做成两枚紧挨的小按钮，
-   选中态用实底，未选中用弱化的文字色——一眼能看出当前是哪种语言。 */
+/* 语言切换器：与亮/暗图标按钮同尺寸（36×36）的方形控件，沿对角线斜切成
+   两个三角热区——左上「中」、右下「EN」，选中的一半实底。clip-path 同时
+   裁剪点击区域：点左上三角只切中文，点右下三角只切英文。 */
 .lang-switch {
-  display: inline-flex;
-  align-items: center;
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 36px;
+  height: 36px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--radius);
+  background: var(--bg);
   overflow: hidden;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1;
+  transition: border-color var(--dur-fast) var(--ease-ios);
+}
+
+.lang-switch:hover {
+  border-color: var(--fg);
 }
 
 .lang-switch button {
-  appearance: none;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  padding: 0;
   border: 0;
   background: transparent;
   color: var(--mut);
-  padding: 5px 9px;
+  font: inherit;
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease-ios), color var(--dur-fast) var(--ease-ios);
 }
 
-.lang-switch button + button {
-  border-left: 1px solid var(--line);
+/* 斜线方向与「中 / EN」的阅读方向一致：左上三角给中文，右下给英文。 */
+.lang-switch button:first-child {
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 4px 0 0 6px;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+
+.lang-switch button:last-child {
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 0 5px 4px 0;
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
 }
 
 .lang-switch button:hover {
@@ -559,12 +578,6 @@ svg {
   right: 26px;
 }
 
-.mast .slogan {
-  font-family: var(--serif);
-  font-size: 16px;
-  color: var(--mut);
-}
-
 .dbl {
   border-top: 3px double color-mix(in srgb,var(--fg) 45%,var(--bg));
   margin-top: 22px;
@@ -572,16 +585,16 @@ svg {
 
 .mast.slim {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  /* 内页页头是「读文章」的常驻顶栏，不是首页的封面：原来 28px 上内边距 + 32px
-     品牌字让它在每次进入文章时都占掉一整块。压到 16px/26px 后，正文起点上移
-     约 30px，品牌与导航仍然清楚可辨。 */
-  padding: 16px 28px 6px;
+  /* 品牌与菜单同一行：菜单紧跟在 Twilight 右侧，不再单独占一行。 */
+  align-items: center;
+  gap: 18px;
+  /* 内页页头是「读文章」的常驻顶栏，不是首页的封面：上边距压到 10px，
+     并掉原来导航行自己的 8px 内边距，正文起点因此更靠上。 */
+  padding: 10px 28px 8px;
   max-width: var(--page-width);
   margin: 0 auto;
+  border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
-  gap: 8px;
 }
 
 .brand {
@@ -591,6 +604,7 @@ svg {
   display: inline-flex;
   align-items: center;
   gap: 9px;
+  flex: none;
 }
 
 .brand .ink {
@@ -601,13 +615,16 @@ svg {
   animation: pulse 3s infinite;
 }
 
+/* 导航块并入紧凑头后不再自带分隔线；窄屏放不下时整块换到下一行。 */
 .nav-slim {
-  border-bottom: 1px solid var(--line);
+  flex: 1 1 280px;
+  min-width: 0;
+  border-bottom: 0;
 }
 
 .nav-slim .navrow {
   border-bottom: 0;
-  padding: 8px 0;
+  padding: 0;
 }
 
 .navrow {
@@ -864,7 +881,8 @@ footer.site .bar {
 
 .tl-row {
   display: grid;
-  grid-template-columns: 74px 1fr auto;
+  /* 日期 + 标题；归档行不展示标签，因此没有第三列。 */
+  grid-template-columns: 74px 1fr;
   gap: 14px;
   align-items: center;
   padding: 10px 4px;
@@ -1019,24 +1037,39 @@ footer.site .bar {
 
 /* 文章详情页头图：位于顶栏之下、标签之上，宽度与正文栏相同（= public-main
    里那一栏），因此侧边栏仍在它右侧而不是被挤到下面。
-   高度用 max-height + object-fit: cover 夹住：竖版长图不会把标题推到屏幕外，
-   也不会被拉变形——裁掉的是图片边缘，不是信息。
+
+   外框高度**固定**为站长配置的 --post-banner-height（缺失时回退 400px）：
+   - 顶部与显示头图的窗口平齐，图片从第一像素开始铺满，不再按自身比例留白；
+   - 底部在最后一段做渐隐（mask），结束点正好是该高度的末端，而不是
+     被 object-fit 硬切一刀。骨架与图片一起被同一条 mask 处理，
+     加载态不会露出一块突然消失的实心矩形。
+
    这个 margin-top 是「头图与顶栏的间距」的定义处，侧栏复用同一个变量
    （--top-gap）以保证两个起点对齐。 */
 .post-cover {
   margin-top: var(--top-gap);
-  border-radius: var(--radius);
+  border-radius: var(--radius) var(--radius) 0 0;
   overflow: hidden;
-  background: var(--softer);
+  background: transparent;
+  height: var(--post-banner-height, 400px);
+}
+
+.post-cover .img-frame {
+  height: 100%;
+  max-height: none;
+  /* 顶部实心、越往下越透明，100% 处完全消失。用 mask 而不是叠一层渐变：
+     渐变叠层会盖住图片本身的颜色，且在深色主题下与背景不一致。 */
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 58%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 58%, transparent 100%);
 }
 
 .post-cover img {
   width: 100%;
-  height: auto;
-  /* 高度由站长在「站点设置」里配，经外壳属性写进 --post-banner-height。
-     变量缺失时回退到 400px（升级前的写死值）。 */
-  max-height: var(--post-banner-height, 400px);
+  height: 100%;
+  /* 裁切而不是拉伸；object-position: top 保证「顶部平齐」——
+     高图被裁掉的是底部，而不是上下各裁一半。 */
   object-fit: cover;
+  object-position: top;
 }
 
 .phead h1 {
@@ -2308,7 +2341,8 @@ img.avatar {
     gap: 24px;
   }
   .mast.slim {
-    padding: 12px 18px 4px;
+    padding: 8px 18px 6px;
+    gap: 14px;
   }
   .ed-grid {
     grid-template-columns: 1fr!important;
@@ -2797,6 +2831,45 @@ img.avatar {
   }
 }
 
+/* 站点设置的分页：文案 / 外观 / AI 翻译各自成页，避免一屏塞满表单。
+   与编辑器语言页签同一套「选中实底」语言，但尺寸略大。 */
+.set-tabs {
+  display: inline-flex;
+  gap: 6px;
+  margin: 4px 0 16px;
+}
+
+.set-tabs button {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--mut);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.set-tabs button.on {
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--bg);
+}
+
+/* 思维强度下拉：选中项是标签形态。标签文字必须单行截断，否则较长的档位名
+   （尤其英文的 Not set / X-High）会把触发器撑成两行高——同一个表单里其他
+   输入框还是单行，视觉上像是控件跑版。 */
+.set-effort .select-trigger {
+  flex-wrap: nowrap;
+}
+
+.set-effort .select-tag {
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
 /* ============ Admin · site settings ============ *//* 左写右看：描述最终落在四个位置（首页标语 / 页脚简介 / 标签页标题 / meta），
    只给一个文本框的话看不出写多长合适，所以右侧用与前台相同的排版做实时预览。 */
 .set-grid {
@@ -3231,10 +3304,6 @@ img.avatar {
 .cover-preview .img-frame {
   border-radius: var(--radius);
   flex: none;
-}
-
-.post-cover .img-frame {
-  max-height: var(--post-banner-height, 400px);
 }
 
 .plain-body .img-frame {

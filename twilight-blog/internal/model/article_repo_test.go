@@ -13,6 +13,42 @@ func newTestArticleRepo(t *testing.T) (*SQLiteArticleRepository, *sql.DB) {
 	return NewSQLiteArticleRepository(db), db
 }
 
+// TestAIGeneratedFlagsRoundTripPerLanguage 钉住两列各自独立：手写中文 + AI 翻译
+// 英文时数据库里必须是 false/true，更新后也必须能分别改回来。
+func TestAIGeneratedFlagsRoundTripPerLanguage(t *testing.T) {
+	repo, _ := newTestArticleRepo(t)
+	ctx := context.Background()
+
+	article := &Article{
+		Title: "双语", Content: "正文", TitleEN: "Bilingual", ContentEN: "body",
+		AIGenerated: false, AIGeneratedEN: true, CreatedAt: 1, UpdatedAt: 1,
+	}
+	if err := repo.Create(ctx, article); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	stored, err := repo.GetByID(ctx, article.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if stored.AIGenerated || !stored.AIGeneratedEN {
+		t.Fatalf("flags after create = zh:%v en:%v, want false/true", stored.AIGenerated, stored.AIGeneratedEN)
+	}
+
+	stored.AIGenerated = true
+	stored.AIGeneratedEN = false
+	if err := repo.Update(ctx, stored); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	updated, err := repo.GetByID(ctx, article.ID)
+	if err != nil {
+		t.Fatalf("GetByID after update: %v", err)
+	}
+	if !updated.AIGenerated || updated.AIGeneratedEN {
+		t.Fatalf("flags after update = zh:%v en:%v, want true/false", updated.AIGenerated, updated.AIGeneratedEN)
+	}
+}
+
 func equalStrings(got, want []string) bool {
 	if len(got) != len(want) {
 		return false

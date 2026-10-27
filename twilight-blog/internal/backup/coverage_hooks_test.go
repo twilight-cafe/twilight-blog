@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCreateReportsTarCloseError(t *testing.T) {
@@ -72,9 +73,28 @@ func TestScanEntryReportsHashFileError(t *testing.T) {
 func TestWriteTreeAndTreeTotalsSkipNonRegularEntries(t *testing.T) {
 	dir := t.TempDir()
 	seedTree(t, dir, map[string]string{"a.txt": "a"})
-	if err := os.Symlink("a.txt", filepath.Join(dir, "link.txt")); err != nil {
-		t.Fatalf("create symlink: %v", err)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read temp dir: %v", err)
 	}
+
+	// 用 walkDir 钩子注入一个符号链接条目，而不是真的创建 symlink：
+	// Windows 默认不允许普通用户创建符号链接（需要 SeCreateSymbolicLinkPrivilege），
+	// 真建会让整条用例在开发机上以权限错误失败，与「跳过非常规文件」的断言无关。
+	originalWalk := walkDir
+	walkDir = func(root string, fn fs.WalkDirFunc) error {
+		if err := fn(root, fs.FileInfoToDirEntry(backupFakeFileInfo{mode: os.ModeDir | 0o755}), nil); err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := fn(filepath.Join(root, entry.Name()), entry, nil); err != nil {
+				return err
+			}
+		}
+		return fn(filepath.Join(root, "link.txt"),
+			fs.FileInfoToDirEntry(backupFakeFileInfo{mode: os.ModeSymlink | 0o777}), nil)
+	}
+	t.Cleanup(func() { walkDir = originalWalk })
 
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -90,6 +110,16 @@ func TestWriteTreeAndTreeTotalsSkipNonRegularEntries(t *testing.T) {
 		t.Fatalf("treeTotals() = (%d, %d), want (1, 1)", files, size)
 	}
 }
+
+// backupFakeFileInfo 只实现 walkDir 回调真正读取的字段。
+type backupFakeFileInfo struct{ mode os.FileMode }
+
+func (f backupFakeFileInfo) Name() string       { return "entry" }
+func (f backupFakeFileInfo) Size() int64        { return 0 }
+func (f backupFakeFileInfo) Mode() os.FileMode  { return f.mode }
+func (f backupFakeFileInfo) ModTime() time.Time { return time.Unix(0, 0) }
+func (f backupFakeFileInfo) IsDir() bool        { return f.mode.IsDir() }
+func (f backupFakeFileInfo) Sys() any           { return nil }
 
 func TestWriteTreeAndTreeTotalsReportInfoErrors(t *testing.T) {
 	dir := t.TempDir()

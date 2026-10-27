@@ -50,7 +50,7 @@ export default function AvatarPicker({ url, onChange, onBusyChange, disabled = f
     try {
       const [uploaded] = await blog.uploadMedia([file])
       if (!uploaded) {
-        toast('上传失败')
+        toast(t('上传失败', 'Upload failed'))
         return
       }
       if (uploaded.media_type !== 'image') {
@@ -63,7 +63,7 @@ export default function AvatarPicker({ url, onChange, onBusyChange, disabled = f
         } catch {
           // 忽略：清理失败不影响这里的用户提示。
         }
-        toast('头像必须是图片')
+        toast(t('头像必须是图片', 'The avatar must be an image'))
         return
       }
       onChange(uploaded.id)

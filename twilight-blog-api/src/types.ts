@@ -46,8 +46,15 @@ export interface Article {
    */
   title_en: string;
   content_en: string;
-  /** 站长显式标记的「AI 生成」。false 是正常值，前台据此显示/不显示提示条。 */
+  /** 中文版的「AI 生成」声明，与英文版互相独立；只影响中文读者看到的提示。 */
   ai_generated: boolean;
+  /**
+   * 英文版本的 AI 标记，与 `ai_generated` **互不影响**。
+   *
+   * 前台按当前语言只读对应那一份：英文为 AI 生成不会让中文界面显示声明。
+   * 旧后端没有这个字段时读到 undefined，英文界面回退到中文标记。
+   */
+  ai_generated_en: boolean;
   created_at: number;
   updated_at: number;
   deleted_at?: number;
@@ -94,6 +101,14 @@ export interface Page {
   id: number;
   title: string;
   content: string;
+  /**
+   * 英文标题 / 正文；空串表示没有英文版，前台按字段回退中文。
+   *
+   * 与 Article 的 *_en 一样恒出现（服务端不带 omitempty），读取侧仍应容忍
+   * undefined，以兼容没有这两个字段的旧后端。
+   */
+  title_en: string;
+  content_en: string;
   created_at: number;
   updated_at: number;
   deleted_at?: number;
@@ -233,9 +248,19 @@ export interface PaginationOptions {
 export interface SearchOptions extends PaginationOptions {
   // q 为必填搜索关键词；空串会被服务端拒绝。
   q: string;
+  /**
+   * 只匹配哪一种语言的标题与正文（缺省 zh）。
+   *
+   * 站点语言为中文时传 zh，只搜中文列；英文时传 en，只搜英文列。
+   * 两种语言互不命中——这是刻意的：英文界面不该因为某篇文章的中文标题
+   * 含关键词而把它列出来。
+   */
+  lang?: 'zh' | 'en';
 }
 
 // 搜索结果项。type 字段用于前端区分渲染（文章 vs 页面），二者结构不同故用联合类型。
+// 文章命中带齐 Article 的必填字段：tags / tags_en 恒为数组，cover_media_id 恒出现
+// （没有头图时是 null），ai_generated / ai_generated_en 则按语言独立给出。
 export interface ArticleSearchResult extends Article {
   type: 'article';
 }
@@ -252,6 +277,95 @@ export interface ListCommentsOptions extends PaginationOptions {
   targetId: number;
 }
 
+/**
+ * AI 翻译支持的语言。与站点已有的两套文章字段（title/content 与
+ * title_en/content_en）一一对应。
+ */
+export type TranslateLanguage = 'zh' | 'en';
+
+/**
+ * 请求把一篇文章翻译成另一种语言（仅站长，`POST /api/admin/translate`）。
+ *
+ * `from` / `to` 必须显式给出，不能由服务端根据「哪边为空」推断：编辑器知道
+ * 用户正在写哪个页签，把这个意图直接传给服务端最可靠。
+ */
+export interface TranslateArticleInput {
+  title: string;
+  /** 正文；允许为空（只翻译标题）。 */
+  content: string;
+  from: TranslateLanguage;
+  to: TranslateLanguage;
+}
+
+/** 翻译结果。`content` 可能为空串，对应原文正文为空。 */
+export interface TranslateArticleResult {
+  title: string;
+  content: string;
+}
+
+/**
+ * AI 翻译配置的**脱敏视图**（仅站长可读）。
+ *
+ * 永远没有 `api_key` 字段：服务端只回 `api_key_configured`。设置页编辑时
+ * 留空表示保持现有密钥，避免站长改模型时把密钥清掉。
+ */
+export interface TranslateConfig {
+  enabled: boolean;
+  url: string;
+  model: string;
+  timeout_seconds: number;
+  max_tokens: number;
+  api_key_configured: boolean;
+  /** 三项必填（url / api_key / model）是否齐备且开关打开。 */
+  configured: boolean;
+  /**
+   * 生效中的提示词模板（Go text/template 语法）。未自定义时是服务端内置默认值，
+   * 设置页直接编辑并随配置一起保存。
+   */
+  prompt_template: string;
+  /**
+   * 思维强度档位（`low` / `medium` / `high`）。空串表示不下发 `reasoning_effort`，
+   * 由模型使用默认值；只有支持该参数的上游才会生效。
+   */
+  thinking_effort: string;
+}
+
+/**
+ * 修改翻译配置。所有字段省略都表示保持现值。
+ *
+ * `api_key` 额外有一条规则：**省略或空串都保持现值**（服务端不回显密钥，
+ * 无法区分「没改」与「清空」，因此选择了更安全的解释）。
+ */
+export interface UpdateTranslateConfigInput {
+  enabled?: boolean;
+  url?: string;
+  model?: string;
+  api_key?: string;
+  timeout_seconds?: number;
+  max_tokens?: number;
+  /** 提示词模板；省略保持现值，空串恢复内置默认模板。 */
+  prompt_template?: string;
+  /** 思维强度；省略保持现值，空串表示不发送 `reasoning_effort`。 */
+  thinking_effort?: string;
+}
+
+/**
+ * 查询某个 OpenAI 兼容服务支持哪些模型（仅站长，
+ * `POST /api/admin/translate/models`）。
+ *
+ * 两项都可省略：省略 `url` 用已保存的地址，省略/留空 `api_key` 沿用已保存的
+ * 密钥（设置页永远拿不到明文密钥）。
+ */
+export interface TranslateModelQuery {
+  url?: string;
+  api_key?: string;
+}
+
+/** 模型 id 列表；按上游返回顺序去重。空数组表示上游没有可列出的模型。 */
+export interface TranslateModelList {
+  models: string[];
+}
+
 export interface CreateArticleInput {
   title: string;
   content: string;
@@ -263,7 +377,12 @@ export interface CreateArticleInput {
    */
   titleEn?: string;
   contentEn?: string;
+  /**
+   * 中文版的 AI 生成标记。按语言独立存储，与 aiGeneratedEn 互不影响。
+   */
   aiGenerated?: boolean;
+  /** 英文版的 AI 生成标记；省略按「未标记」处理。 */
+  aiGeneratedEn?: boolean;
   // 创建时省略 tags 视为「无标签」；想显式不带标签就传空数组。注意与更新时语义不同。
   tags?: string[];
   /**
@@ -292,7 +411,10 @@ export interface UpdateArticleInput {
   // 英文标题 / 正文与 AI 标记同样是三态：省略 = 不改，空串 / false = 显式清空。
   titleEn?: string;
   contentEn?: string;
+  /** 中文版本的 AI 标记；省略 = 不改，与英文标记互不影响。 */
   aiGenerated?: boolean;
+  /** 英文版本的 AI 标记；省略 = 不改，与中文标记互不影响。 */
+  aiGeneratedEn?: boolean;
   tags?: string[];
   /**
    * 发布时间（Unix 秒）。省略表示「不改」，传值才会改。
@@ -328,12 +450,17 @@ export interface UpdateMomentInput {
 export interface CreatePageInput {
   title: string;
   content: string;
+  /** 英文标题 / 正文；省略等同于「没有」，服务端写入空串。 */
+  titleEn?: string;
+  contentEn?: string;
 }
 
 export interface UpdatePageInput {
   title: string;
-  // 与 UpdateArticleInput.content 同一套语义：省略即不改。
+  // 与 UpdateArticleInput 同一套三态语义：省略即不改，空串才清空。
   content?: string;
+  titleEn?: string;
+  contentEn?: string;
 }
 
 export interface CreateCommentInput {
@@ -463,6 +590,11 @@ export interface UpdateUserInput {
 export interface SiteSettingsResponse {
   description: string;
   /**
+   * 英文站点描述；空串表示没有英文版，英文界面回退到 description。
+   * 恒输出（服务端不带 omitempty）。
+   */
+  description_en: string;
+  /**
    * 站长头像的站内地址（形如 `/api/media/3`）；空串表示站长没设头像，
    * 前端回退到首字母占位块。
    *
@@ -530,6 +662,11 @@ export interface AdminSiteSettingsResponse extends SiteSettingsResponse {
 /** 修改站点设置。description 必填；其余字段省略表示保持现值。 */
 export interface SiteSettingsInput {
   description: string;
+  /**
+   * 英文描述；省略 = 不修改，空串 = 清空英文版（前台回退中文）。
+   * 与 description 一样受 200 字符上限约束。
+   */
+  description_en?: string;
   /** 代码块最大显示行数（3..500）；省略 = 不修改。 */
   code_block_max_lines?: number;
   /** 首页每页文章数（1..12）；省略 = 不修改。 */

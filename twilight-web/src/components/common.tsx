@@ -207,10 +207,11 @@ export function SkeletonRows({
       <SkeletonView visible={visible} className="skl-archive">
         <div className="tl-y"><span className="skl skl-t skl-t-year" /></div>
         {Array.from({ length: count }, (_, index) => (
+          // 与真实归档行一致：日期 + 标题两列。归档不展示标签，第三根灰条
+          // 会掉进下一行，把骨架撑成一条并不存在的“标签行”。
           <div className="tl-row" key={index}>
             <span className="skl skl-t" style={{ width: 48 }} />
             <span className="skl skl-t" style={{ width: `${52 + (index % 4) * 8}%` }} />
-            <span className="skl skl-t" style={{ width: 38 }} />
           </div>
         ))}
       </SkeletonView>
@@ -244,10 +245,9 @@ export function Avatar({ letter, alt = false, size = 'cav' }: { letter: string; 
   return <span className={`${size}${alt ? ' alt' : ''}`}>{letter || t('匿', '?')}</span>
 }
 
-export function PageHero({ kicker, title, subtitle }: { kicker: string; title: ReactNode; subtitle?: ReactNode }) {
+export function PageHero({ title, subtitle }: { title: ReactNode; subtitle?: ReactNode }) {
   return (
     <div className="phero rv">
-      <span className="kicker">{kicker}</span>
       <h1>{title}</h1>
       {subtitle ? <p>{subtitle}</p> : null}
     </div>

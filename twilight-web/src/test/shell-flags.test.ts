@@ -270,7 +270,7 @@ describe('站点设置下发完整性：每个字段一个都不能少', () => {
     expect(body, '找不到 /api/admin/site 的 json 请求体').not.toBe('')
 
     // 每个都必须显式出现。这就是事故现场：少了两个，而没有任何一层会报错。
-    for (const key of ['description', 'code_block_max_lines', 'home_page_size', 'border_radius', 'post_banner_height', 'moments_enabled', 'comment_notify_to']) {
+    for (const key of ['description', 'description_en', 'code_block_max_lines', 'home_page_size', 'border_radius', 'post_banner_height', 'moments_enabled', 'comment_notify_to']) {
       expect(body, `请求体缺少 ${key}`).toContain(key)
     }
   })
@@ -297,7 +297,7 @@ describe('站点设置下发完整性：每个字段一个都不能少', () => {
     expect(body).not.toContain('//')
     expect(body).not.toContain('/*')
     // ③ 行数与形态：每个键各占一行，整体是「多行对象」而不是被压平的片段。
-    expect(body.trim().split('\n').length).toBe(7)
+    expect(body.trim().split('\n').length).toBe(8)
   })
 
   it('SDK 声明的字段与请求体里下发的字段对得上', () => {

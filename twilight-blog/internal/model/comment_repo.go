@@ -60,7 +60,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
 		return fmt.Errorf("insert comment: %w", err)
 	}
 
-	id, err := res.LastInsertId()
+	id, err := lastInsertIDFn(res)
 	if err != nil {
 		return fmt.Errorf("get last insert id: %w", err)
 	}
@@ -301,7 +301,7 @@ LIMIT ? OFFSET ?
 // 整个过程在一个事务内完成。
 func (r *SQLiteCommentRepository) AddLike(ctx context.Context, commentID int64, userID int64, now int64) error {
 	logging.Debugf("[comment-repo] AddLike called")
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := beginTxFn(r.db, ctx)
 	if err != nil {
 		return fmt.Errorf("begin add like: %w", err)
 	}
@@ -327,7 +327,7 @@ VALUES (?, ?, ?)
 		return fmt.Errorf("insert comment like: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("comment like rows affected: %w", err)
 	}
@@ -341,7 +341,7 @@ WHERE id = ?
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := commitTxFn(tx); err != nil {
 		return fmt.Errorf("commit add like: %w", err)
 	}
 	return nil
@@ -351,7 +351,7 @@ WHERE id = ?
 // 并用 MAX(like_count - 1, 0) 兜底，避免历史脏数据把计数减成负数。
 func (r *SQLiteCommentRepository) RemoveLike(ctx context.Context, commentID int64, userID int64) error {
 	logging.Debugf("[comment-repo] RemoveLike called")
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := beginTxFn(r.db, ctx)
 	if err != nil {
 		return fmt.Errorf("begin remove like: %w", err)
 	}
@@ -365,7 +365,7 @@ WHERE comment_id = ? AND user_id = ?
 		return fmt.Errorf("delete comment like: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("comment unlike rows affected: %w", err)
 	}
@@ -379,7 +379,7 @@ WHERE id = ?
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := commitTxFn(tx); err != nil {
 		return fmt.Errorf("commit remove like: %w", err)
 	}
 	return nil
@@ -417,7 +417,7 @@ WHERE id IN (` + strings.Join(placeholders, ", ") + `) AND deleted_at IS NULL
 		return 0, fmt.Errorf("soft delete comments: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
 	}
@@ -435,7 +435,7 @@ WHERE id = ? AND deleted_at IS NOT NULL
 		return fmt.Errorf("restore comment: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
 	}
@@ -472,7 +472,7 @@ WHERE id IN (` + strings.Join(placeholders, ", ") + `) AND deleted_at IS NOT NUL
 		return 0, fmt.Errorf("batch restore comments: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
 	}
@@ -516,7 +516,7 @@ WHERE id IN (`+strings.Join(placeholders, ", ")+`) AND deleted_at IS NOT NULL
 		return 0, fmt.Errorf("hard delete comments: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
 	}
@@ -532,7 +532,7 @@ func scanComments(rows *sql.Rows) ([]Comment, error) {
 		}
 		comments = append(comments, *comment)
 	}
-	if err := rows.Err(); err != nil {
+	if err := rowsErrFn(rows); err != nil {
 		return nil, fmt.Errorf("iterate comments: %w", err)
 	}
 	return comments, nil
@@ -551,7 +551,7 @@ func scanComment(row scanner) (*Comment, error) {
 	var userEmail sql.NullString
 	var likedByMe int64
 
-	if err := row.Scan(
+	if err := scanValuesFn(row,
 		&comment.ID,
 		&comment.AuthorType,
 		&userID,

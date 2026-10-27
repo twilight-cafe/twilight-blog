@@ -42,11 +42,32 @@ func failWrites(t *testing.T, db *sql.DB, table string) {
 	}
 }
 
+// failDeletes 只让删除失败，保留插入与更新。用于「补偿删除自己失败了」这种
+// 只有批量上传才会走到的分支。
+func failDeletes(t *testing.T, db *sql.DB, table string) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(),
+		"CREATE TRIGGER IF NOT EXISTS fail_"+table+"_delete BEFORE DELETE ON "+table+
+			" BEGIN SELECT RAISE(ABORT, 'injected failure'); END"); err != nil {
+		t.Fatalf("install the failing delete trigger on %s: %v", table, err)
+	}
+}
+
 // dropTable 让某张表的查询直接失败（读路径）。
 func dropTable(t *testing.T, db *sql.DB, table string) {
 	t.Helper()
 	if _, err := db.ExecContext(context.Background(), "DROP TABLE "+table); err != nil {
 		t.Fatalf("drop %s: %v", table, err)
+	}
+}
+
+// renameColumn 让**读某一列**的查询失败，而不影响只读主键或角色的查询。
+// users 表不能整张删掉：会话中间件还要靠它判定管理员身份，删表会把 500 变成 401。
+func renameColumn(t *testing.T, db *sql.DB, table, column string) {
+	t.Helper()
+	if _, err := db.ExecContext(context.Background(),
+		"ALTER TABLE "+table+" RENAME COLUMN "+column+" TO "+column+"_gone"); err != nil {
+		t.Fatalf("rename %s.%s: %v", table, column, err)
 	}
 }
 
@@ -142,9 +163,14 @@ func TestAdminWriteEndpointsReportStorageFailures(t *testing.T) {
 		{name: "update a moment", table: "moments", method: http.MethodPut, path: "/api/admin/moments/1", body: map[string]any{"content": "m"}},
 		{name: "soft-delete a moment", table: "moments", method: http.MethodDelete, path: "/api/admin/moments/1"},
 		{name: "restore a moment", table: "moments", method: http.MethodPost, path: "/api/admin/moments/1/restore", prepare: softDeleteMoment},
+		{name: "permanently delete a moment", table: "moments", method: http.MethodDelete, path: "/api/admin/moments/1/permanent", prepare: softDeleteMoment},
+		{name: "batch-permanently delete moments", table: "moments", method: http.MethodDelete, path: "/api/admin/moments/batch-permanent", body: map[string]any{"ids": []int{1}}, prepare: softDeleteMoment},
 		{name: "create a page", table: "pages", method: http.MethodPost, path: "/api/admin/pages", body: map[string]any{"title": "p", "content": "c"}},
 		{name: "update a page", table: "pages", method: http.MethodPut, path: "/api/admin/pages/1", body: map[string]any{"title": "p"}},
 		{name: "soft-delete a page", table: "pages", method: http.MethodDelete, path: "/api/admin/pages/1"},
+		{name: "restore a page", table: "pages", method: http.MethodPost, path: "/api/admin/pages/1/restore", prepare: softDeletePage},
+		{name: "permanently delete a page", table: "pages", method: http.MethodDelete, path: "/api/admin/pages/1/permanent", prepare: softDeletePage},
+		{name: "batch-permanently delete pages", table: "pages", method: http.MethodDelete, path: "/api/admin/pages/batch-permanent", body: map[string]any{"ids": []int{1}}, prepare: softDeletePage},
 		{name: "rename a tag", table: "tags", method: http.MethodPut, path: "/api/admin/tags/1", body: map[string]any{"name": "Golang"}},
 		{name: "soft-delete a comment", table: "comments", method: http.MethodDelete, path: "/api/admin/comments/1"},
 		{name: "batch-delete comments", table: "comments", method: http.MethodDelete, path: "/api/admin/comments", body: map[string]any{"ids": []int{1}}},
@@ -247,6 +273,30 @@ func TestArticleAndPageReadsReportStorageFailures(t *testing.T) {
 		res := admin.call(http.MethodGet, "/api/articles/1", nil, nil)
 		if res.status < 500 {
 			t.Fatalf("GET /api/articles/1: status = %d, want a server error (body: %s)", res.status, truncate(res.body))
+		}
+	})
+
+	t.Run("a moment", func(t *testing.T) {
+		server, db, _ := newTestServer(t)
+		admin := installFreshBlog(t, server)
+		seedContent(t, db)
+		dropTable(t, db, "moments")
+
+		res := admin.call(http.MethodGet, "/api/moments/1", nil, nil)
+		if res.status < 500 {
+			t.Fatalf("GET /api/moments/1: status = %d, want a server error (body: %s)", res.status, truncate(res.body))
+		}
+	})
+
+	t.Run("a media item", func(t *testing.T) {
+		server, db, _ := newTestServer(t)
+		admin := installFreshBlog(t, server)
+		seedContent(t, db)
+		dropTable(t, db, "media")
+
+		res := admin.call(http.MethodGet, "/api/media/1", nil, nil)
+		if res.status < 500 {
+			t.Fatalf("GET /api/media/1: status = %d, want a server error (body: %s)", res.status, truncate(res.body))
 		}
 	})
 

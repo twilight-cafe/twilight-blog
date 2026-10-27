@@ -68,11 +68,14 @@ func (h *SearchHandler) Search(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	results, total, err := h.client.Search(c.Request().Context(), query, p.Page, p.PageSize)
+	// lang 决定只搜哪一种语言的标题/正文；缺省按中文（旧客户端的行为）。
+	lang := search.ParseLanguage(c.QueryParam("lang"))
+
+	results, total, err := h.client.Search(c.Request().Context(), query, p.Page, p.PageSize, lang)
 	if err != nil {
 		logging.Errorf("[handler:search] search failed query=%q: %v", query, err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to search")
 	}
-	logging.Debugf("[handler:search] search success query=%q hits=%d total=%d", query, len(results), total)
+	logging.Debugf("[handler:search] search success query=%q lang=%s hits=%d total=%d", query, lang, len(results), total)
 	return c.JSON(http.StatusOK, viewmodel.NewPaginatedResponse(results, total, p.Page, p.PageSize))
 }

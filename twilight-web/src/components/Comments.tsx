@@ -106,9 +106,17 @@ export default function Comments({ targetType, targetId, enabled = true }: Comme
   // Incremented for every request; a response whose id no longer matches is
   // stale (target changed, or the component unmounted) and is dropped.
   const requestRef = useRef(0)
+  // 评论宿主在文章/独立页面之间常驻，旧评论对象的回调（例如发布成功后触发的
+  // 刷新）可能在新对象已经挂上之后才执行。闭包里捕获的 targetKey 与这里的最新值
+  // 不一致时，这次请求必须作废，不能借用新的 requestRef 把旧对象的列表拉回来。
+  const targetKey = `${targetType}:${targetId}`
+  const targetKeyRef = useRef(targetKey)
+  targetKeyRef.current = targetKey
 
   const loadPage = useCallback(
     async (nextPage: number, mode: LoadMode) => {
+      // 旧对象的 onPosted 仍持有旧的 loadPage；目标已经换掉时直接放弃。
+      if (targetKeyRef.current !== targetKey) return
       const requestId = requestRef.current + 1
       requestRef.current = requestId
 
@@ -117,7 +125,7 @@ export default function Comments({ targetType, targetId, enabled = true }: Comme
 
       try {
         const result = await blog.listComments({ targetType, targetId, page: nextPage, pageSize: PAGE_SIZE })
-        if (requestRef.current !== requestId) return
+        if (requestRef.current !== requestId || targetKeyRef.current !== targetKey) return
 
         setItems((current) => {
           if (mode === 'replace') return result.items
@@ -128,7 +136,7 @@ export default function Comments({ targetType, targetId, enabled = true }: Comme
         setTotal(result.total)
         setTotalPages(Math.max(1, result.total_pages))
       } catch (error) {
-        if (requestRef.current !== requestId) return
+        if (requestRef.current !== requestId || targetKeyRef.current !== targetKey) return
         if (mode === 'replace') {
           setItems([])
           setTotal(0)
@@ -137,13 +145,13 @@ export default function Comments({ targetType, targetId, enabled = true }: Comme
           toast(getErrorMessage(error, t('加载更多评论失败', 'Failed to load more comments')))
         }
       } finally {
-        if (requestRef.current === requestId) {
+        if (requestRef.current === requestId && targetKeyRef.current === targetKey) {
           setLoading(false)
           setLoadingMore(false)
         }
       }
     },
-    [targetId, targetType, toast],
+    [targetId, targetKey, targetType, toast],
   )
 
   useEffect(() => {
@@ -296,6 +304,13 @@ function CommentForm({
   const user = useCurrentUser()
   const [content, setContent] = useState('')
   const [busy, setBusy] = useState(false)
+
+  // 评论宿主在文章页/独立页面之间是常驻的：评论对象换了，草稿也必须跟着换，
+  // 否则刚在上一页写了一半的内容会被带到另一页，发布到错误的对象上。重置的是
+  // 输入内容，不是整个表单——DOM 不换，评论框也就不会闪一下。
+  useEffect(() => {
+    setContent('')
+  }, [targetType, targetId])
 
   // The signature comes from the identity, so there is nothing to collect:
   // admins sign with the configured display name, visitors with the account

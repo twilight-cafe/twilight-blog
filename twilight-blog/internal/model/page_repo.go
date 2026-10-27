@@ -36,14 +36,14 @@ func NewSQLitePageRepository(db *sql.DB) *SQLitePageRepository {
 func (r *SQLitePageRepository) Create(ctx context.Context, page *Page) error {
 	logging.Debugf("[page-repo] Create called")
 	res, err := r.db.ExecContext(ctx, `
-INSERT INTO pages (title, content, created_at, updated_at, deleted_at)
-VALUES (?, ?, ?, ?, NULL)
-`, page.Title, page.Content, page.CreatedAt, page.UpdatedAt)
+INSERT INTO pages (title, content, title_en, content_en, created_at, updated_at, deleted_at)
+VALUES (?, ?, ?, ?, ?, ?, NULL)
+`, page.Title, page.Content, page.TitleEN, page.ContentEN, page.CreatedAt, page.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert page: %w", err)
 	}
 
-	id, err := res.LastInsertId()
+	id, err := lastInsertIDFn(res)
 	if err != nil {
 		return fmt.Errorf("get last insert id: %w", err)
 	}
@@ -55,14 +55,14 @@ func (r *SQLitePageRepository) Update(ctx context.Context, page *Page) error {
 	logging.Debugf("[page-repo] Update called")
 	res, err := r.db.ExecContext(ctx, `
 UPDATE pages
-SET title = ?, content = ?, updated_at = ?
+SET title = ?, content = ?, title_en = ?, content_en = ?, updated_at = ?
 WHERE id = ? AND deleted_at IS NULL
-`, page.Title, page.Content, page.UpdatedAt, page.ID)
+`, page.Title, page.Content, page.TitleEN, page.ContentEN, page.UpdatedAt, page.ID)
 	if err != nil {
 		return fmt.Errorf("update page: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
 	}
@@ -99,7 +99,7 @@ WHERE id IN (` + strings.Join(placeholders, ", ") + `) AND deleted_at IS NULL
 		return 0, fmt.Errorf("soft delete pages: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
 	}
@@ -117,7 +117,7 @@ WHERE id = ? AND deleted_at IS NOT NULL
 		return fmt.Errorf("restore page: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
 	}
@@ -154,7 +154,7 @@ WHERE id IN (` + strings.Join(placeholders, ", ") + `) AND deleted_at IS NOT NUL
 		return 0, fmt.Errorf("batch restore pages: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
 	}
@@ -186,7 +186,7 @@ WHERE id IN (` + strings.Join(placeholders, ", ") + `) AND deleted_at IS NOT NUL
 		return 0, fmt.Errorf("hard delete pages: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
 	}
@@ -196,7 +196,7 @@ WHERE id IN (` + strings.Join(placeholders, ", ") + `) AND deleted_at IS NOT NUL
 func (r *SQLitePageRepository) GetByID(ctx context.Context, id int64) (*Page, error) {
 	logging.Debugf("[page-repo] GetByID called")
 	row := r.db.QueryRowContext(ctx, `
-SELECT id, title, content, created_at, updated_at, deleted_at
+SELECT id, title, content, title_en, content_en, created_at, updated_at, deleted_at
 FROM pages
 WHERE id = ? AND deleted_at IS NULL
 `, id)
@@ -232,7 +232,7 @@ WHERE deleted_at IS NULL
 		}
 
 		rows, err := q.QueryContext(ctx, `
-SELECT id, title, content, created_at, updated_at, deleted_at
+SELECT id, title, content, title_en, content_en, created_at, updated_at, deleted_at
 FROM pages
 WHERE deleted_at IS NULL
 ORDER BY created_at ASC, id ASC
@@ -250,7 +250,7 @@ LIMIT ? OFFSET ?
 			}
 			pages = append(pages, *page)
 		}
-		if err := rows.Err(); err != nil {
+		if err := rowsErrFn(rows); err != nil {
 			return fmt.Errorf("iterate pages: %w", err)
 		}
 		return nil
@@ -277,7 +277,7 @@ WHERE deleted_at IS NOT NULL
 		}
 
 		rows, err := q.QueryContext(ctx, `
-SELECT id, title, content, created_at, updated_at, deleted_at
+SELECT id, title, content, title_en, content_en, created_at, updated_at, deleted_at
 FROM pages
 WHERE deleted_at IS NOT NULL
 ORDER BY deleted_at DESC, id DESC
@@ -295,7 +295,7 @@ LIMIT ? OFFSET ?
 			}
 			pages = append(pages, *page)
 		}
-		if err := rows.Err(); err != nil {
+		if err := rowsErrFn(rows); err != nil {
 			return fmt.Errorf("iterate deleted pages: %w", err)
 		}
 		return nil
@@ -309,10 +309,12 @@ LIMIT ? OFFSET ?
 func scanPage(row scanner) (*Page, error) {
 	var page Page
 	var deletedAt sql.NullInt64
-	if err := row.Scan(
+	if err := scanValuesFn(row,
 		&page.ID,
 		&page.Title,
 		&page.Content,
+		&page.TitleEN,
+		&page.ContentEN,
 		&page.CreatedAt,
 		&page.UpdatedAt,
 		&deletedAt,

@@ -48,11 +48,13 @@ function renderRouted(ui: React.ReactElement, route: string, pattern: string) {
   )
 }
 
-function renderPlain(ui: React.ReactElement) {
+function renderPlain(ui: React.ReactElement, route = '/') {
   return render(
-    <ToastProvider>
-      <DialogProvider>{ui}</DialogProvider>
-    </ToastProvider>,
+    <MemoryRouter initialEntries={[route]}>
+      <ToastProvider>
+        <DialogProvider>{ui}</DialogProvider>
+      </ToastProvider>
+    </MemoryRouter>,
   )
 }
 
@@ -361,6 +363,7 @@ describe('SiteSettings 分支', () => {
       post_banner_height: 400,
       moments_enabled: true,
       comment_notify_to: '',
+      description_en: '',
     }))
     await waitFor(() => expect(screen.getAllByText('保存失败').length).toBeGreaterThan(0))
   })

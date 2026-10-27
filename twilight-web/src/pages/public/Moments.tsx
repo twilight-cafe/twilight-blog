@@ -32,12 +32,14 @@ import { ImageGroup } from '../../lib/imageGroup'
 import { useDelayedLoading } from '../../lib/loading'
 import { isMomentsEnabled } from '../../lib/flags'
 import { useI18n } from '../../lib/i18n'
+import { usePageParam } from '../../lib/page-param'
 
 export default function Moments() {
   const { t } = useI18n()
   useDocumentTitle(t('微语', 'Moments'))
   usePageHead({ path: useCanonicalPath(), title: t('微语', 'Moments') })
-  const [page, setPage] = useState(1)
+  // 页码存在 URL 里，浏览器后退回到微语页时保留翻页位置。
+  const [page, setPage] = usePageParam()
   // 屏幕上真正显示的那一页：旧列表先退场，180ms 后才换页（请求不等这 180ms）。
   const { page: shownPage, ref: listRef } = usePagerMotion(page)
   // 页码 → 那一页的微语：新页数据常在退场动画播完前就回来，那时它还不该上屏，
@@ -80,7 +82,7 @@ export default function Moments() {
   if (!enabled) {
     return (
       <main className="wrap">
-        <PageHero kicker={t('MOMENTS / 微语', 'MOMENTS')} title={<>{t('碎碎念', 'Notes')}<small>{t('微语', 'Moments')}</small></>} subtitle={t('比文章短，比日常长。', 'Shorter than a post, longer than a day.')} />
+        <PageHero title={<>{t('碎碎念', 'Notes')}<small>{t('微语', 'Moments')}</small></>} subtitle={t('比文章短，比日常长。', 'Shorter than a post, longer than a day.')} />
         <Empty text={t('本站未启用微语功能', 'Moments are disabled on this site')} />
       </main>
     )
@@ -88,7 +90,7 @@ export default function Moments() {
 
   return (
     <main className="wrap">
-      <PageHero kicker={t('MOMENTS / 微语', 'MOMENTS')} title={<>{t('碎碎念', 'Notes')}<small>{t('微语', 'Moments')}</small></>} subtitle={t('比文章短，比日常长。', 'Shorter than a post, longer than a day.')} />
+      <PageHero title={<>{t('碎碎念', 'Notes')}<small>{t('微语', 'Moments')}</small></>} subtitle={t('比文章短，比日常长。', 'Shorter than a post, longer than a day.')} />
       {/* 列表是翻页动画作用的那一块（listRef），分页器留在它外面原地不动。
           新页数据没到时这块换成骨架（位置先占住），加载超过阈值才显形。 */}
       <div className="momfeed" aria-busy={loading} ref={listRef}>

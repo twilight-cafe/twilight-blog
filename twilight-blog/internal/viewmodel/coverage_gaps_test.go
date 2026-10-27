@@ -1,6 +1,7 @@
 package viewmodel
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -52,6 +53,84 @@ func TestNewPageResponseList(t *testing.T) {
 	}
 	if empty := NewPageResponseList(nil); empty == nil || len(empty) != 0 {
 		t.Fatalf("NewPageResponseList(nil) = %#v, want empty non-nil", empty)
+	}
+}
+
+// TestPageBilingualResponseAndValidation 守住页面双语的对外契约：
+// 英文字段必须**恒出现**（哪怕是空串），前端才能用「读空串」判断有没有英文版；
+// 请求侧则只对标题做 trim，正文（可能包含有意义的空白）原样保留。
+func TestPageBilingualResponseAndValidation(t *testing.T) {
+	response := NewPageResponse(&model.Page{
+		ID:        9,
+		Title:     "关于",
+		TitleEN:   "About",
+		Content:   "正文",
+		ContentEN: "Body",
+		CreatedAt: 1,
+		UpdatedAt: 2,
+	})
+	raw, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal page response: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("unmarshal page response: %v", err)
+	}
+	if payload["title_en"] != "About" || payload["content_en"] != "Body" {
+		t.Fatalf("english fields missing from payload: %s", raw)
+	}
+	// 没有英文版的页面同样带这两个键，只是值为空串。
+	empty := NewPageResponse(&model.Page{ID: 10, Title: "单独中文"})
+	emptyRaw, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty page response: %v", err)
+	}
+	if !strings.Contains(string(emptyRaw), `"title_en":""`) || !strings.Contains(string(emptyRaw), `"content_en":""`) {
+		t.Fatalf("empty english fields must stay present: %s", emptyRaw)
+	}
+
+	create := &CreatePageRequest{Title: "  关于  ", TitleEN: "  About  ", Content: " 正文 ", ContentEN: " Body "}
+	if err := create.Validate(); err != nil {
+		t.Fatalf("CreatePageRequest.Validate = %v", err)
+	}
+	if create.Title != "关于" || create.TitleEN != "About" {
+		t.Fatalf("trimmed titles = (%q, %q)", create.Title, create.TitleEN)
+	}
+	if create.Content != " 正文 " || create.ContentEN != " Body " {
+		t.Fatalf("bodies must not be trimmed = (%q, %q)", create.Content, create.ContentEN)
+	}
+
+	english := "  About us  "
+	update := &UpdatePageRequest{Title: " 关于 ", TitleEN: &english}
+	if err := update.Validate(); err != nil {
+		t.Fatalf("UpdatePageRequest.Validate = %v", err)
+	}
+	if update.Title != "关于" || update.TitleEN == nil || *update.TitleEN != "About us" {
+		t.Fatalf("updated titles = (%q, %v)", update.Title, update.TitleEN)
+	}
+	// 未提供英文标题时保持 nil：服务端据此保留原值，而不是清空。
+	if err := (&UpdatePageRequest{Title: "关于"}).Validate(); err != nil {
+		t.Fatalf("UpdatePageRequest without english = %v", err)
+	}
+}
+
+// TestSiteDescriptionEnglishValidation 覆盖英文描述的清洗与上限：
+// 与中文描述同一套折叠规则，但独立计数。
+func TestSiteDescriptionEnglishValidation(t *testing.T) {
+	value := "  Hello\n\n world  "
+	req := SiteSettingsRequest{Description: "中文", DescriptionEN: &value}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("valid english description rejected: %v", err)
+	}
+	if req.DescriptionEN == nil || *req.DescriptionEN != "Hello world" {
+		t.Fatalf("description_en = %v", req.DescriptionEN)
+	}
+
+	tooLong := strings.Repeat("a", MaxSiteDescriptionLength+1)
+	if err := (&SiteSettingsRequest{Description: "中文", DescriptionEN: &tooLong}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "description_en") {
+		t.Fatalf("over-long english description err = %v", err)
 	}
 }
 

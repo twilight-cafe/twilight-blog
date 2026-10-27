@@ -22,6 +22,15 @@ import (
 // 与 service.removeFile、restore_command.isTerminal 是同一种做法。
 var renamePath = os.Rename
 
+// 其它文件系统原语的间接层，用途同上。
+var (
+	placeFn        = place
+	readDirPath    = os.ReadDir
+	removeAllPath  = os.RemoveAll
+	closeSwapFile  = func(f *os.File) error { return f.Close() }
+	absPathForSwap = filepath.Abs
+)
+
 // swapIn 把 src 换到 dst 位置。keepOld 为真时把原有内容改名保留，返回保留路径。
 //
 // 为什么不是一句 os.Rename：dst 通常已经存在（这正是「还原」的含义），而 Rename
@@ -43,7 +52,7 @@ func swapIn(src, dst string, keepOld bool) (kept string, err error) {
 		}
 	}
 
-	if err := place(src, dst); err != nil {
+	if err := placeFn(src, dst); err != nil {
 		if parked != "" {
 			if backErr := renamePath(parked, dst); backErr != nil {
 				// 恢复也失败时两个错误都要报出来：此刻磁盘上同时存在
@@ -61,7 +70,7 @@ func swapIn(src, dst string, keepOld bool) (kept string, err error) {
 	if keepOld {
 		return parked, nil
 	}
-	if err := os.RemoveAll(parked); err != nil {
+	if err := removeAllPath(parked); err != nil {
 		// 删不掉不影响还原是否成功，报出来即可——反正数据已经换好了。
 		return parked, nil
 	}
@@ -82,10 +91,10 @@ func place(src, dst string) error {
 	if err := copyTree(src, dst); err != nil {
 		// 拷贝到一半失败会留下一个不完整的 dst，而它看起来像还原成功了。
 		// 清掉它，让失败保持「什么都没发生」的样子。
-		os.RemoveAll(dst)
+		_ = removeAllPath(dst)
 		return err
 	}
-	return os.RemoveAll(src)
+	return removeAllPath(src)
 }
 
 // copyTree 递归拷贝文件与目录。
@@ -111,7 +120,7 @@ func copyTree(src, dst string) error {
 	if err := os.MkdirAll(dst, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", dst, err)
 	}
-	children, err := os.ReadDir(src)
+	children, err := readDirPath(src)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", src, err)
 	}
@@ -153,7 +162,7 @@ func copyFile(src, dst string, perm fs.FileMode) error {
 		out.Close()
 		return fmt.Errorf("write %s: %w", dst, err)
 	}
-	if err := out.Close(); err != nil {
+	if err := closeSwapFile(out); err != nil {
 		return fmt.Errorf("write %s: %w", dst, err)
 	}
 	return nil
@@ -186,8 +195,8 @@ func removeSQLiteSidecars(path string) error {
 // 一个是绝对的，而那种差异会让「拷到自己身上」这个判断被悄悄漏掉。
 // Windows 上路径大小写不敏感，所以这里不区分大小写地比。
 func samePath(a, b string) bool {
-	absA, errA := filepath.Abs(a)
-	absB, errB := filepath.Abs(b)
+	absA, errA := absPathForSwap(a)
+	absB, errB := absPathForSwap(b)
 	if errA != nil || errB != nil {
 		return false
 	}

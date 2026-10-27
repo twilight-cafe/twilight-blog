@@ -78,6 +78,8 @@ type upgradeMediaSummary struct {
 }
 
 // runUpgradeMediaCommand 执行 upgrade-media 子命令，返回进程退出码。
+var configureUpgradeLogging = logging.Configure
+
 func runUpgradeMediaCommand(args []string) int {
 	opts, err := parseUpgradeMediaArgs(args)
 	if err != nil {
@@ -87,7 +89,7 @@ func runUpgradeMediaCommand(args []string) int {
 
 	// 与其它子命令一致：先让日志可用，这样一次升级（以及它引出的那些警告）
 	// 会在 log.txt 里留下痕迹。
-	if err := logging.Configure(""); err != nil {
+	if err := configureUpgradeLogging(""); err != nil {
 		fmt.Fprintf(stderr(), "configure logging: %v\n", err)
 		return exitFailure
 	}

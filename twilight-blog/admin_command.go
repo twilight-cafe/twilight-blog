@@ -59,6 +59,16 @@ var (
 	stderr = func() io.Writer { return os.Stderr }
 )
 
+// 命令内部各步骤的间接层，用途与 email_command.go 的同名钩子一致。
+var (
+	configureAdminLogging = logging.Configure
+	loadAdminSettings     = config.Load
+	saveAdminSettings     = func(cfg *config.Config, path string) error { return cfg.Save(path) }
+	openAdminDatabase     = database.Open
+	migrateAdminCreds     = model.MigrateAdminCredentials
+	revokeAdminSessions   = func(store *session.Store) error { return store.RevokeAll(context.Background()) }
+)
+
 // runAdminCommand 分发 admin 子命令，返回进程退出码。
 //
 // 与 runEmailCommand 的差别是它**返回退出码**而不是 error：这条命令需要区分
@@ -85,7 +95,7 @@ func runAdminSetPassword(args []string) int {
 		return exitUsageOrValidation
 	}
 
-	if err := logging.Configure(""); err != nil {
+	if err := configureAdminLogging(""); err != nil {
 		fmt.Fprintf(stderr(), "configure logging: %v\n", err)
 		return exitFailure
 	}
@@ -103,7 +113,7 @@ func runAdminSetPassword(args []string) int {
 		return exitUsageOrValidation
 	}
 
-	cfg, err := config.Load(settingsPath)
+	cfg, err := loadAdminSettings(settingsPath)
 	if err != nil && !errors.Is(err, config.ErrNotInstalled) {
 		fmt.Fprintf(stderr(), "load settings: %v\n", err)
 		return exitFailure
@@ -112,7 +122,7 @@ func runAdminSetPassword(args []string) int {
 		cfg = &config.Config{}
 	}
 
-	db, err := database.Open(databasePath)
+	db, err := openAdminDatabase(databasePath)
 	if err != nil {
 		fmt.Fprintf(stderr(), "open database: %v\n", err)
 		return exitFailure
@@ -122,7 +132,7 @@ func runAdminSetPassword(args []string) int {
 	// 顺带完成一次性迁移，与主进程和 email 子命令保持一致。跳过它会让一个
 	// 尚未迁移过的老站点在这里被判成「没有管理员」，进而把新密码写到一个
 	// 与 /install 将会创建的那一行**不同**的账号上。
-	if err := model.MigrateAdminCredentials(context.Background(), db, cfg); err != nil {
+	if err := migrateAdminCreds(context.Background(), db, cfg); err != nil {
 		fmt.Fprintf(stderr(), "migrate administrator credentials: %v\n", err)
 		return exitFailure
 	}
@@ -134,7 +144,7 @@ func runAdminSetPassword(args []string) int {
 	// 那段时间里「凭据只住在数据库里」这条不变量是假的，而它正是
 	// blog.db 被当作唯一必须备份的文件的前提。
 	cfg.ClearLegacyCredentials()
-	if err := cfg.Save(settingsPath); err != nil {
+	if err := saveAdminSettings(cfg, settingsPath); err != nil {
 		fmt.Fprintf(stderr(), "remove migrated credentials from settings: %v\n", err)
 		return exitFailure
 	}
@@ -171,7 +181,7 @@ func runAdminSetPassword(args []string) int {
 	// 而不是 RevokeUserSessions 的理由：后者只按 user_id 删，虽然现在管理员也有
 	// user_id 了，但这条命令的语义是「凭据已轮换，所有人重新登录」，用 RevokeAll
 	// 表达得更准确，也不会在未来某个角色变更时悄悄漏掉一类会话。
-	if err := session.NewStore(db).RevokeAll(ctx); err != nil {
+	if err := revokeAdminSessions(session.NewStore(db)); err != nil {
 		fmt.Fprintf(stderr(), "revoke existing sessions: %v\n", err)
 		return exitFailure
 	}

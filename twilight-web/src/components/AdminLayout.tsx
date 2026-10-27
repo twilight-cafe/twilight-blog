@@ -14,7 +14,7 @@ import { Link, Navigate, Outlet, useLocation, useNavigate } from 'react-router-d
 import { AdminNav, IconButton } from 'ink-design'
 import { blog, logout, useCurrentUser } from '../lib/client'
 import { useDocumentTitle, useSiteAvatar } from '../lib/site'
-import { isMomentsEnabled } from '../lib/flags'
+import { useMomentsEnabled } from '../lib/flags'
 import { useI18n } from '../lib/i18n'
 import LanguageSwitcher from './LanguageSwitcher'
 import { useCanonicalPath, usePageHead } from '../lib/head'
@@ -172,8 +172,11 @@ export default function AdminLayout() {
   // 执行，这里会把它覆盖掉，只会留下一条看起来生效、其实永远看不到的语句。
   // 微语关闭时后台菜单也一并隐藏：那个入口打开的是一个所有接口都返回 404 的页面。
   // 路由本身仍保留，直接输入地址时会由页面内的「未启用」提示兜住。
+  // 这里用响应式版本：站长在「站点设置」里关掉微语后，侧栏菜单要立即消失，
+  // 而不是等下一次换页才重读外壳属性（dataset 变化不会触发 React 重渲染）。
+  const momentsEnabled = useMomentsEnabled()
   const menu = (isAdmin ? ADMIN_MENU : USER_MENU)
-    .filter((item) => item.key !== 'moments' || isMomentsEnabled())
+    .filter((item) => item.key !== 'moments' || momentsEnabled)
     .map((item) => ({ ...item, label: t(item.zh, item.en) }))
   const current = menu.find((item) => item.to === location.pathname)?.label
     || (location.pathname === '/admin' ? t('概览', 'Overview') : (isAdmin ? t('管理', 'Manage') : t('账号', 'Account')))

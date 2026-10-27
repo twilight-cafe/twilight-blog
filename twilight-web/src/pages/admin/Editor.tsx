@@ -11,21 +11,26 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { Button, DatePicker, Input, Select, Switch, Toolbar, ToolbarButton, ToolbarSeparator } from 'ink-design'
 import { blog, getErrorMessage } from '../../lib/client'
+import type { Tag } from 'twilight-blog-api'
 import { toDate, toUnixSeconds } from '../../lib/format'
 import CoverPicker from '../../components/media/CoverPicker'
 import ContentView from '../../components/ContentView'
 import { ImageGroup } from '../../lib/imageGroup'
 import { useToast } from '../../lib/toast'
+import { useDialog } from '../../lib/dialog'
 import { Loading } from '../../components/common'
 import { useDelayedLoading } from '../../lib/loading'
 import { useI18n } from '../../lib/i18n'
+import { tagName } from '../../lib/localize'
+import { fetchAllTags } from '../../lib/tags'
 
 export default function Editor() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const { id } = useParams()
   const articleId = id ? Number(id) : null
   const navigate = useNavigate()
   const toast = useToast()
+  const dialog = useDialog()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const [loaded, setLoaded] = useState(articleId === null)
@@ -38,9 +43,14 @@ export default function Editor() {
   const [content, setContent] = useState('')
   const [titleEN, setTitleEN] = useState('')
   const [contentEN, setContentEN] = useState('')
-  // 站长显式勾选「AI 生成」；前台据此显示提示，服务端不做推断。
-  const [aiGenerated, setAiGenerated] = useState(false)
+  // AI 声明按语言独立：中文版与英文版各一个开关，互不影响。
+  // 站长显式勾选；前台据此按当前语言显示提示，服务端不做推断。
+  const [aiGeneratedZH, setAiGeneratedZH] = useState(false)
+  const [aiGeneratedEN, setAiGeneratedEN] = useState(false)
   const [tags, setTags] = useState<string[]>([])
+  // 已有标签的全集，喂给标签输入框做下拉建议。取不到时留空数组：
+  // 建议只是增强，输入新标签并回车仍然可用。
+  const [knownTags, setKnownTags] = useState<Tag[]>([])
   // null 表示「没有头图」。它同时是「新建时还没选」与「用户点了移除」，
   // 两种情况下保存的结果一致（都不带头图），所以不需要再分一态。
   const [coverId, setCoverId] = useState<number | null>(null)
@@ -49,6 +59,8 @@ export default function Editor() {
   const [publishedAt, setPublishedAt] = useState<Date | null>(null)
   const [coverBusy, setCoverBusy] = useState(false)
   const [saving, setSaving] = useState(false)
+  // AI 翻译独立于保存：它只填充另一个语言页签，不写库、不改文章。
+  const [translating, setTranslating] = useState(false)
 
   useEffect(() => {
     if (articleId === null) return
@@ -63,7 +75,10 @@ export default function Editor() {
         setContent(article.content)
         setTitleEN(article.title_en)
         setContentEN(article.content_en)
-        setAiGenerated(article.ai_generated)
+        // 声明按语言独立；旧后端没有 ai_generated_en（undefined）时，
+        // 英文开关沿用中文标记，避免升级前标过 AI 的文章突然变成「不是 AI」。
+        setAiGeneratedZH(article.ai_generated === true)
+        setAiGeneratedEN((article.ai_generated_en ?? article.ai_generated) === true)
         setTags(article.tags)
         setCoverId(article.cover_media_id)
         setPublishedAt(toDate(article.created_at))
@@ -74,6 +89,22 @@ export default function Editor() {
         navigate('/admin/posts')
       })
   }, [articleId, navigate, toast])
+
+  // 标签建议来自全量标签列表。失败时静默留空——标签框的核心能力是「输入后回车
+  // 创建」，下拉建议只是让已有标签可点选，不该因为一次读取失败而报错打扰写文章。
+  useEffect(() => {
+    let alive = true
+    fetchAllTags()
+      .then((list) => {
+        if (alive) setKnownTags(list)
+      })
+      .catch(() => {
+        if (alive) setKnownTags([])
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   // 正在编辑的那一份内容。工具栏与预览都跟着标签页走。
   const activeContent = langTab === 'zh' ? content : contentEN
@@ -96,6 +127,60 @@ export default function Editor() {
     })
   }
 
+  // 把当前页签的标题与正文翻译到另一种语言。
+  //
+  // 三条产品决策都在这里：
+  //   - 目标页签非空时先确认，避免一次误点覆盖已写好的译文；
+  //   - 翻译成功后只把**目标语言**的「AI 生成」置为 true：译文是 AI 产物，
+  //     原文若是人写的，不该被连带认领 AI 声明；
+  //   - 成功后切到目标页签，让用户直接审阅译文，而不是留在原文页签猜结果。
+  const translateToOther = async () => {
+    const target: 'zh' | 'en' = langTab === 'zh' ? 'en' : 'zh'
+    const targetTitle = target === 'en' ? titleEN : title
+    const targetContent = target === 'en' ? contentEN : content
+    if (!activeTitle.trim()) {
+      toast(t('请先输入标题再翻译', 'Enter a title before translating'))
+      return
+    }
+    if (targetTitle.trim() !== '' || targetContent.trim() !== '') {
+      const confirmed = await dialog.confirm(
+        t('覆盖目标语言？', 'Overwrite the other language?'),
+        t(
+          '目标语言的标题或正文已有内容，继续翻译会整体替换它们。',
+          'The other language already has a title or body. Translating will replace both.',
+        ),
+      )
+      if (!confirmed) return
+    }
+
+    setTranslating(true)
+    try {
+      const translated = await blog.translateArticle({
+        title: activeTitle.trim(),
+        content: activeContent,
+        from: langTab,
+        to: target,
+      })
+      if (target === 'en') {
+        setTitleEN(translated.title)
+        setContentEN(translated.content)
+      } else {
+        setTitle(translated.title)
+        setContent(translated.content)
+      }
+      // 翻译产出的内容属于目标语言，只标目标语言那一份：
+      // 手写中文被翻译成英文时，中文仍是人写的，不该替它认领 AI 声明。
+      if (target === 'en') setAiGeneratedEN(true)
+      else setAiGeneratedZH(true)
+      setLangTab(target)
+      toast(t('翻译完成，已切换到目标语言', 'Translated and switched to the target language'))
+    } catch (error) {
+      toast(getErrorMessage(error, t('翻译失败', 'Translation failed')))
+    } finally {
+      setTranslating(false)
+    }
+  }
+
   const save = async () => {
     if (!title.trim()) {
       toast(t('标题不能为空', 'The title cannot be empty'))
@@ -112,7 +197,8 @@ export default function Editor() {
           content,
           titleEn: titleEN,
           contentEn: contentEN,
-          aiGenerated,
+          aiGenerated: aiGeneratedZH,
+          aiGeneratedEn: aiGeneratedEN,
           tags,
           coverMediaId: coverId,
         }
@@ -125,7 +211,8 @@ export default function Editor() {
           content,
           titleEn: titleEN,
           contentEn: contentEN,
-          aiGenerated,
+          aiGenerated: aiGeneratedZH,
+          aiGeneratedEn: aiGeneratedEN,
           tags,
           coverMediaId: coverId,
           ...(publishedSeconds === undefined ? {} : { publishedAt: publishedSeconds }),
@@ -148,7 +235,19 @@ export default function Editor() {
         <Button ghost small onClick={() => navigate('/admin/posts')}>{t('← 返回', '← Back')}</Button>
         <span className="saved"><i /><span className="swap-text" key={String(saving)}>{saving ? t('保存中…', 'Saving…') : t('已同步', 'Synced')}</span></span>
         <span style={{ flex: 1 }} />
-        <Button primary small disabled={saving || coverBusy} onClick={() => void save()}>{t('保存', 'Save')}</Button>
+        <Button
+          ghost
+          small
+          disabled={saving || translating}
+          onClick={() => void translateToOther()}
+        >
+          {translating
+            ? t('翻译中…', 'Translating…')
+            : langTab === 'zh'
+              ? t('AI 翻译为英文', 'Translate to English')
+              : t('AI 翻译为中文', 'Translate to Chinese')}
+        </Button>
+        <Button primary small disabled={saving || translating || coverBusy} onClick={() => void save()}>{t('保存', 'Save')}</Button>
       </div>
       {/* 语言标签页：切换正在编辑的那一份。默认中文，与站点默认语言一致。 */}
       <div className="ed-lang-tabs" role="tablist" aria-label={t('文章语言', 'Post language')}>
@@ -180,18 +279,38 @@ export default function Editor() {
       />
       <div className="ed-meta">
         <span>{t('标签', 'Tags')}</span>
-        <Select mode="tags" value={tags} onChange={(vals) => setTags(vals.map(String))} placeholder={t('输入标签后回车', 'Type a tag and press Enter')} />
+        <Select
+          mode="tags"
+          value={tags}
+          onChange={(vals) => setTags(vals.map(String))}
+          // 值是文章标签的规范名（中文列），展示名跟随界面语言；标签没有译名时
+          // tagName 会回退中文，与前台标签云一致。
+          options={knownTags.map((tag) => ({ value: tag.name, label: tagName(tag, locale) }))}
+          placeholder={t('输入标签后回车', 'Type a tag and press Enter')}
+        />
       </div>
       <div className="ed-meta">
-        <span>{t('AI 生成', 'AI-generated')}</span>
+        <span>{t('AI 生成（中文）', 'AI-generated (Chinese)')}</span>
         <Switch
-          checked={aiGenerated}
-          onChange={(event) => setAiGenerated(event.target.checked)}
+          checked={aiGeneratedZH}
+          onChange={(event) => setAiGeneratedZH(event.target.checked)}
           checkedChildren={t('是', 'Yes')}
           unCheckedChildren={t('否', 'No')}
         />
         <span className="ed-hint">
-          {t('勾选后，读者会在文章页看到「本文由 AI 生成」的提示。', 'When enabled, readers see an “AI-generated” notice on the post.')}
+          {t('只影响中文读者看到的「本文由 AI 生成」提示。', 'Only controls the AI notice Chinese readers see.')}
+        </span>
+      </div>
+      <div className="ed-meta">
+        <span>{t('AI 生成（英文）', 'AI-generated (English)')}</span>
+        <Switch
+          checked={aiGeneratedEN}
+          onChange={(event) => setAiGeneratedEN(event.target.checked)}
+          checkedChildren={t('是', 'Yes')}
+          unCheckedChildren={t('否', 'No')}
+        />
+        <span className="ed-hint">
+          {t('只影响英文读者看到的提示，与中文开关互不影响。', 'Only controls the notice English readers see; independent of the Chinese flag.')}
         </span>
       </div>
       <div className="ed-meta">

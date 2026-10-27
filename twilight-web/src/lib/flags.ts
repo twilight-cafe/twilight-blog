@@ -16,6 +16,13 @@
 //
 // 属性缺失时按「功能全开」兜底：老二进制的外壳没有这个属性，升级前端
 // 而不升级后端时不能把人家正在用的功能凭空藏掉。
+//
+// 属性在页面解析时就固定了，但**不是**只读一次：站长保存站点设置后，
+// site.ts 的 syncShellFlags 会把新值写回属性并派发 SHELL_FLAGS_EVENT。
+// 已挂载的组件（最典型的是后台侧栏的「微语」菜单）不会因为 dataset 变化
+// 自动重渲染，需要订阅的组件用下面的 useMomentsEnabled 读响应式版本。
+
+import { useEffect, useState } from 'react'
 
 /** 搜索（内嵌 Meilisearch）是否启用。外壳未标记（属性缺失）视为启用。 */
 export function isSearchEnabled(): boolean {
@@ -95,6 +102,42 @@ export function applyBorderRadius(): void {
  */
 export function isMomentsEnabled(): boolean {
   return document.documentElement.dataset.momentsEnabled !== 'false'
+}
+
+/**
+ * 外壳属性变化事件。只由 site.ts 的 syncShellFlags 在**确实写入了新值**之后派发。
+ *
+ * 用自定义事件而不是直接订阅站点快照，是因为两者回答的不是同一个问题：
+ * 快照来自 /api/site（升级场景下可能缺少开关字段，toMeta 会兜底成 true），
+ * 而外壳属性是服务端渲染时的权威值，syncShellFlags 也只在字段真的出现时才改。
+ * 订阅事件因此不会把「旧后端没返回这个字段」误读成「开关被打开了」。
+ */
+const SHELL_FLAGS_EVENT = 'twilight:shell-flags-changed'
+
+/** 通知已挂载的组件重新读取外壳属性；syncShellFlags 写完后调用。 */
+export function notifyShellFlagsChanged(): void {
+  window.dispatchEvent(new Event(SHELL_FLAGS_EVENT))
+}
+
+/**
+ * 响应式版本的 isMomentsEnabled。
+ *
+ * 首帧仍读外壳属性（与静态版本同源），之后跟着 syncShellFlags 的写回更新。
+ * 后台侧栏用它来决定要不要渲染「微语」菜单：保存设置后菜单立即消失/出现，
+ * 不必等一次换页或硬刷新。
+ */
+export function useMomentsEnabled(): boolean {
+  const [enabled, setEnabled] = useState(isMomentsEnabled)
+
+  useEffect(() => {
+    const update = () => setEnabled(isMomentsEnabled())
+    window.addEventListener(SHELL_FLAGS_EVENT, update)
+    return () => {
+      window.removeEventListener(SHELL_FLAGS_EVENT, update)
+    }
+  }, [])
+
+  return enabled
 }
 
 /** 文章头图最大高度（px）在属性缺失 / 解析不出来时的兜底。 */

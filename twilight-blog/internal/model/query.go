@@ -35,7 +35,7 @@ type queryRunner interface {
 // 所以不存在「已持有事务再开一个」的情形。这一点必须保持——连接池被限制为
 // 1 条连接（见 database.Open），一旦嵌套就会直接死锁。
 func readTx(ctx context.Context, db *sql.DB, fn func(ctx context.Context, q queryRunner) error) error {
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := beginTxFn(db, ctx)
 	if err != nil {
 		return fmt.Errorf("begin read transaction: %w", err)
 	}

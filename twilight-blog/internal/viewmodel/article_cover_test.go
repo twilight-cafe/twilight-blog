@@ -301,3 +301,26 @@ func TestArticleValidateRequiresATitle(t *testing.T) {
 		t.Fatalf("title = %q, want it trimmed in place", updated.Title)
 	}
 }
+
+// TestUpdateArticleTrimsTheEnglishTitle covers the optional half of the pair:
+// title_en may be omitted (nil), but when present it is normalised in place so
+// the handler does not store stray whitespace.
+func TestUpdateArticleTrimsTheEnglishTitle(t *testing.T) {
+	title := "  English Title  "
+	updated := &UpdateArticleRequest{Title: "标题", TitleEN: &title}
+	if err := updated.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if updated.TitleEN == nil || *updated.TitleEN != "English Title" {
+		t.Fatalf("title_en = %v, want it trimmed", updated.TitleEN)
+	}
+
+	// 省略时保持 nil：那表示「不带英文标题」，不是空串。
+	omitted := &UpdateArticleRequest{Title: "标题"}
+	if err := omitted.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if omitted.TitleEN != nil {
+		t.Fatalf("title_en = %v, want nil when omitted", omitted.TitleEN)
+	}
+}

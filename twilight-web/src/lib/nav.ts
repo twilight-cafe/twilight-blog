@@ -7,6 +7,7 @@ import type { Page } from 'twilight-blog-api'
 import { blog } from './client'
 import { isMomentsEnabled, isSearchEnabled } from './flags'
 import { getLocale, translate, type Locale } from './i18n'
+import { pageTitle } from './localize'
 
 export interface NavItem {
   to: string
@@ -34,7 +35,9 @@ export function buildNav(pages: Page[], locale: Locale = getLocale()): NavItem[]
     ...nav,
     ...pages.map((page) => ({
       to: `/pages/${page.id}`,
-      label: page.title,
+      // 独立页面的名称与正文走同一套回退规则：英文界面取 title_en，
+      // 没有译名时回退中文（见 lib/localize.ts 的 pageTitle）。
+      label: pageTitle(page, locale),
     })),
   ]
 }

@@ -135,6 +135,9 @@ func TestFindExecutableSkipsUnsafeCandidates(t *testing.T) {
 	root := t.TempDir()
 	hook(t, &osExecutable, func() (string, error) { return filepath.Join(root, "blog"), nil })
 	hook(t, &osGetwd, func() (string, error) { return root, nil })
+	// 真实归属判断在 Windows 上恒为 true（没有 POSIX 权限位），
+	// 这里替换成「一律不安全」，才让「不安全候选必须被跳过」在两边都成立。
+	hook(t, &candidateIsSafe, func(string, os.FileInfo) bool { return false })
 	name := binaryNames()[0]
 
 	binDir := filepath.Join(root, "bin")
@@ -245,7 +248,7 @@ func (f fakeFileInfo) Name() string       { return "meilisearch" }
 func (f fakeFileInfo) Size() int64        { return 0 }
 func (f fakeFileInfo) Mode() os.FileMode  { return f.mode }
 func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
-func (f fakeFileInfo) IsDir() bool        { return false }
+func (f fakeFileInfo) IsDir() bool        { return f.mode.IsDir() }
 func (f fakeFileInfo) Sys() any           { return nil }
 
 func TestLogExecutableChoiceCoversBothOrigins(t *testing.T) {

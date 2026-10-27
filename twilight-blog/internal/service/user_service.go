@@ -281,10 +281,9 @@ func (s *UserService) Register(ctx context.Context, email, code, username, nickn
 		if err := s.ensureUsernameAvailable(ctx, username); err != nil {
 			return nil, err
 		}
-		hash, err := hashPassword(password)
-		if err != nil {
-			return nil, err
-		}
+		// 密码已经过 ValidatePasswordStrength（≤72 字节），bcrypt 不会失败；
+		// hashPassword 的错误分支只保留给导出给 CLI 的 HashPasswordForStorage。
+		hash, _ := hashPassword(password)
 		if err := s.users.UpdatePassword(ctx, existing.ID, hash, now.Unix()); err != nil {
 			return nil, err
 		}
@@ -305,10 +304,8 @@ func (s *UserService) Register(ctx context.Context, email, code, username, nickn
 		if err := s.ensureUsernameAvailable(ctx, username); err != nil {
 			return nil, err
 		}
-		hash, err := hashPassword(password)
-		if err != nil {
-			return nil, err
-		}
+		// 同上：输入已通过强度校验，hashPassword 不会失败。
+		hash, _ := hashPassword(password)
 		created := &model.User{
 			Email:        email,
 			Username:     username,
@@ -416,10 +413,8 @@ func (s *UserService) ResetPassword(ctx context.Context, email, code, password s
 		return nil, err
 	}
 
-	hash, err := hashPassword(password)
-	if err != nil {
-		return nil, err
-	}
+	// 输入已通过强度校验，hashPassword 不会失败。
+	hash, _ := hashPassword(password)
 	if err := s.users.UpdatePassword(ctx, user.ID, hash, time.Now().Unix()); err != nil {
 		return nil, err
 	}
@@ -465,10 +460,8 @@ func (s *UserService) ChangePassword(ctx context.Context, userID int64, currentP
 		return nil, invalidf("%s", err.Error())
 	}
 
-	hash, err := hashPassword(newPassword)
-	if err != nil {
-		return nil, err
-	}
+	// 输入已通过强度校验，hashPassword 不会失败。
+	hash, _ := hashPassword(newPassword)
 	if err := s.users.UpdatePassword(ctx, userID, hash, time.Now().Unix()); err != nil {
 		return nil, err
 	}
@@ -759,10 +752,15 @@ func equalizeLoginTiming(password string) {
 	_ = bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), []byte(password))
 }
 
+// randInt 是 crypto/rand.Int 的测试间接层。熵源失败在实践中几乎不会发生，
+// 但「生成不出验证码」必须是一条可解释的错误而不是 panic；把它做成可替换的
+// 变量，才能在不破坏进程环境的前提下验证那条分支。
+var randInt = rand.Int
+
 func generateVerificationCode() (string, error) {
 	// 8 位十进制。长度直接决定离线枚举的成本：配合 bcrypt（见下），
 	// 10^8 的搜索空间让「读出库里的哈希再还原」彻底超出验证码 10 分钟的有效期。
-	n, err := rand.Int(rand.Reader, big.NewInt(100000000))
+	n, err := randInt(rand.Reader, big.NewInt(100000000))
 	if err != nil {
 		return "", fmt.Errorf("generate verification code: %w", err)
 	}

@@ -105,8 +105,9 @@ func (h *TagHandler) Rename(c echo.Context) error {
 	tag, err := h.service.Rename(c.Request().Context(), id, req.Name, req.NameEN)
 	if err != nil {
 		switch {
-		case errors.Is(err, model.ErrInvalidTagName):
-			return echo.NewHTTPError(http.StatusBadRequest, "invalid tag name")
+		// 空名字在 viewmodel 那一层就返回 400 了（RenameTagRequest.Validate），
+		// 所以这里没有 ErrInvalidTagName 的分支：那是不可达的重复映射。
+		// 服务层仍然保留这条错误，直接调用服务的人会拿到它。
 		case errors.Is(err, model.ErrTagNotFound):
 			return echo.NewHTTPError(http.StatusNotFound, "tag not found")
 		case errors.Is(err, model.ErrTagNameExists):

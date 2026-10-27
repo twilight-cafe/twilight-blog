@@ -34,6 +34,7 @@ import { ToastProvider } from './lib/toast'
 import PublicShell from './components/PublicShell'
 import AdminLayout from './components/AdminLayout'
 import RouteTransition from './components/RouteTransition'
+import DocCommentsLayout from './components/DocCommentsLayout'
 import { Loading } from './components/common'
 import { useI18n } from './lib/i18n'
 import Home from './pages/public/Home'
@@ -185,12 +186,16 @@ export default function App() {
           <Route path="/install" element={<Setup onInstalled={() => setState('installed')} />} />
           <Route element={<PublicShell />}>
             <Route path="/" element={<Home />} />
-            <Route path="/post/:id" element={<Post />} />
+            {/* 文章与独立页面共用一个无路径布局：评论框在两者之间切换时不卸载，
+                只更换评论对象（见 components/DocCommentsLayout.tsx）。 */}
+            <Route element={<DocCommentsLayout />}>
+              <Route path="/post/:id" element={<Post />} />
+              <Route path="/pages/:id" element={<PageDetail />} />
+            </Route>
             <Route path="/archive" element={<Archive />} />
             <Route path="/tags" element={<Tags />} />
             <Route path="/search" element={<Search />} />
             <Route path="/moments" element={<Moments />} />
-            <Route path="/pages/:id" element={<PageDetail />} />
             <Route path="*" element={<NotFound />} />
           </Route>
           {/* One session, two identities: the same guard routes each role to the

@@ -1,11 +1,12 @@
 // public-pages-2.test.tsx —— Post / Tags / Search
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, Link } from 'react-router-dom'
 import Post from '../pages/public/Post'
 import Tags from '../pages/public/Tags'
 import Search from '../pages/public/Search'
 import { ToastProvider } from '../lib/toast'
+import { setLocale } from '../lib/i18n'
 import { NOW, getSharedClientMock, makeArticle, makeTag } from './helpers'
 
 vi.mock('../lib/client', async () => {
@@ -22,7 +23,7 @@ function paged<T>(items: T[], page = 1, total_pages = 1, total = items.length) {
 function makeResult(overrides: { type?: 'article' | 'page'; id?: number; title?: string; tags?: string[]; cover_media_id?: number | null } = {}): import('twilight-blog-api').SearchResult {
   // cover_media_id 单独取出来：文章命中必须带上它（Article 声明为必填），
   // 而页面命中不该带——多一个字段会让 PageSearchResult 的形状与契约不符。
-  const { tags, cover_media_id, ...base } = { id: 1, title: '命中文章', content: '正文片段', title_en: '', content_en: '', ai_generated: false, created_at: NOW, updated_at: NOW, tags: ['Go'] as string[] | undefined, tags_en: [''] as string[], cover_media_id: null as number | null, ...overrides }
+  const { tags, cover_media_id, ...base } = { id: 1, title: '命中文章', content: '正文片段', title_en: '', content_en: '', ai_generated: false, ai_generated_en: false, created_at: NOW, updated_at: NOW, tags: ['Go'] as string[] | undefined, tags_en: [''] as string[], cover_media_id: null as number | null, ...overrides }
   return base.type === 'page'
     ? { ...base, type: 'page' }
     : { ...base, type: 'article', tags: tags ?? [], cover_media_id: cover_media_id ?? null }
@@ -87,6 +88,32 @@ describe('Post', () => {
     gate.resolve(makeArticle({ id: 10, title: '稍后到达' }))
     await waitFor(() => expect(screen.getByText('稍后到达')).toBeTruthy())
     second.unmount()
+  })
+
+  it('切换文章时旧请求晚到不覆盖新文章', async () => {
+    const first = deferred<ReturnType<typeof makeArticle>>()
+    const second = deferred<ReturnType<typeof makeArticle>>()
+    client.blog.getArticle.mockImplementation((id: number) => (
+      id === 1 ? first.promise : second.promise
+    ) as never)
+
+    renderAt(<><Post /><Link to="/post/2">下一篇文章</Link></>, '/post/1', '/post/:id')
+    await waitFor(() => expect(client.blog.getArticle).toHaveBeenCalledWith(1))
+
+    fireEvent.click(screen.getByText('下一篇文章'))
+    await waitFor(() => expect(client.blog.getArticle).toHaveBeenCalledWith(2))
+
+    await act(async () => {
+      second.resolve(makeArticle({ id: 2, title: '文章二' }))
+    })
+    await waitFor(() => expect(screen.getByText('文章二')).toBeTruthy())
+
+    // 第 1 篇的响应姗姗来迟：它必须被丢弃，否则地址栏是 /post/2、正文却是第 1 篇。
+    await act(async () => {
+      first.resolve(makeArticle({ id: 1, title: '文章一' }))
+    })
+    expect(screen.queryByText('文章一')).toBeNull()
+    expect(screen.getByText('文章二')).toBeTruthy()
   })
 })
 
@@ -201,7 +228,27 @@ describe('Search', () => {
 
     // 翻页
     fireEvent.click(screen.getByRole('button', { name: 'Page 2' }))
-    await waitFor(() => expect(client.blog.search).toHaveBeenLastCalledWith({ q: '墨', page: 2, pageSize: 12 }))
+    await waitFor(() => expect(client.blog.search).toHaveBeenLastCalledWith({ q: '墨', page: 2, pageSize: 12, lang: 'zh' }))
+  })
+
+  it('切换语言：页码归 1，并用新语言重新搜索', async () => {
+    client.blog.search.mockResolvedValue(paged([makeResult({ type: 'article', id: 9, title: 'English hit' })], 1, 1, 1))
+    renderAt(<Search />, '/search?q=ink&page=3', '/search')
+    await waitFor(() => expect(client.blog.search).toHaveBeenCalledWith({ q: 'ink', page: 3, pageSize: 12, lang: 'zh' }))
+
+    act(() => setLocale('en'))
+    await waitFor(() =>
+      expect(client.blog.search).toHaveBeenLastCalledWith({ q: 'ink', page: 1, pageSize: 12, lang: 'en' }),
+    )
+    // 不能先用新语言请求一次旧的第 3 页：那通常只会得到一页空结果。
+    const calls = client.blog.search.mock.calls.map(([options]) => options as Record<string, unknown>)
+    expect(calls.some((options) => options.page === 3 && options.lang === 'en')).toBe(false)
+
+    // 已经在第 1 页时切换语言：页码不变，直接按新语言重新搜索。
+    act(() => setLocale('zh'))
+    await waitFor(() =>
+      expect(client.blog.search).toHaveBeenLastCalledWith({ q: 'ink', page: 1, pageSize: 12, lang: 'zh' }),
+    )
   })
 
   it('无结果与失败分支', async () => {
@@ -264,7 +311,7 @@ describe('Search', () => {
     // 输入新词提交 → 触发搜索
     fireEvent.change(input, { target: { value: '  新词  ' } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
-    await waitFor(() => expect(client.blog.search).toHaveBeenLastCalledWith({ q: '新词', page: 1, pageSize: 12 }))
+    await waitFor(() => expect(client.blog.search).toHaveBeenLastCalledWith({ q: '新词', page: 1, pageSize: 12, lang: 'zh' }))
   })
 
   it('搜索关闭：渲染禁用提示页，且 URL 带 q 也不发起任何搜索请求', () => {

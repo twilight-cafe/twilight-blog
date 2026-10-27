@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -435,8 +436,10 @@ func TestLatestAssetBranches(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// 一个任何平台都不会匹配的名字：用例必须在 Windows / Linux 宿主上都成立，
+		// 写死「只有 Windows 资产」会让测试在 Windows 上反而成功。
 		_ = json.NewEncoder(w).Encode(githubRelease{TagName: "v1", Assets: []releaseAsset{
-			{Name: "meilisearch-windows-amd64"},
+			{Name: "meilisearch-unknown-platform"},
 		}})
 	}))
 	defer server.Close()
@@ -446,11 +449,14 @@ func TestLatestAssetBranches(t *testing.T) {
 		t.Fatal("a release without a matching asset must surface")
 	}
 
+	// 用当前平台的**带平台后缀**的资产名，而不是写死 linux/amd64。
+	// 裸 "meilisearch" 不包含 OS/架构标记，selectAssetFor 不会匹配它。
+	localAsset := "meilisearch-" + runtime.GOOS + "-" + runtime.GOARCH
 	hook(t, &fetchReleaseFn, func(string) (githubRelease, error) {
-		return githubRelease{TagName: "v1", Assets: []releaseAsset{{Name: "meilisearch-linux-amd64", BrowserDownloadURL: server.URL}}}, nil
+		return githubRelease{TagName: "v1", Assets: []releaseAsset{{Name: localAsset, BrowserDownloadURL: server.URL}}}, nil
 	})
 	_, asset, _, err := latestAsset()
-	if err != nil || asset.Name != "meilisearch-linux-amd64" {
+	if err != nil || asset.Name != localAsset {
 		t.Fatalf("latestAsset = (%+v, %v)", asset, err)
 	}
 
@@ -499,7 +505,10 @@ func TestSelectAssetForBranches(t *testing.T) {
 		}
 	}
 
-	if _, err := findReleaseAsset(release); err != nil {
+	localRelease := githubRelease{TagName: "v1", Assets: []releaseAsset{
+		{Name: "meilisearch-" + runtime.GOOS + "-" + runtime.GOARCH},
+	}}
+	if _, err := findReleaseAsset(localRelease); err != nil {
 		t.Fatalf("findReleaseAsset on the current platform: %v", err)
 	}
 }

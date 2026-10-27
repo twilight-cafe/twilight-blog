@@ -3,9 +3,9 @@
 // setToc 通过 Outlet context 传给子页面（文章页用它把目录回传给侧栏）。
 // 导航用的独立页面列表由 loadPagesForNav 拉取；拉取失败时吞掉异常、保留默认导航，
 // 不让整站布局崩掉。页脚是公开站点唯一指向控制台的入口，按当前角色跳不同地址。
-// 首页标语与页脚简介都来自站长设置的「网站描述」（useSiteDescription），
-// 未设置或接口失败时回退到内置文案——这里是描述唯一的展示落点，
-// 若写死在这里，后台改完就只是存了个没有人看得到的字符串。
+// 页脚简介来自站长设置的「网站描述」（useSiteDescription），未设置或接口失败时
+// 回退到内置文案。首页大标题下不再重复这段描述——标语已按设计移除，
+// 描述仍出现在页脚、侧栏作者卡、首页标签页标题与搜索引擎摘要里。
 // 路由切换时只有正文容器（.public-main）动：页头与侧栏原地不动，与 iOS 的
 // 「推入新内容」同一个观感。老内容向左/右滑走淡出，新内容从来的方向推入，
 // 容器高度从旧页连续接到新页（页脚被推过去而不是瞬移）；前进一律回到页首、
@@ -26,9 +26,9 @@ import { useCurrentUser } from '../lib/client'
 import { useHeightRelay, useRouteMotion } from '../lib/motion'
 import { useRouteTransition } from './RouteTransition'
 import { useSiteDescription } from '../lib/site'
+import { pageTitle } from '../lib/localize'
 import { useI18n, useLocale } from '../lib/i18n'
 import PublicSidebar from './PublicSidebar'
-import LanguageSwitcher from './LanguageSwitcher'
 import Icon from '../lib/icons'
 
 export interface PublicOutletContext {
@@ -40,9 +40,9 @@ export default function PublicShell() {
   const [pages, setPages] = useState<Page[]>([])
   const [toc, setToc] = useState<TocItem[]>([])
   const locale = useLocale()
+  const { t } = useI18n()
   const navItems = useMemo(() => buildNav(pages, locale), [pages, locale])
   const isHome = location.pathname === '/'
-  const description = useSiteDescription()
   // 正文容器：路由切换时由它接力播一次入场动画（页头与侧栏保持原地不动，
   // 动的只有「这一页的内容」——与 iOS 的导航推入同一个观感）。前进 / 返回的
   // 方向与滚动位置也由同一个钩子负责；退场与高度接力由 RouteTransition 的
@@ -92,12 +92,6 @@ export default function PublicShell() {
               <span style={{ '--d': '0.75s' } as CSSProperties}>t</span>
               <span className="ink" />
             </h1>
-            <div className="sub">
-              <span className="slogan">{description}</span>
-              {/* 首页是唯一没有内页精简头的地方；把切换器放在标语右侧，
-                  保证「任何一页都能换语言」，而不是要先点进内页。 */}
-              <LanguageSwitcher />
-            </div>
             <div className="dbl" />
           </div>
           <div className="wrap">
@@ -113,24 +107,22 @@ export default function PublicShell() {
         </header>
       ) : (
         <div ref={attachHead}>
+          {/* 非首页的紧凑头：品牌与导航同一行，菜单紧跟在 Twilight 右侧，
+              省掉原先「品牌一行 + 导航一行」的垂直空间。 */}
           <div className="wrap mast slim compact">
             <Link className="brand" to="/">
               Twilight<i className="ink" />
             </Link>
-            {/* 这里原来是「TWILIGHT BLOG — INK & CODE」那行拉丁文副标题。
-                按要求换成语言切换器：既保留了右上角那块的视觉重量，又让
-                读者在任何一页都能直接换语言。 */}
-            <LanguageSwitcher />
-          </div>
-          <div className="wrap nav-slim compact">
-            <NavRow>
-              {navItems.map((item) => (
-                <Link key={item.to} to={item.to} className={`nl ${isNavActive(location.pathname, item.to) ? 'on' : ''}`}>
-                  {item.label}
-                </Link>
-              ))}
-              <span className="sp" />
-            </NavRow>
+            <div className="nav-slim compact">
+              <NavRow>
+                {navItems.map((item) => (
+                  <Link key={item.to} to={item.to} className={`nl ${isNavActive(location.pathname, item.to) ? 'on' : ''}`}>
+                    {item.label}
+                  </Link>
+                ))}
+                <span className="sp" />
+              </NavRow>
+            </div>
           </div>
         </div>
       )}
@@ -144,7 +136,7 @@ export default function PublicShell() {
 
       <Footer pages={pages} />
       {/* 长页面才需要的返回入口：滚动超过一屏以后才从右下角浮出来。 */}
-      <BackTop icon={<Icon name="up" size={16} />} />
+      <BackTop label={t('回到顶部', 'Back to top')} icon={<Icon name="up" size={16} />} />
     </div>
   )
 }
@@ -155,6 +147,7 @@ function Footer({ pages }: { pages: Page[] }) {
   // points at whatever the current session can actually open.
   const user = useCurrentUser()
   const description = useSiteDescription()
+  const locale = useLocale()
   const { t } = useI18n()
   const accountTo = user ? (user.role === 'admin' ? '/admin' : '/admin/profile') : '/admin/login'
   const accountLabel = user
@@ -177,7 +170,8 @@ function Footer({ pages }: { pages: Page[] }) {
             {isSearchEnabled() && <Link to="/search">{t('搜索', 'Search')}</Link>}
             {isMomentsEnabled() && <Link to="/moments">{t('微语', 'Moments')}</Link>}
             {pages.map((page) => (
-              <Link key={page.id} to={`/pages/${page.id}`}>{page.title}</Link>
+              // 与页头、侧栏同一套回退规则：英文界面取 title_en，缺失时回退中文。
+              <Link key={page.id} to={`/pages/${page.id}`}>{pageTitle(page, locale)}</Link>
             ))}
           </div>
           <div>

@@ -98,6 +98,12 @@ func TestNewIndexDataFallsBackForInvalidValues(t *testing.T) {
 	if data.PostBannerHeight != viewmodel.DefaultPostBannerHeight {
 		t.Fatalf("PostBannerHeight = %d, want the default", data.PostBannerHeight)
 	}
+
+	// 正数但越界：<=0 的兜底管不到它，必须由区间判断接住。
+	data = newIndexData("", false, false, 12, 4, 9000, nil, nil)
+	if data.PostBannerHeight != viewmodel.DefaultPostBannerHeight {
+		t.Fatalf("an out-of-range banner height must fall back, got %d", data.PostBannerHeight)
+	}
 }
 
 func TestFileExistsAndHiddenSegmentHelpers(t *testing.T) {

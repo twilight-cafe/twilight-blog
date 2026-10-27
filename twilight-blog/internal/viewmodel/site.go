@@ -97,6 +97,9 @@ func SiteDescription(configured string) string {
 // （SDK 与前端都有按字段省略的调用方），与 OptionalID 的设计动机一致。
 type SiteSettingsRequest struct {
 	Description string `json:"description"`
+	// DescriptionEN 是英文描述；nil 表示本次不修改（兼容只发中文描述的旧客户端），
+	// 空串表示清空英文版（前台回退中文）。
+	DescriptionEN *string `json:"description_en,omitempty"`
 	// CodeBlockMaxLines 是代码块最大显示行数；nil 表示本次请求不修改它。
 	CodeBlockMaxLines *int `json:"code_block_max_lines,omitempty"`
 	// HomePageSize 是首页每页文章数；nil 表示本次请求不修改它。
@@ -128,6 +131,9 @@ type SiteSettingsRequest struct {
 // 新增字段前请先确认它是「已经公开可见的文案 / 形象」而不是「配置」。
 type SiteSettingsResponse struct {
 	Description string `json:"description"`
+	// DescriptionEN 是英文站点描述；空串表示没有英文版，前端在英文界面
+	// 回退到 description。恒输出，便于前端区分「未设置」与「服务端没有该字段」。
+	DescriptionEN string `json:"description_en"`
 	// AvatarURL 是站长头像的站内地址；空串表示站长没设头像，前端回退到
 	// 首字母占位块。
 	//
@@ -174,6 +180,13 @@ func (r *SiteSettingsRequest) Validate() error {
 	r.Description = normalizeSiteDescription(r.Description)
 	if utf8.RuneCountInString(r.Description) > MaxSiteDescriptionLength {
 		return fmt.Errorf("description must be at most %d characters", MaxSiteDescriptionLength)
+	}
+	if r.DescriptionEN != nil {
+		normalized := normalizeSiteDescription(*r.DescriptionEN)
+		if utf8.RuneCountInString(normalized) > MaxSiteDescriptionLength {
+			return fmt.Errorf("description_en must be at most %d characters", MaxSiteDescriptionLength)
+		}
+		r.DescriptionEN = &normalized
 	}
 	if r.CodeBlockMaxLines != nil {
 		lines := *r.CodeBlockMaxLines

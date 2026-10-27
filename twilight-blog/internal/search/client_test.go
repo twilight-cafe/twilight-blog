@@ -214,6 +214,90 @@ func TestResultFromHitKeepsHighlights(t *testing.T) {
 	}
 }
 
+// TestResultFromHitAIContract 守护搜索结果里的 AI 声明形状。
+//
+// ArticleSearchResult 继承 Article，而 Article 把 ai_generated 与
+// ai_generated_en 都声明为必填布尔。搜索命中若省略它们，类型声明就与实际
+// 载荷不符——tags 与 cover_media_id 都踩过同类的坑，这里提前钉住。
+func TestResultFromHitAIContract(t *testing.T) {
+	t.Run("article keeps both language flags", func(t *testing.T) {
+		encoded, err := json.Marshal(resultFromHit(map[string]any{
+			"kind":            "article",
+			"id":              float64(7),
+			"ai_generated":    true,
+			"ai_generated_en": false,
+		}))
+		if err != nil {
+			t.Fatalf("marshal result: %v", err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		if decoded["ai_generated"] != true {
+			t.Fatalf("ai_generated = %v, want true (json: %s)", decoded["ai_generated"], encoded)
+		}
+		if decoded["ai_generated_en"] != false {
+			t.Fatalf("ai_generated_en = %v, want false (json: %s)", decoded["ai_generated_en"], encoded)
+		}
+	})
+
+	t.Run("missing or non-boolean flags still serialize as false", func(t *testing.T) {
+		encoded, err := json.Marshal(resultFromHit(map[string]any{
+			"kind":         "article",
+			"id":           float64(7),
+			"ai_generated": "yes", // 类型不对：按 false 处理，而不是让整次搜索失败
+		}))
+		if err != nil {
+			t.Fatalf("marshal result: %v", err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		raw, ok := decoded["ai_generated"]
+		if !ok || raw != false {
+			t.Fatalf("ai_generated must be present and false, got json: %s", encoded)
+		}
+		rawEN, ok := decoded["ai_generated_en"]
+		if !ok || rawEN != false {
+			t.Fatalf("ai_generated_en must be present and false, got json: %s", encoded)
+		}
+	})
+
+	t.Run("page hit also carries both flags as false", func(t *testing.T) {
+		encoded, err := json.Marshal(resultFromHit(map[string]any{
+			"kind":  "page",
+			"id":    float64(3),
+			"title": "关于",
+		}))
+		if err != nil {
+			t.Fatalf("marshal result: %v", err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		if decoded["ai_generated"] != false || decoded["ai_generated_en"] != false {
+			t.Fatalf("page hit must carry both flags as false, got json: %s", encoded)
+		}
+	})
+}
+
+// TestArticleDocCarriesBothAIFlags 钉住索引文档那一侧。
+//
+// 两个标记必须一起进索引：只写中文标记时，英文搜索结果的
+// ai_generated_en 会永远读成 false，于是英文界面的 AI 声明静默消失。
+func TestArticleDocCarriesBothAIFlags(t *testing.T) {
+	doc := articleDoc(&model.Article{ID: 1, AIGenerated: true, AIGeneratedEN: false})
+	if doc["ai_generated"] != true {
+		t.Fatalf("ai_generated = %v, want true", doc["ai_generated"])
+	}
+	if doc["ai_generated_en"] != false {
+		t.Fatalf("ai_generated_en = %v, want false", doc["ai_generated_en"])
+	}
+}
+
 // TestSourceInt64AcceptsEveryDecodedNumberType 钉住取数助手的三条解析路径。
 //
 // 为什么三种数字类型都要吃：同一份数据走的是不同的解码路径——HTTP 响应体经

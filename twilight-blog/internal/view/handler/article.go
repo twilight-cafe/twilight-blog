@@ -89,15 +89,16 @@ func (h *ArticleHandler) Create(c echo.Context) error {
 	// CoverSet 在 Create 上没有「别动」可表达——新建时头图就是请求里给的那张
 	// （没给即没有），所以这里恒为 true，由 CoverMediaID 决定结果。
 	article, err := h.service.Create(c.Request().Context(), service.ArticleWrite{
-		Title:        req.Title,
-		Content:      &req.Content,
-		TitleEN:      &req.TitleEN,
-		ContentEN:    &req.ContentEN,
-		AIGenerated:  &req.AIGenerated,
-		Tags:         &req.Tags,
-		PublishedAt:  req.PublishedAt,
-		CoverSet:     true,
-		CoverMediaID: req.CoverMediaID,
+		Title:         req.Title,
+		Content:       &req.Content,
+		TitleEN:       &req.TitleEN,
+		ContentEN:     &req.ContentEN,
+		AIGenerated:   &req.AIGenerated,
+		AIGeneratedEN: &req.AIGeneratedEN,
+		Tags:          &req.Tags,
+		PublishedAt:   req.PublishedAt,
+		CoverSet:      true,
+		CoverMediaID:  req.CoverMediaID,
 	})
 	if err != nil {
 		return mapArticleError(err, "failed to create article")
@@ -127,15 +128,16 @@ func (h *ArticleHandler) Update(c echo.Context) error {
 	}
 
 	article, err := h.service.Update(c.Request().Context(), id, service.ArticleWrite{
-		Title:        req.Title,
-		Content:      req.Content,
-		TitleEN:      req.TitleEN,
-		ContentEN:    req.ContentEN,
-		AIGenerated:  req.AIGenerated,
-		Tags:         req.Tags,
-		PublishedAt:  req.PublishedAt,
-		CoverSet:     req.CoverMediaID.Set,
-		CoverMediaID: req.CoverMediaID.Value,
+		Title:         req.Title,
+		Content:       req.Content,
+		TitleEN:       req.TitleEN,
+		ContentEN:     req.ContentEN,
+		AIGenerated:   req.AIGenerated,
+		AIGeneratedEN: req.AIGeneratedEN,
+		Tags:          req.Tags,
+		PublishedAt:   req.PublishedAt,
+		CoverSet:      req.CoverMediaID.Set,
+		CoverMediaID:  req.CoverMediaID.Value,
 	})
 	if err != nil {
 		return mapArticleError(err, "failed to update article")

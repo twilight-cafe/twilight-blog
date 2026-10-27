@@ -59,7 +59,16 @@ export function nodeText(node: unknown): string {
   if (Array.isArray(node)) return node.map((child) => nodeText(child)).join('')
   if (typeof node !== 'object') return ''
   const value = node as { type?: string; value?: unknown; children?: unknown[] }
-  if (value.type === 'text' || value.type === 'inlineCode') return String(value.value ?? '')
+  if (
+    value.type === 'text' ||
+    value.type === 'inlineCode' ||
+    // mdast 的数学节点：目录直接读这里。HAST 侧在 KaTeX 之前是 <code> 文本，
+    // 两边都从同一段 LaTeX 取值，标题 id 才能与目录链接对得上。
+    value.type === 'inlineMath' ||
+    value.type === 'math'
+  ) {
+    return String(value.value ?? '')
+  }
   if (value.children) return nodeText(value.children)
   return ''
 }
@@ -448,6 +457,10 @@ function createProcessor() {
     .use(remarkGfm)
     .use(remarkMath)
     .use(remarkRehype)
+    // 标题 id 必须在 KaTeX 之前算。KaTeX 会把一个公式展开成 MathML 注解 +
+    // 可见字形两份文本，heading id 会变成 "emc2emc2emc2" 这类重复串；而目录
+    // 从 mdast 只拿到一份 LaTeX，两边 slug 不一致，点目录就找不到目标。
+    .use(rehypeHeadingIds)
     .use(rehypeKatex)
     // detect:false 表示不靠启发式猜测语言，只认 ```lang 围栏上显式标注的语言；
     // plainText 把 text/txt 当作纯文本、不做高亮，避免误把大段文本当代码上色。
@@ -455,7 +468,6 @@ function createProcessor() {
     // 代码块逐行加 data-line-number 属性（已列入 COMMENT_GLOBAL_ATTRIBUTES 白名单），
     // 供前端做行号展示；评论清洗时若该属性被剥掉则行号会丢失。
     .use(rehypeHighlightCodeLines, { showLineNumbers: true })
-    .use(rehypeHeadingIds)
 }
 
 // Site-owner authored content: trusted, so only the URL scheme guard applies.

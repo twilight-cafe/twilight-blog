@@ -9,6 +9,71 @@ import (
 	"blog-engine/internal/model"
 )
 
+// TestAIMarkerIsPerLanguage 覆盖 AI 声明的按语言语义：
+// 中文与英文各存各的，创建 / 更新其中一份不会影响另一份。
+func TestAIMarkerIsPerLanguage(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(filepath.Join(t.TempDir(), "article-ai.db"))
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	repo := model.NewSQLiteArticleRepository(db)
+	svc := NewArticleService(repo, nil, nil)
+	body := "手写中文"
+	yes := true
+	no := false
+
+	// 创建时只标英文：中文仍是人工撰写。
+	article, err := svc.Create(ctx, ArticleWrite{
+		Title: "手写", Content: &body,
+		AIGeneratedEN: &yes,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if article.AIGenerated || !article.AIGeneratedEN {
+		t.Fatalf("create flags = zh:%v en:%v, want false/true", article.AIGenerated, article.AIGeneratedEN)
+	}
+
+	// 只把英文改回 false：中文本来就是 false，另一份不受影响。
+	updated, err := svc.Update(ctx, article.ID, ArticleWrite{Title: "手写", AIGeneratedEN: &no})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.AIGenerated || updated.AIGeneratedEN {
+		t.Fatalf("after en-only clear = zh:%v en:%v, want false/false", updated.AIGenerated, updated.AIGeneratedEN)
+	}
+
+	// 只把中文置 true：英文保持 false。
+	updated, err = svc.Update(ctx, article.ID, ArticleWrite{Title: "手写", AIGenerated: &yes})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !updated.AIGenerated || updated.AIGeneratedEN {
+		t.Fatalf("after zh-only mark = zh:%v en:%v, want true/false", updated.AIGenerated, updated.AIGeneratedEN)
+	}
+
+	// 再只把英文置 true：中文仍为 true。
+	updated, err = svc.Update(ctx, article.ID, ArticleWrite{Title: "手写", AIGeneratedEN: &yes})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !updated.AIGenerated || !updated.AIGeneratedEN {
+		t.Fatalf("after en-only mark = zh:%v en:%v, want true/true", updated.AIGenerated, updated.AIGeneratedEN)
+	}
+
+	// 创建路径只给中文标记时，英文保持未标记。
+	chineseOnly, err := svc.Create(ctx, ArticleWrite{Title: "仅中文", AIGenerated: &yes})
+	if err != nil {
+		t.Fatalf("Create zh-only: %v", err)
+	}
+	if !chineseOnly.AIGenerated || chineseOnly.AIGeneratedEN {
+		t.Fatalf("create zh-only flags = zh:%v en:%v, want true/false", chineseOnly.AIGenerated, chineseOnly.AIGeneratedEN)
+	}
+}
+
 // TestUpdateKeepsTheBodyWhenContentIsOmitted 守护 R3-15 的承重契约：
 // **省略 content 的更新不得改动正文**。
 //
@@ -105,12 +170,12 @@ func TestPageUpdateKeepsTheBodyWhenContentIsOmitted(t *testing.T) {
 	svc := NewPageService(repo, nil)
 	const body = "页面正文标记-不许消失"
 
-	page, err := svc.Create(ctx, "关于", body)
+	page, err := svc.Create(ctx, "关于", "", body, "")
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if _, err := svc.Update(ctx, page.ID, "关于我们", nil); err != nil {
+	if _, err := svc.Update(ctx, page.ID, "关于我们", nil, nil, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 
@@ -126,7 +191,7 @@ func TestPageUpdateKeepsTheBodyWhenContentIsOmitted(t *testing.T) {
 	}
 
 	replacement := "新的页面正文"
-	if _, err := svc.Update(ctx, page.ID, "关于我们", &replacement); err != nil {
+	if _, err := svc.Update(ctx, page.ID, "关于我们", nil, &replacement, nil); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
 	stored, err = repo.GetByID(ctx, page.ID)
@@ -135,5 +200,67 @@ func TestPageUpdateKeepsTheBodyWhenContentIsOmitted(t *testing.T) {
 	}
 	if stored.Content != replacement {
 		t.Fatalf("content = %q, want %q", stored.Content, replacement)
+	}
+}
+
+// TestPageBilingualFieldsFollowTheArticleContract 验证页面的英文字段与文章
+// 使用同一套三态语义：省略 = 保留，空串 = 清空。分开覆盖是因为两处实现独立，
+// 只测文章的话，页面的指针分支可能默默退化成「缺省即清空」。
+func TestPageBilingualFieldsFollowTheArticleContract(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := database.Open(filepath.Join(t.TempDir(), "bilingual-pages.db"))
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	repo := model.NewSQLitePageRepository(db)
+	svc := NewPageService(repo, nil)
+
+	page, err := svc.Create(ctx, "关于", "About", "中文正文", "English body")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if page.TitleEN != "About" || page.ContentEN != "English body" {
+		t.Fatalf("created english = (%q, %q)", page.TitleEN, page.ContentEN)
+	}
+
+	// 只改中文标题：英文两份都必须原样保留。
+	if _, err := svc.Update(ctx, page.ID, "关于我们", nil, nil, nil); err != nil {
+		t.Fatalf("Update(title only) error = %v", err)
+	}
+	stored, err := repo.GetByID(ctx, page.ID)
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if stored.TitleEN != "About" || stored.ContentEN != "English body" {
+		t.Fatalf("english after title-only update = (%q, %q)", stored.TitleEN, stored.ContentEN)
+	}
+
+	// 显式清空英文标题（空串），英文正文保持不变：两份字段的指针互相独立。
+	empty := ""
+	if _, err := svc.Update(ctx, page.ID, "关于我们", &empty, nil, nil); err != nil {
+		t.Fatalf("Update(clear title_en) error = %v", err)
+	}
+	stored, err = repo.GetByID(ctx, page.ID)
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if stored.TitleEN != "" || stored.ContentEN != "English body" {
+		t.Fatalf("after clearing title_en = (%q, %q)", stored.TitleEN, stored.ContentEN)
+	}
+
+	// 只替换英文正文。
+	translated := "Rewritten body"
+	if _, err := svc.Update(ctx, page.ID, "关于我们", nil, nil, &translated); err != nil {
+		t.Fatalf("Update(content_en) error = %v", err)
+	}
+	stored, err = repo.GetByID(ctx, page.ID)
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if stored.Content != "中文正文" || stored.ContentEN != translated {
+		t.Fatalf("bodies = (%q, %q), want (中文正文, %q)", stored.Content, stored.ContentEN, translated)
 	}
 }

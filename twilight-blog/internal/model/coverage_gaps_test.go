@@ -62,7 +62,7 @@ func TestPageRepositoryLifecycle(t *testing.T) {
 	repo := NewSQLitePageRepository(db)
 	ctx := context.Background()
 
-	first := &Page{Title: "a", Content: "one", CreatedAt: 100, UpdatedAt: 100}
+	first := &Page{Title: "a", TitleEN: "a-en", Content: "one", ContentEN: "one-en", CreatedAt: 100, UpdatedAt: 100}
 	second := &Page{Title: "b", Content: "two", CreatedAt: 200, UpdatedAt: 200}
 	third := &Page{Title: "c", Content: "three", CreatedAt: 300, UpdatedAt: 300}
 	for _, page := range []*Page{first, second, third} {
@@ -78,12 +78,26 @@ func TestPageRepositoryLifecycle(t *testing.T) {
 	if err != nil || got.Title != "a" {
 		t.Fatalf("GetByID = (%+v, %v)", got, err)
 	}
+	// 英文字段随中文一起往返：页面双语不是「只多一列标题」，正文同样要持久化。
+	if got.TitleEN != "a-en" || got.ContentEN != "one-en" {
+		t.Fatalf("GetByID english = (%q, %q), want (a-en, one-en)", got.TitleEN, got.ContentEN)
+	}
+	// 只写中文的页面，英文列是空串而不是 NULL，读取侧无需再判空指针。
+	if second.TitleEN != "" || second.ContentEN != "" {
+		t.Fatalf("default english = (%q, %q), want empty", second.TitleEN, second.ContentEN)
+	}
 
 	// Update: 正常更新与回收站行不可更新。
 	first.Title = "a2"
+	first.TitleEN = "a2-en"
+	first.ContentEN = "one2-en"
 	first.UpdatedAt = 150
 	if err := repo.Update(ctx, first); err != nil {
 		t.Fatalf("Update: %v", err)
+	}
+	updated, err := repo.GetByID(ctx, first.ID)
+	if err != nil || updated.TitleEN != "a2-en" || updated.ContentEN != "one2-en" {
+		t.Fatalf("after Update english = (%+v, %v)", updated, err)
 	}
 	if err := repo.Update(ctx, &Page{ID: 999, Title: "missing", UpdatedAt: 1}); !errors.Is(err, ErrPageNotFound) {
 		t.Fatalf("Update(missing) error = %v, want ErrPageNotFound", err)

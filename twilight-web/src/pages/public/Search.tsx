@@ -5,7 +5,7 @@
 // 翻页时结果列表按与换路由同一段动画退出/入场（见 lib/motion.ts 的 usePagerMotion）；
 // 换关键词仍沿用「旧结果变暗、原地替换」——那不是翻页，整块滑走只会让人以为搜索被重置。
 
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Button, Input, Pagination, Reveal } from 'ink-design'
 import { blog, getErrorMessage } from '../../lib/client'
@@ -18,7 +18,8 @@ import { Empty, PageHero, SkeletonRows } from '../../components/common'
 import { usePagerMotion } from '../../lib/motion'
 import { useDelayedLoading } from '../../lib/loading'
 import { useI18n, useLocale } from '../../lib/i18n'
-import { articleContent, articleTags, articleTitle } from '../../lib/localize'
+import { articleContent, articleTags, articleTitle, pageContent, pageTitle } from '../../lib/localize'
+import { usePageParam } from '../../lib/page-param'
 
 export default function Search() {
   const { t } = useI18n()
@@ -26,7 +27,12 @@ export default function Search() {
   const [params, setParams] = useSearchParams()
   const query = params.get('q') ?? ''
   const [draft, setDraft] = useState(query)
-  const [page, setPage] = useState(1)
+  // 页码与 ?q= 一起存在 URL 里：翻到第 3 页点开结果、再后退，搜索结果与页码
+  // 都能原样回来。改关键词时 setParams({q}) 会顺手丢掉 page，自然回到第 1 页。
+  const [page, setPage] = usePageParam()
+  // 语言切换会改变搜索范围：中文第 3 页的结果在英文里可能一页都没有。
+  // 记住上一次的语言，切换时先把页码归 1，再按新语言重新搜索。
+  const localeRef = useRef(locale)
   // 屏幕上真正显示的那一页：翻页时旧结果先退场，180ms 后才换页（请求不等它）。
   const { page: shownPage, ref: listRef } = usePagerMotion(page)
   // 页码 → 那一页的结果：新页数据常在退场动画播完前就回来，那时它还不该上屏，
@@ -63,10 +69,16 @@ export default function Search() {
   }, [query])
 
   useEffect(() => {
-    setPage(1)
-  }, [query])
-
-  useEffect(() => {
+    // 先处理语言切换：页码不归 1 的话，会在新语言里请求一个可能不存在的
+    // 第 N 页（例如中文有 3 页、英文只有 1 页），结果是一页空列表。
+    // 归 1 后本次不再发请求；页码变化会再次进入本 effect，用新语言搜第 1 页。
+    if (localeRef.current !== locale) {
+      localeRef.current = locale
+      if (page !== 1) {
+        setPage(1)
+        return
+      }
+    }
     // 禁用时 effects 仍会被 React 提交执行（提前返回只影响 JSX），
     // 所以这里必须再挡一次：后端路由已不注册，请求只会得到 404。
     if (!searchEnabled) {
@@ -88,7 +100,7 @@ export default function Search() {
     let alive = true
     setLoading(true)
     setError('')
-    blog.search({ q: keyword, page, pageSize: 12 })
+    blog.search({ q: keyword, page, pageSize: 12, lang: locale })
       .then((result) => {
         if (!alive) return
         setListed((previous) => new Map(previous).set(page, result.items))
@@ -108,12 +120,11 @@ export default function Search() {
     return () => {
       alive = false
     }
-  }, [query, page, searchEnabled])
+  }, [query, page, searchEnabled, locale, setPage])
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
     const keyword = draft.trim()
-    setPage(1)
     if (!keyword) {
       setParams({})
       return
@@ -128,7 +139,7 @@ export default function Search() {
   if (!searchEnabled) {
     return (
       <main className="wrap" style={{ maxWidth: 880 }}>
-        <PageHero kicker="SEARCH" title={<>{t('搜索', 'Search')}<small>{t('全文检索', 'Full-text search')}</small></>} subtitle={t('搜索本站的文章与页面。', 'Search every post and page on this site.')} />
+        <PageHero title={<>{t('搜索', 'Search')}<small>{t('全文检索', 'Full-text search')}</small></>} subtitle={t('搜索本站的文章与页面。', 'Search every post and page on this site.')} />
         <Empty text={t('本站未启用搜索功能', 'Search is disabled on this site')} />
       </main>
     )
@@ -136,7 +147,7 @@ export default function Search() {
 
   return (
     <main className="wrap" style={{ maxWidth: 880 }}>
-      <PageHero kicker="SEARCH" title={<>{t('搜索', 'Search')}<small>{t('全文检索', 'Full-text search')}</small></>} subtitle={t('搜索本站的文章与页面。', 'Search every post and page on this site.')} />
+      <PageHero title={<>{t('搜索', 'Search')}<small>{t('全文检索', 'Full-text search')}</small></>} subtitle={t('搜索本站的文章与页面。', 'Search every post and page on this site.')} />
 
       <form className="sbar" style={{ display: 'flex', gap: 10, marginTop: 24 }} onSubmit={submit}>
         <Input
@@ -169,8 +180,8 @@ export default function Search() {
                   {result.type === 'article' ? t('文章', 'Post') : t('页面', 'Page')} · {fmtDate(result.created_at)}
                   {result.type === 'article' && result.tags.length > 0 ? ` · ${articleTags(result, locale).slice(0, 3).join(' / ')}` : ''}
                 </span>
-                <h3>{result.type === 'article' ? articleTitle(result, locale) : result.title}</h3>
-                <p>{excerpt(result.type === 'article' ? articleContent(result, locale) : result.content, 160)}</p>
+                <h3>{result.type === 'article' ? articleTitle(result, locale) : pageTitle(result, locale)}</h3>
+                <p>{excerpt(result.type === 'article' ? articleContent(result, locale) : pageContent(result, locale), 160)}</p>
               </Link>
             </Reveal>
             ))}

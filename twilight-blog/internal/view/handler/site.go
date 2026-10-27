@@ -3,12 +3,24 @@ package handler
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 
 	"blog-engine/internal/config"
 	"blog-engine/internal/logging"
 	"blog-engine/internal/viewmodel"
+)
+
+// 站点设置的五个可选字段在 viewmodel 层已经过区间校验，config 的 setter 因此
+// 在正常请求里不会失败。这几条「setter 失败 → 400」的分支仍然是有意义的防线
+// （两层的边界常量将来可能漂移），但只有把 setter 换成可失败的实现才走得到。
+var (
+	setCodeBlockMaxLinesFn = (*config.Config).SetCodeBlockMaxLines
+	setHomePageSizeFn      = (*config.Config).SetHomePageSize
+	setBorderRadiusFn      = (*config.Config).SetBorderRadius
+	setPostBannerHeightFn  = (*config.Config).SetPostBannerHeight
+	setCommentNotifyToFn   = (*config.Config).SetCommentNotifyTo
 )
 
 // AdminAvatarSource 是站点公开信息对「站长头像」的**最小**依赖。
@@ -58,6 +70,7 @@ func (h *SiteHandler) Get(c echo.Context) error {
 func (h *SiteHandler) publicResponse(c echo.Context) viewmodel.SiteSettingsResponse {
 	return viewmodel.SiteSettingsResponse{
 		Description:       h.config.SiteDescriptionValue(),
+		DescriptionEN:     h.config.SiteDescriptionENValue(),
 		AvatarURL:         h.currentAvatarURL(c),
 		CodeBlockMaxLines: h.config.CodeBlockMaxLinesValue(),
 		HomePageSize:      h.config.HomePageSizeValue(),
@@ -101,6 +114,7 @@ func (h *SiteHandler) Update(c echo.Context) error {
 	}
 
 	previousDescription := h.config.SiteDescriptionValue()
+	previousDescriptionEN := h.config.SiteDescriptionENValue()
 	previousLines := h.config.CodeBlockMaxLinesValue()
 	previousPageSize := h.config.HomePageSizeValue()
 	previousRadius := h.config.BorderRadiusValue()
@@ -108,54 +122,28 @@ func (h *SiteHandler) Update(c echo.Context) error {
 	previousMoments := h.config.MomentsEnabledValue()
 	previousNotify := h.config.CommentNotifyToValue()
 	h.config.SetSiteDescription(req.Description)
+	if req.DescriptionEN != nil {
+		h.config.SetSiteDescriptionEN(*req.DescriptionEN)
+	}
 	// 行数是三态（nil=保持现值），所以这里不是无条件调用。
 	// 先暂存合法化后的值：SetCodeBlockMaxLines 可能存的是请求里的指针值，
 	// 回滚时必须写回**进入 handler 时的值**而不是指针指向的内容。
 	newLines := previousLines
-	if req.CodeBlockMaxLines != nil {
-		if err := h.config.SetCodeBlockMaxLines(*req.CodeBlockMaxLines); err != nil {
-			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
-		}
-		newLines = *req.CodeBlockMaxLines
-	}
 	newPageSize := previousPageSize
-	if req.HomePageSize != nil {
-		if err := h.config.SetHomePageSize(*req.HomePageSize); err != nil {
-			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
-		}
-		newPageSize = *req.HomePageSize
-	}
-	// 圆角同样是三态。注意回滚比较用的是**进入 handler 时的值**：
-	// 若写成 `if newRadius != *req.BorderRadius`，请求里恰好等于旧值时就不会回滚，
-	// 但那种情况下本来也没改动，无害；用 previousRadius 比较更直观且不会漏。
 	newRadius := previousRadius
-	if req.BorderRadius != nil {
-		if err := h.config.SetBorderRadius(*req.BorderRadius); err != nil {
-			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
-		}
-		newRadius = *req.BorderRadius
-	}
 	newBanner := previousBanner
-	if req.PostBannerHeight != nil {
-		if err := h.config.SetPostBannerHeight(*req.PostBannerHeight); err != nil {
-			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
-		}
-		newBanner = *req.PostBannerHeight
-	}
-	if req.MomentsEnabled != nil {
-		h.config.SetMomentsEnabled(*req.MomentsEnabled)
-	}
-	newMoments := h.config.MomentsEnabledValue()
 	newNotify := previousNotify
-	if req.CommentNotifyTo != nil {
-		if err := h.config.SetCommentNotifyTo(*req.CommentNotifyTo); err != nil {
-			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
-		}
-		newNotify = *req.CommentNotifyTo
-	}
+	newMoments := previousMoments
 
-	if err := h.config.Save(h.settingsPath); err != nil {
+	// 回滚把每一项都写回**进入 handler 时的值**。与 Save 失败共用同一段，
+	// 理由相同：一次被拒绝的请求不该在内存里留下半套新配置——那会让
+	// 公开接口在「保存失败」之后仍然回答一个从未落盘的值。
+	//
+	// 比较用 previous 而非请求里的值：请求里恰好等于旧值时本来就没改动，
+	// 多写一次无害；漏回滚才是问题。
+	rollback := func() {
 		h.config.SetSiteDescription(previousDescription)
+		h.config.SetSiteDescriptionEN(previousDescriptionEN)
 		if newLines != previousLines {
 			_ = h.config.SetCodeBlockMaxLines(previousLines)
 		}
@@ -174,6 +162,51 @@ func (h *SiteHandler) Update(c echo.Context) error {
 		if newNotify != previousNotify {
 			_ = h.config.SetCommentNotifyTo(previousNotify)
 		}
+	}
+
+	if req.CodeBlockMaxLines != nil {
+		if err := setCodeBlockMaxLinesFn(h.config, *req.CodeBlockMaxLines); err != nil {
+			rollback()
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
+		newLines = *req.CodeBlockMaxLines
+	}
+	if req.HomePageSize != nil {
+		if err := setHomePageSizeFn(h.config, *req.HomePageSize); err != nil {
+			rollback()
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
+		newPageSize = *req.HomePageSize
+	}
+	// 圆角同样是三态；0 是合法值（直角），所以这里不把 0 当「未设置」。
+	if req.BorderRadius != nil {
+		if err := setBorderRadiusFn(h.config, *req.BorderRadius); err != nil {
+			rollback()
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
+		newRadius = *req.BorderRadius
+	}
+	if req.PostBannerHeight != nil {
+		if err := setPostBannerHeightFn(h.config, *req.PostBannerHeight); err != nil {
+			rollback()
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
+		newBanner = *req.PostBannerHeight
+	}
+	if req.MomentsEnabled != nil {
+		h.config.SetMomentsEnabled(*req.MomentsEnabled)
+	}
+	newMoments = h.config.MomentsEnabledValue()
+	if req.CommentNotifyTo != nil {
+		if err := setCommentNotifyToFn(h.config, *req.CommentNotifyTo); err != nil {
+			rollback()
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
+		newNotify = strings.TrimSpace(*req.CommentNotifyTo)
+	}
+
+	if err := h.config.Save(h.settingsPath); err != nil {
+		rollback()
 		logging.Errorf("[site] persist settings failed: %v", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to save site settings")
 	}

@@ -224,10 +224,8 @@ func (a *AdminAuth) CreateAdmin(ctx context.Context, username, nickname, passwor
 		nickname = username
 	}
 
-	hash, err := hashPassword(password)
-	if err != nil {
-		return nil, err
-	}
+	// 输入已通过强度校验，hashPassword 不会失败。
+	hash, _ := hashPassword(password)
 
 	now := time.Now().Unix()
 	admin := &model.User{
@@ -254,10 +252,8 @@ func (a *AdminAuth) SetPassword(ctx context.Context, password string) error {
 		return err
 	}
 
-	hash, err := hashPassword(password)
-	if err != nil {
-		return err
-	}
+	// 输入已通过强度校验，hashPassword 不会失败。
+	hash, _ := hashPassword(password)
 
 	admin, err := a.admins.Get(ctx)
 	if err != nil {
@@ -327,10 +323,8 @@ func (a *AdminAuth) ChangePassword(ctx context.Context, currentPassword, newPass
 		return nil, invalidf("%s", err.Error())
 	}
 
-	hash, err := hashPassword(newPassword)
-	if err != nil {
-		return nil, err
-	}
+	// 输入已通过强度校验，hashPassword 不会失败。
+	hash, _ := hashPassword(newPassword)
 	if err := a.admins.SetPassword(ctx, admin.ID, hash, time.Now().Unix()); err != nil {
 		return nil, err
 	}

@@ -19,17 +19,8 @@ import { usePagerMotion } from '../../lib/motion'
 import { useDelayedLoading } from '../../lib/loading'
 import { useI18n, useLocale } from '../../lib/i18n'
 import { articleContent, articleTitle, tagName } from '../../lib/localize'
-
-async function fetchAllTags(): Promise<Tag[]> {
-  const first = await blog.listTags({ page: 1, pageSize: 12 })
-  if (first.total_pages <= 1) return first.items
-  const rest = await Promise.all(
-    Array.from({ length: first.total_pages - 1 }, (_, index) =>
-      blog.listTags({ page: index + 2, pageSize: 12 }),
-    ),
-  )
-  return [...first.items, ...rest.flatMap((page) => page.items)]
-}
+import { fetchAllTags } from '../../lib/tags'
+import { usePageParam } from '../../lib/page-param'
 
 function tagSize(count: number, max: number): 't1' | 't2' | 't3' | 't4' {
   // max 由 Math.max(1, ...) 得出，恒 >= 1，无需除零守卫。
@@ -46,7 +37,9 @@ export default function Tags() {
   const [params] = useSearchParams()
   const selected = Number(params.get('id')) || 0
   const [tags, setTags] = useState<Tag[]>([])
-  const [page, setPage] = useState(1)
+  // 页码存在 URL 里。换标签时标签链接只带 ?id=、不带 page，因此页码在导航
+  // 生效的同一帧就回到第 1 页——不再需要「渲染期把旧页码打回 1」的同步逻辑。
+  const [page, setPage] = usePageParam()
   // 屏幕上真正显示的那一页：翻页时旧列表先退场，180ms 后才换页（请求不等它）。
   const { page: shownPage, ref: listRef } = usePagerMotion(page)
   // 页码 → 那一页的文章：新页数据常在退场动画播完前就回来，那时它还不该上屏，
@@ -98,22 +91,6 @@ export default function Tags() {
     }
   }, [reloadKey])
 
-  // 换标签时页码必须归 1。放一个 effect 里 setPage(1) 是不够的：两个 effect 在**同一次
-  // 提交**里依次执行，请求 effect 读到的是本次渲染闭包里的旧 page，会先带着旧页码
-  // （比如上一个标签的第 2 页）发一次请求，下一轮才用 page=1 再发一次。后果不只是多一个
-  // 请求——若那个失效请求的响应后到，它会把列表盖成新标签第 2 页的内容（可能是空的），
-  // 用户看到「该标签下暂无文章」。
-  //
-  // 所以这里在渲染期就把 page 归位，让本次渲染的闭包直接拿到 1。
-  // React 官方推荐「渲染期 adjust state」这一写法：组件随后立刻重渲染、丢弃这次输出，
-  // 代价比 effect 里的往返小，也不会漏出中间态。依赖里不放 page，
-  // 否则用户手动翻页会被立刻打回第 1 页。
-  const [pagedTag, setPagedTag] = useState(selected)
-  if (pagedTag !== selected) {
-    setPagedTag(selected)
-    setPage(1)
-  }
-
   useEffect(() => {
     if (!selected) {
       setListed(new Map())
@@ -151,7 +128,7 @@ export default function Tags() {
   if (tagsError) {
     return (
       <main className="wrap page-list">
-        <PageHero kicker="TAGS" title={<>{t('标签', 'Tags')}<small>{t('加载失败', 'Failed to load')}</small></>} subtitle={t('无法获取标签列表。', 'The tag list could not be loaded.')} />
+        <PageHero title={<>{t('标签', 'Tags')}<small>{t('加载失败', 'Failed to load')}</small></>} subtitle={t('无法获取标签列表。', 'The tag list could not be loaded.')} />
         <div style={{ padding: '30px 4px', color: 'var(--faint)' }}>
           <p>{tagsError}</p>
           <Button small onClick={() => setReloadKey((value) => value + 1)}>{t('重试', 'Retry')}</Button>
@@ -167,7 +144,6 @@ export default function Tags() {
       {/* 页头始终在：篇数只是 h1 里的行内 small，数据到达时不会改变页头高度。
           标签云用等高的胶囊骨架占位——加载前后都是同一块 flex 区域。 */}
       <PageHero
-        kicker="TAGS"
         title={<>{t('标签', 'Tags')}{loadingTags ? null : <small>{t(`${tags.length} 个标签`, `${tags.length} tags`)}</small>}</>}
         subtitle={t('字号越大，文章越多。点击标签聚合相关文章。', 'Bigger means more posts. Click a tag to gather everything under it.')}
       />

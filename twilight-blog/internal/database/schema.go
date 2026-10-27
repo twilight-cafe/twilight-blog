@@ -56,8 +56,10 @@ CREATE TABLE IF NOT EXISTS articles (
     -- 英文版本；空串表示没有英文版，前台回退中文。
     title_en       TEXT    NOT NULL DEFAULT '',
     content_en     TEXT    NOT NULL DEFAULT '',
-    -- 1 = 站长标记为 AI 生成；前台会显示提示。
-    ai_generated   INTEGER NOT NULL DEFAULT 0,
+    -- 1 = 站长标记为 AI 生成；前台会显示提示。中文与英文各记一份：
+    -- 「手写中文 + AI 翻译英文」只会让英文版带声明，中文原文不该被误标。
+    ai_generated    INTEGER NOT NULL DEFAULT 0,
+    ai_generated_en INTEGER NOT NULL DEFAULT 0,
     created_at     INTEGER NOT NULL,
     updated_at     INTEGER NOT NULL,
     -- 头图。NULL 表示这篇文章没有头图；ON DELETE SET NULL 见文件头「表与索引速览」。
@@ -117,6 +119,9 @@ CREATE TABLE IF NOT EXISTS pages (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     title       TEXT    NOT NULL,
     content     TEXT    NOT NULL DEFAULT '',
+    -- 与文章同构的英文版本；两列都可为空，前台按当前语言取用并逐字段回退中文。
+    title_en    TEXT    NOT NULL DEFAULT '',
+    content_en  TEXT    NOT NULL DEFAULT '',
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL,
     deleted_at  INTEGER
@@ -307,6 +312,9 @@ var addedColumns = []columnAddition{
 	{"articles", "title_en", "TEXT NOT NULL DEFAULT ''"},
 	{"articles", "content_en", "TEXT NOT NULL DEFAULT ''"},
 	{"articles", "ai_generated", "INTEGER NOT NULL DEFAULT 0"},
+	{"articles", "ai_generated_en", "INTEGER NOT NULL DEFAULT 0"},
+	{"pages", "title_en", "TEXT NOT NULL DEFAULT ''"},
+	{"pages", "content_en", "TEXT NOT NULL DEFAULT ''"},
 	{"tags", "name_en", "TEXT NOT NULL DEFAULT ''"},
 	{"users", "avatar_media_id", "INTEGER REFERENCES media(id) ON DELETE SET NULL"},
 }

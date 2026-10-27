@@ -18,11 +18,12 @@ import { useDelayedLoading } from '../../lib/loading'
 import { useI18n } from '../../lib/i18n'
 import ContentView from '../../components/ContentView'
 import { ImageGroup } from '../../lib/imageGroup'
+import { pageTitle } from '../../lib/localize'
 
 type Tab = 'active' | 'trash'
 
 export default function PagesAdmin() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const toast = useToast()
   const { confirm } = useDialog()
   const [tab, setTab] = useState<Tab>('active')
@@ -63,7 +64,7 @@ export default function PagesAdmin() {
   const reload = useCallback(() => setReloadKey((value) => value + 1), [])
 
   const remove = async (page: Page) => {
-    if (!(await confirm(t('删除页面', 'Delete page'), t(`确定将「${page.title}」移入回收站？`, `Move “${page.title}” to the recycle bin?`)))) return
+    if (!(await confirm(t('删除页面', 'Delete page'), t(`确定将「${pageTitle(page, locale)}」移入回收站？`, `Move “${pageTitle(page, locale)}” to the recycle bin?`)))) return
     try {
       await blog.deletePage(page.id)
       toast(t('已移入回收站', 'Moved to the recycle bin'))
@@ -84,7 +85,7 @@ export default function PagesAdmin() {
   }
 
   const permanent = async (page: Page) => {
-    if (!(await confirm(t('彻底删除页面', 'Delete page permanently'), t(`确定彻底删除「${page.title}」？此操作不可撤销。`, `Permanently delete “${page.title}”? This cannot be undone.`)))) return
+    if (!(await confirm(t('彻底删除页面', 'Delete page permanently'), t(`确定彻底删除「${pageTitle(page, locale)}」？此操作不可撤销。`, `Permanently delete “${pageTitle(page, locale)}”? This cannot be undone.`)))) return
     try {
       await blog.permanentlyDeletePage(page.id)
       toast(t('已彻底删除', 'Permanently deleted'))
@@ -114,7 +115,7 @@ export default function PagesAdmin() {
           {list.map((page) => (
             <div key={page.id} className="pcard rv" style={{ marginBottom: 10 }}>
               <div className="ph2">
-                <Link to={tab === 'active' ? `/admin/pages/${page.id}` : '#'}><b>{page.title}</b></Link>
+                <Link to={tab === 'active' ? `/admin/pages/${page.id}` : '#'}><b>{pageTitle(page, locale)}</b></Link>
                 <span className="mono" style={{ fontSize: 10.5, color: 'var(--faint)' }}>{fmtDateTime(page.updated_at)}</span>
                 <span style={{ flex: 1 }} />
                 {tab === 'active' ? (
@@ -146,8 +147,12 @@ export function PageEdit() {
   const [page, setPage] = useState<Page | null>(null)
   // 正在取页面：骨架延迟出现，期间它已经占住标题 + 正文编辑区的位置。
   const pending = useDelayedLoading(!page)
+  // 与文章编辑器同一套双语编辑：页签只切换「正在写哪一份」，互不覆盖。
+  const [langTab, setLangTab] = useState<'zh' | 'en'>('zh')
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
+  const [titleEN, setTitleEN] = useState('')
+  const [contentEN, setContentEN] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -164,6 +169,9 @@ export function PageEdit() {
         setPage(data)
         setTitle(data.title)
         setContent(data.content)
+        // 旧后端没有 *_en 键：当作空串，保存时才会补写这两列。
+        setTitleEN(data.title_en ?? '')
+        setContentEN(data.content_en ?? '')
       })
       .catch((error) => {
         if (!alive) return
@@ -176,6 +184,11 @@ export function PageEdit() {
     }
   }, [pageId, navigate, toast])
 
+  const activeTitle = langTab === 'zh' ? title : titleEN
+  const setActiveTitle = langTab === 'zh' ? setTitle : setTitleEN
+  const activeContent = langTab === 'zh' ? content : contentEN
+  const setActiveContent = langTab === 'zh' ? setContent : setContentEN
+
   const save = async () => {
     if (!title.trim()) {
       toast(t('标题不能为空', 'The title cannot be empty'))
@@ -183,7 +196,7 @@ export function PageEdit() {
     }
     setSaving(true)
     try {
-      await blog.updatePage(pageId, { title: title.trim(), content })
+      await blog.updatePage(pageId, { title: title.trim(), content, titleEn: titleEN, contentEn: contentEN })
       toast(t('页面已保存', 'Page saved'))
       navigate('/admin/pages')
     } catch (error) {
@@ -203,18 +216,43 @@ export function PageEdit() {
         <Button primary small disabled={saving} onClick={() => void save()}>{t('保存', 'Save')}</Button>
       </div>
       <div className="pcard" style={{ padding: 20, display: 'grid', gap: 14 }}>
-        <Input placeholder={t('页面标题', 'Page title')} value={title} onChange={(event) => setTitle(event.target.value)} style={{ fontSize: 24, fontFamily: 'var(--serif)' }} />
+        <div className="ed-lang-tabs" role="tablist" aria-label={t('页面语言', 'Page language')}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={langTab === 'zh'}
+            className={langTab === 'zh' ? 'on' : ''}
+            onClick={() => setLangTab('zh')}
+          >
+            {t('中文', 'Chinese')}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={langTab === 'en'}
+            className={langTab === 'en' ? 'on' : ''}
+            onClick={() => setLangTab('en')}
+          >
+            English
+          </button>
+        </div>
+        <Input
+          placeholder={langTab === 'zh' ? t('页面标题', 'Page title') : t('English title…', 'English title…')}
+          value={activeTitle}
+          onChange={(event) => setActiveTitle(event.target.value)}
+          style={{ fontSize: 24, fontFamily: 'var(--serif)' }}
+        />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
           <textarea
             className="inp box"
             style={{ minHeight: 420 }}
-            value={content}
-            onChange={(event) => setContent(event.target.value)}
-            placeholder={t('内容（纯文本 / 后续可扩展）', 'Content (plain text for now)')}
+            value={activeContent}
+            onChange={(event) => setActiveContent(event.target.value)}
+            placeholder={langTab === 'zh' ? t('页面内容（Markdown）', 'Page content (Markdown)') : t('English content…', 'English content…')}
           />
           <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', overflow: 'auto', maxHeight: 480 }}>
             <ImageGroup>
-              <ContentView text={content} trusted />
+              <ContentView text={activeContent} trusted />
             </ImageGroup>
           </div>
         </div>
@@ -227,9 +265,17 @@ export function NewPage() {
   const { t } = useI18n()
   const navigate = useNavigate()
   const toast = useToast()
+  const [langTab, setLangTab] = useState<'zh' | 'en'>('zh')
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
+  const [titleEN, setTitleEN] = useState('')
+  const [contentEN, setContentEN] = useState('')
   const [saving, setSaving] = useState(false)
+
+  const activeTitle = langTab === 'zh' ? title : titleEN
+  const setActiveTitle = langTab === 'zh' ? setTitle : setTitleEN
+  const activeContent = langTab === 'zh' ? content : contentEN
+  const setActiveContent = langTab === 'zh' ? setContent : setContentEN
 
   const save = async () => {
     if (!title.trim()) {
@@ -238,7 +284,7 @@ export function NewPage() {
     }
     setSaving(true)
     try {
-      await blog.createPage({ title: title.trim(), content })
+      await blog.createPage({ title: title.trim(), content, titleEn: titleEN, contentEn: contentEN })
       toast(t('页面已创建', 'Page created'))
       navigate('/admin/pages')
     } catch (error) {
@@ -256,18 +302,43 @@ export function NewPage() {
         <Button primary small disabled={saving} onClick={() => void save()}>{t('保存', 'Save')}</Button>
       </div>
       <div className="pcard" style={{ padding: 20, display: 'grid', gap: 14 }}>
-        <Input placeholder={t('页面标题', 'Page title')} value={title} onChange={(event) => setTitle(event.target.value)} style={{ fontSize: 24, fontFamily: 'var(--serif)' }} />
+        <div className="ed-lang-tabs" role="tablist" aria-label={t('页面语言', 'Page language')}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={langTab === 'zh'}
+            className={langTab === 'zh' ? 'on' : ''}
+            onClick={() => setLangTab('zh')}
+          >
+            {t('中文', 'Chinese')}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={langTab === 'en'}
+            className={langTab === 'en' ? 'on' : ''}
+            onClick={() => setLangTab('en')}
+          >
+            English
+          </button>
+        </div>
+        <Input
+          placeholder={langTab === 'zh' ? t('页面标题', 'Page title') : t('English title…', 'English title…')}
+          value={activeTitle}
+          onChange={(event) => setActiveTitle(event.target.value)}
+          style={{ fontSize: 24, fontFamily: 'var(--serif)' }}
+        />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
           <textarea
             className="inp box"
             style={{ minHeight: 420 }}
-            value={content}
-            onChange={(event) => setContent(event.target.value)}
-            placeholder={t('内容（纯文本 / 后续可扩展）', 'Content (plain text for now)')}
+            value={activeContent}
+            onChange={(event) => setActiveContent(event.target.value)}
+            placeholder={langTab === 'zh' ? t('页面内容（Markdown）', 'Page content (Markdown)') : t('English content…', 'English content…')}
           />
           <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius)', overflow: 'auto', maxHeight: 480 }}>
             <ImageGroup>
-              <ContentView text={content} trusted />
+              <ContentView text={activeContent} trusted />
             </ImageGroup>
           </div>
         </div>

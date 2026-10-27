@@ -49,7 +49,7 @@ export default function MediaPicker({
       const uploaded = await blog.uploadMedia(files)
       onChange([...items, ...uploaded])
     } catch (error) {
-      toast(getErrorMessage(error, '上传失败'))
+      toast(getErrorMessage(error, t('上传失败', 'Upload failed')))
     } finally {
       setBusy(false)
       if (inputRef.current) inputRef.current.value = ''

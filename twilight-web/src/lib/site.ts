@@ -24,8 +24,16 @@
 import { useEffect, useState } from 'react'
 import { blog } from './client'
 import { setSiteDescription } from './head'
+import { getLocale, useLocale, type Locale } from './i18n'
+import { applyBorderRadius, applyPostBannerHeight, notifyShellFlagsChanged } from './flags'
 
 const FALLBACK_DESCRIPTION = '以代码为笔，以时间为墨。'
+const FALLBACK_DESCRIPTION_EN = 'Written in code, sealed in time.'
+
+/** 站长未填写描述时的内置文案；与界面语言一致，避免英文界面出现中文句子。 */
+function fallbackDescription(locale: Locale): string {
+  return locale === 'en' ? FALLBACK_DESCRIPTION_EN : FALLBACK_DESCRIPTION
+}
 
 /** 与后端 viewmodel.MaxSiteDescriptionLength 镜像；改一处必须改另一处。 */
 const DESCRIPTION_MAX = 200
@@ -45,6 +53,8 @@ const DEFAULT_POST_BANNER_HEIGHT = 400
 /** 站点公开信息的一份快照。两个字段都可能为空串（未设置 / 后端只回了其中一项）。 */
 export interface SiteMeta {
   description: string
+  /** 英文站点描述；空串表示没有英文版，英文界面回退中文描述。 */
+  descriptionEn: string
   /** 站长头像的站内地址；空串表示没设，调用方回退到首字母占位块。 */
   avatarUrl: string
   /** 代码块最大显示行数；决定块级代码框的限高（超出部分块内滚动）。 */
@@ -68,6 +78,7 @@ export interface SiteMeta {
 /** 请求失败时的快照。刻意不进缓存（见 loadMeta），只是给调用方一个可用的值。 */
 const EMPTY_META: SiteMeta = {
   description: '',
+  descriptionEn: '',
   avatarUrl: '',
   codeBlockMaxLines: DEFAULT_CODE_LINES,
   homePageSize: DEFAULT_HOME_PAGE_SIZE,
@@ -91,6 +102,7 @@ const listeners = new Set<(value: SiteMeta) => void>()
  */
 function toMeta(settings: {
   description?: string
+  description_en?: string
   avatar_url?: string
   code_block_max_lines?: number
   home_page_size?: number
@@ -100,6 +112,7 @@ function toMeta(settings: {
 }): SiteMeta {
   return {
     description: settings.description ?? '',
+    descriptionEn: settings.description_en ?? '',
     avatarUrl: settings.avatar_url ?? '',
     // 后端该字段恒输出；?? 兜底的是「更旧的服务端」——此时与失败同路，
     // 回退到与服务端默认值一致的行数，保证两侧渲染口径一致。
@@ -127,17 +140,21 @@ function toMeta(settings: {
 function publish(next: SiteMeta) {
   cache = next
   // 站点描述是「网站描述」这个设置唯一的对外落点，标题与 meta 都跟着它走。
-  setSiteDescription(next.description || FALLBACK_DESCRIPTION)
+  // 这里也按当前语言取用：英文界面首次加载时若先写中文描述，没有页面级摘要的
+  // 页面（归档 / 标签 / 搜索）会在下一次订阅者 effect 之前短暂带着中文 meta。
+  const locale = getLocale()
+  const localized = locale === 'en'
+    ? (next.descriptionEn || next.description)
+    : next.description
+  setSiteDescription(localized || fallbackDescription(locale))
   for (const listener of listeners) listener(next)
 }
 
 /**
- * 拉取站点公开信息（带模块级缓存，并发共享同一个 in-flight 请求）。
- *
- * 失败时返回 EMPTY_META **且不写缓存**：一次网络抖动不该把「没有描述、没有头像」
- * 变成这次会话的定论，下一个订阅者应该还有机会重试。
+ * 发起一次站点公开信息请求：带模块级缓存，并发共享同一个 in-flight 请求。
+ * 失败时 reject 且不写缓存——由调用方决定「回退默认值」还是「明确报错」。
  */
-function loadMeta(): Promise<SiteMeta> {
+function requestMeta(): Promise<SiteMeta> {
   if (cache !== null) return Promise.resolve(cache)
   if (inFlight) return inFlight
 
@@ -148,11 +165,20 @@ function loadMeta(): Promise<SiteMeta> {
       publish(meta)
       return meta
     })
-    .catch(() => EMPTY_META)
     .finally(() => {
       inFlight = null
     })
   return inFlight
+}
+
+/**
+ * 拉取站点公开信息（公开页面用）。
+ *
+ * 失败时返回 EMPTY_META **且不写缓存**：一次网络抖动不该把「没有描述、没有头像」
+ * 变成这次会话的定论，下一个订阅者应该还有机会重试。
+ */
+function loadMeta(): Promise<SiteMeta> {
+  return requestMeta().catch(() => EMPTY_META)
 }
 
 /** 拉取站点描述；失败时返回空串，调用方用内置文案兜底。 */
@@ -160,9 +186,14 @@ export function loadSiteDescription(): Promise<string> {
   return loadMeta().then((meta) => meta.description)
 }
 
-/** 拉取完整的站点公开快照（设置页用它同时初始化描述与代码块行数）。 */
+/**
+ * 拉取完整的站点公开快照（设置页用它同时初始化描述与代码块行数）。
+ *
+ * 与 loadMeta 不同，这里**不兜底**：设置页如果拿 EMPTY_META 当服务端现值，
+ * 站长改一个字段再保存就会把其余设置全部写成默认值。失败应当被明确看到。
+ */
 export function loadSiteMeta(): Promise<SiteMeta> {
-  return loadMeta()
+  return requestMeta()
 }
 
 /**
@@ -196,6 +227,7 @@ export function refreshSiteMeta(): Promise<SiteMeta> {
  */
 export async function saveSiteSettings(input: {
   description: string
+  descriptionEn?: string
   codeBlockMaxLines?: number
   homePageSize?: number
   borderRadius?: number
@@ -205,6 +237,7 @@ export async function saveSiteSettings(input: {
 }): Promise<SiteMeta> {
   const saved = await blog.updateSite({
     description: input.description,
+    description_en: input.descriptionEn,
     code_block_max_lines: input.codeBlockMaxLines,
     home_page_size: input.homePageSize,
     border_radius: input.borderRadius,
@@ -215,7 +248,55 @@ export async function saveSiteSettings(input: {
   // 用服务端返回的整份快照覆盖：它同时带着头像，因此改描述不会把头像从缓存里抹掉。
   const meta = toMeta(saved)
   publish(meta)
+  syncShellFlags(saved)
   return meta
+}
+
+/**
+ * 把保存后的开关与外观参数写回外壳属性。
+ *
+ * 这些值平时由服务端渲染进 <html data-*>，是「首屏决策」通道（理由见
+ * lib/flags.ts）。问题在于：站长在同一个 SPA 会话里保存设置后，属性还是
+ * 打开页面时的旧值——从后台回到前台，导航与页脚仍按旧的开关心渲染，
+ * 圆角/头图也要等一次硬刷新才生效。保存成功后把新值写回属性，下一次
+ * 挂载（例如从后台返回公开站点）就能立刻读到正确值。
+ *
+ * 已挂载的组件不会因为 dataset 变化而重渲染；这里解决的是「同一会话内
+ * 后续导航」而不是「当前这一帧」——后者由描述/头像的订阅机制负责。
+ *
+ * 只写**服务端确实返回了**的字段：旧二进制的响应可能缺少这些键（升级时前端
+ * 先于后端），此时 HTML 里由服务端渲染的原值才是对的，不能拿本地默认值覆盖。
+ */
+function syncShellFlags(saved: {
+  moments_enabled?: boolean
+  home_page_size?: number
+  border_radius?: number
+  post_banner_height?: number
+}) {
+  const root = document.documentElement
+  let changed = false
+  if (saved.moments_enabled !== undefined) {
+    root.dataset.momentsEnabled = String(saved.moments_enabled)
+    changed = true
+  }
+  if (saved.home_page_size !== undefined) {
+    root.dataset.homePageSize = String(saved.home_page_size)
+    changed = true
+  }
+  if (saved.border_radius !== undefined) {
+    root.dataset.borderRadius = String(saved.border_radius)
+    applyBorderRadius()
+    changed = true
+  }
+  if (saved.post_banner_height !== undefined) {
+    root.dataset.postBannerHeight = String(saved.post_banner_height)
+    applyPostBannerHeight()
+    changed = true
+  }
+  // dataset 变了不会让已挂载的组件重渲染（React 不观察 DOM 属性）。
+  // 后台侧栏的「微语」菜单正挂在同一个会话里，保存后必须立即跟着开关走；
+  // 只在确实写入了某个字段时通知，避免把「旧后端缺字段」当成一次变更。
+  if (changed) notifyShellFlagsChanged()
 }
 
 /** 保存新描述并同步所有订阅者。语义与 saveSiteSettings 相同，只写描述一项。 */
@@ -248,18 +329,31 @@ export function useSiteCodeLines(): number {
  * 返回内置文案，页面始终有话可说。
  */
 export function useSiteDescription(): string {
-  const [value, setValue] = useState(() => cache?.description ?? '')
+  const locale = useLocale()
+  const [meta, setMeta] = useState<SiteMeta | null>(cache)
 
   useEffect(() => {
-    const listener = (next: SiteMeta) => setValue(next.description)
+    const listener = (next: SiteMeta) => setMeta(next)
     listeners.add(listener)
-    void loadSiteDescription().then((loaded) => setValue(loaded))
+    void loadMeta().then(setMeta)
     return () => {
       listeners.delete(listener)
     }
   }, [])
 
-  return value || FALLBACK_DESCRIPTION
+  // 英文界面优先取英文描述；没有英文版时回退中文（与文章/页面的回退规则一致）。
+  const localized = locale === 'en'
+    ? (meta?.descriptionEn || meta?.description || '')
+    : (meta?.description || '')
+  const value = localized || fallbackDescription(locale)
+
+  // 站点描述也是不指定摘要的页面的 meta 兜底；切换语言时同步过去，
+  // 否则英文界面的 meta 仍会停在上一种语言。
+  useEffect(() => {
+    setSiteDescription(value)
+  }, [value])
+
+  return value
 }
 
 /**
@@ -311,6 +405,7 @@ export {
   DEFAULT_CODE_LINES,
   DEFAULT_HOME_PAGE_SIZE,
   FALLBACK_DESCRIPTION,
+  FALLBACK_DESCRIPTION_EN,
 }
 
 /**

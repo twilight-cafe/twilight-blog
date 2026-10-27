@@ -28,6 +28,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // ModeEnv 是「本次进程要扮演哪种假工具」的环境变量名。
@@ -49,7 +50,16 @@ const (
 	// ModeSilentVorbis 参数里含 libopus 就失败，否则退出码 0 且不产出文件。
 	// 它对应「回退那次也没有产物」——那条检查与首编码器那次是两处独立的代码。
 	ModeSilentVorbis = "silent-vorbis"
+	// ModeSleep 先落一个标记文件、停一会儿，再产出结果。
+	//
+	// 存在的理由只有一个：转码槽位是并发闸门，要证明「占满时第三个请求立刻
+	// 得到 503」，就必须让前两个真的停在转码里。真实的假工具结束得太快，
+	// 那个窗口靠时序碰运气；标记文件让测试知道子进程确实起来了。
+	ModeSleep = "sleep"
 )
+
+// MarkerEnv 指向一个目录时，ModeSleep 会在里面建一个以自身 PID 命名的文件。
+const MarkerEnv = "BLOG_TESTTOOL_MARKER"
 
 // fakePayload 是假工具产出的文件内容。
 //
@@ -171,6 +181,10 @@ func runFake(mode string, args []string) int {
 			return reportMissingOpus()
 		}
 		return 0
+	case ModeSleep:
+		markStarted()
+		time.Sleep(500 * time.Millisecond)
+		return writeOutput(args)
 	default:
 		fmt.Fprintf(os.Stderr, "testtool: unknown mode %q\n", mode)
 		return 78
@@ -179,6 +193,19 @@ func runFake(mode string, args []string) int {
 
 // opusMarker 是 ffmpeg 命令里用来识别「这次是首编码器」的片段。
 const opusMarker = "libopus"
+
+// markStarted 在 MarkerEnv 指向的目录里留下一个以本进程 PID 命名的空文件。
+// 写失败只报不拦：这是给测试用的信号，不该改变假工具的行为。
+func markStarted() {
+	dir := os.Getenv(MarkerEnv)
+	if dir == "" {
+		return
+	}
+	path := filepath.Join(dir, fmt.Sprintf("pid-%d", os.Getpid()))
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "testtool: write the start marker: %v\n", err)
+	}
+}
 
 // reportMissingOpus 模拟一个不带 libopus 的 ffmpeg 构建。
 func reportMissingOpus() int {

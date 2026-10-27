@@ -53,11 +53,13 @@ function renderRouted(ui: React.ReactElement, route: string, pattern: string) {
   )
 }
 
-function renderPlain(ui: React.ReactElement) {
+function renderPlain(ui: React.ReactElement, route = '/') {
   return render(
-    <ToastProvider>
-      <DialogProvider>{ui}</DialogProvider>
-    </ToastProvider>,
+    <MemoryRouter initialEntries={[route]}>
+      <ToastProvider>
+        <DialogProvider>{ui}</DialogProvider>
+      </ToastProvider>
+    </MemoryRouter>,
   )
 }
 
@@ -180,7 +182,7 @@ describe('Editor / PagesAdmin / Posts / Profile / Register / ForgotPassword 剩�
     fireEvent.change(second.container.querySelector('textarea.mds') as HTMLTextAreaElement, { target: { value: '新正文' } })
     client.blog.updateArticle.mockResolvedValueOnce({ message: 'ok' })
     fireEvent.click((Array.from(second.container.querySelectorAll('button')) as HTMLButtonElement[]).find((b) => b.textContent === '保存') as HTMLButtonElement)
-    await waitFor(() => expect(client.blog.updateArticle).toHaveBeenCalledWith(7, { title: '旧文', content: '新正文', titleEn: '', contentEn: '', aiGenerated: false, tags: ['Go'], coverMediaId: null, publishedAt: NOW / 1000 }))
+    await waitFor(() => expect(client.blog.updateArticle).toHaveBeenCalledWith(7, { title: '旧文', content: '新正文', titleEn: '', contentEn: '', aiGenerated: false, aiGeneratedEn: false, tags: ['Go'], coverMediaId: null, publishedAt: NOW / 1000 }))
   })
 
   it('Posts：删除失败 toast；trash→active 切回；全选与取消', async () => {

@@ -71,7 +71,7 @@ func (h *PageHandler) Create(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	page, err := h.service.Create(c.Request().Context(), req.Title, req.Content)
+	page, err := h.service.Create(c.Request().Context(), req.Title, req.TitleEN, req.Content, req.ContentEN)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to create page")
 	}
@@ -95,7 +95,7 @@ func (h *PageHandler) Update(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
 
-	page, err := h.service.Update(c.Request().Context(), id, req.Title, req.Content)
+	page, err := h.service.Update(c.Request().Context(), id, req.Title, req.TitleEN, req.Content, req.ContentEN)
 	if err != nil {
 		if errors.Is(err, model.ErrPageNotFound) {
 			return echo.NewHTTPError(http.StatusNotFound, "page not found")

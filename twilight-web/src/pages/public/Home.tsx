@@ -23,6 +23,7 @@ import { usePagerMotion } from '../../lib/motion'
 import { useDelayedLoading } from '../../lib/loading'
 import { useI18n, useLocale } from '../../lib/i18n'
 import { articleContent, articleTags, articleTitle } from '../../lib/localize'
+import { usePageParam } from '../../lib/page-param'
 
 export default function Home() {
   const { t } = useI18n()
@@ -40,7 +41,8 @@ export default function Home() {
     description,
     jsonLd: websiteJsonLd('Twilight', description, toAbsoluteUrl(canonicalPath)),
   })
-  const [page, setPage] = useState(1)
+  // 页码存在 URL 的 ?page= 里：从第 N 页点进文章再后退，回来仍是第 N 页。
+  const [page, setPage] = usePageParam()
   // 屏幕上真正显示的那一页。点击页码后旧列表先退场，180ms 后才换成新页；
   // 请求不等这 180ms（下面仍是点到的 page 一变就发），先到的数据在这里等着。
   const { page: shownPage, ref: listRef } = usePagerMotion(page)

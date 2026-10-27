@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -205,6 +206,30 @@ func TestRecordArgsKeepsGoingWhenTheLogCannotBeOpened(t *testing.T) {
 	if _, err := os.Stat(out); err != nil {
 		t.Fatalf("日志写不进去不该影响产物: %v", err)
 	}
+}
+
+// TestMarkStarted covers the signal used by the transcode-slot tests. Without a
+// marker directory it must be a no-op; with one it must create the file; and an
+// unwritable directory must not make the fake tool fail.
+func TestMarkStarted(t *testing.T) {
+	t.Run("no marker directory", func(t *testing.T) {
+		t.Setenv(MarkerEnv, "")
+		markStarted()
+	})
+
+	t.Run("marker directory", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv(MarkerEnv, dir)
+		markStarted()
+		if _, err := os.Stat(filepath.Join(dir, "pid-"+strconv.Itoa(os.Getpid()))); err != nil {
+			t.Fatalf("the marker was not written: %v", err)
+		}
+	})
+
+	t.Run("unwritable marker directory", func(t *testing.T) {
+		t.Setenv(MarkerEnv, filepath.Join(t.TempDir(), "missing"))
+		markStarted() // must not panic or exit
+	})
 }
 
 // TestFakeConfiguresTheProcess 确认 Fake 同时做了两件事：把模式写进本进程环境

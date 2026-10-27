@@ -88,6 +88,17 @@ type restoreOptions struct {
 }
 
 // runRestoreCommand 执行 restore 子命令，返回进程退出码。
+var (
+	configureRestoreLogging = logging.Configure
+	mkdirTempRestore        = os.MkdirTemp
+	stagedSettingsPathFn    = stagedSettingsPath
+	readRestoreSettingsMap  = readSettingsMap
+	setSettingsMediaDirFn   = setSettingsMediaDir
+	relativePathRestore     = backup.RelativePath
+	swapInRestoreFn         = swapIn
+	removeSidecarsFn        = removeSQLiteSidecars
+)
+
 func runRestoreCommand(args []string) int {
 	opts, err := parseRestoreArgs(args)
 	if err != nil {
@@ -95,7 +106,7 @@ func runRestoreCommand(args []string) int {
 		return exitUsageOrValidation
 	}
 
-	if err := logging.Configure(""); err != nil {
+	if err := configureRestoreLogging(""); err != nil {
 		fmt.Fprintf(stderr(), "configure logging: %v\n", err)
 		return exitFailure
 	}
@@ -218,7 +229,7 @@ func performRestore(opts restoreOptions) error {
 	// 解包到工作目录下的临时目录，而不是系统临时目录：与最终位置同卷，
 	// 后面的 rename 才是原子的（媒体目录可能挂在另一块盘上，那种情况由
 	// swapIn 退化成拷贝）。
-	staging, err := os.MkdirTemp(".", ".restore-")
+	staging, err := mkdirTempRestore(".", ".restore-")
 	if err != nil {
 		return fmt.Errorf("create a staging directory: %w", err)
 	}
@@ -425,17 +436,17 @@ func applyRestore(staging string, manifest backup.Manifest, opts restoreOptions)
 		return err
 	}
 
-	stagedSettings, err := stagedSettingsPath(staging, manifest)
+	stagedSettings, err := stagedSettingsPathFn(staging, manifest)
 	if err != nil {
 		return err
 	}
 	restoresSettings := stagedSettings != "" && !opts.keepSettings
 	if restoresSettings {
-		local, err := readSettingsMap(settingsPath)
+		local, err := readRestoreSettingsMap(settingsPath)
 		if err != nil {
 			return err
 		}
-		archive, err := readSettingsMap(stagedSettings)
+		archive, err := readRestoreSettingsMap(stagedSettings)
 		if err != nil {
 			return err
 		}
@@ -447,7 +458,7 @@ func applyRestore(staging string, manifest backup.Manifest, opts restoreOptions)
 		if archived := stringAt(archive, "media_dir"); archived != mediaDir {
 			fmt.Fprintf(stdout(), "Note: the archive's media_dir is %q; media is restored into this host's %q.\n",
 				archived, mediaDir)
-			if err := setSettingsMediaDir(stagedSettings, mediaDir); err != nil {
+			if err := setSettingsMediaDirFn(stagedSettings, mediaDir); err != nil {
 				return err
 			}
 		}
@@ -458,7 +469,7 @@ func applyRestore(staging string, manifest backup.Manifest, opts restoreOptions)
 	var leftovers []string
 
 	swap := func(source, dest, label string) error {
-		kept, err := swapIn(source, dest, keepOld)
+		kept, err := swapInRestoreFn(source, dest, keepOld)
 		if err != nil {
 			return fmt.Errorf("restore %s: %w", label, err)
 		}
@@ -471,7 +482,7 @@ func applyRestore(staging string, manifest backup.Manifest, opts restoreOptions)
 
 	restored := 0
 	for _, part := range manifest.Parts {
-		rel, err := backup.RelativePath(part.Path)
+		rel, err := relativePathRestore(part.Path)
 		if err != nil {
 			return err
 		}
@@ -488,7 +499,7 @@ func applyRestore(staging string, manifest backup.Manifest, opts restoreOptions)
 			}
 		case backup.PartDatabase:
 			// 顺序不能反：陈旧的 WAL 必须在新的 blog.db 落地**之前**消失。
-			if err := removeSQLiteSidecars(databasePath); err != nil {
+			if err := removeSidecarsFn(databasePath); err != nil {
 				return err
 			}
 			if err := swap(source, databasePath, databasePath); err != nil {

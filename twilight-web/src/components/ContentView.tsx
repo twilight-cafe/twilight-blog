@@ -63,6 +63,10 @@ async function writeClipboard(text: string): Promise<void> {
   }
 }
 
+// 每个复制按钮自己的还原计时器。连点两次时，第一次的计时器必须被取消，
+// 否则它会在第二次成功反馈尚未结束时把文案提前改回「复制」。
+const copyTimers = new WeakMap<HTMLButtonElement, number>()
+
 // 根级导出供测试直呼（与 markdown.ts 探针同一先例）：root 为空的守卫在渲染
 // 路径不可达（effect 只在挂载后跑），直接调用才可测；pre 已包裹 / 无 code 子元素
 // 的跳过分支也只能用手搓 DOM 触达。
@@ -70,7 +74,23 @@ export function enhanceCodeBlocks(root: HTMLElement | null, timers: Set<number>)
   if (!root) return
   const pres = root.querySelectorAll<HTMLPreElement>('pre')
   pres.forEach((pre) => {
-    if (pre.parentElement?.classList.contains('code-block')) return
+    if (pre.parentElement?.classList.contains('code-block')) {
+      // 本函数每次提交都会重跑（见组件里 layout effect 的说明）。语言切换后，
+      // 已经包好的按钮也要换成新文案，否则它会一直停在挂载时那门语言。
+      // 复制成功的短暂反馈（.copied）不覆盖，交给还原定时器处理。
+      const existing = pre.parentElement.querySelector<HTMLButtonElement>('.code-copy')
+      if (existing && !existing.classList.contains('copied')) {
+        existing.textContent = t('复制', 'Copy')
+      }
+      if (existing) {
+        // 文案只在非 copied 时更新；title / aria-label 却应当始终跟着语言走，
+        // 否则「已复制」的 1.6 秒里切到英文，读屏与悬浮提示会停在旧语言。
+        const title = t('复制代码', 'Copy code')
+        existing.title = title
+        existing.setAttribute('aria-label', title)
+      }
+      return
+    }
 
     const code = pre.querySelector('code')
     if (!code) return
@@ -101,11 +121,19 @@ export function enhanceCodeBlocks(root: HTMLElement | null, timers: Set<number>)
       } catch {
         copyButton.textContent = t('复制失败', 'Copy failed')
       }
+      // 上一次点击留下的还原计时器先取消，否则它会在这次反馈结束前触发。
+      const previous = copyTimers.get(copyButton)
+      if (previous !== undefined) {
+        window.clearTimeout(previous)
+        timers.delete(previous)
+      }
       const timer = window.setTimeout(() => {
+        copyTimers.delete(copyButton)
         timers.delete(timer)
         copyButton.textContent = t('复制', 'Copy')
         copyButton.classList.remove('copied')
       }, 1600)
+      copyTimers.set(copyButton, timer)
       timers.add(timer)
     })
 
@@ -279,14 +307,20 @@ export default function ContentView({ text, className = '', trusted = false }: C
   // 还没拿到渲染器时 ref.current 是 null（此时渲染的是占位），enhanceCodeBlocks
   // / enhanceImages 的空 root 守卫正好接住这一步。
   useLayoutEffect(() => {
-    const pending = timers.current
-    enhanceCodeBlocks(ref.current, pending)
+    enhanceCodeBlocks(ref.current, timers.current)
     enhanceImages(ref.current, imageGroup)
+  })
+
+  // 复制反馈的计时器只在**卸载**时清。不能把这段清理挂在上面的无依赖
+  // layout effect 上：它每次提交都会先跑 cleanup，于是任何一次父级重渲染
+  // 都会提前取消计时器，按钮就可能永远停在「已复制」。
+  useEffect(() => {
+    const pending = timers.current
     return () => {
       for (const timer of pending) window.clearTimeout(timer)
       pending.clear()
     }
-  })
+  }, [])
 
   const shellProps = {
     className: `plain-body ${className}`.trim(),

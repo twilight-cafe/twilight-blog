@@ -1,6 +1,6 @@
 {
   "name": "twilight-blog-api",
-  "version": "0.3.0",
+  "version": "1.3.3",
   "description": "A complete TypeScript client wrapper for the twilight-blog HTTP API",
   "type": "module",
   "main": "./dist/index.cjs",

@@ -308,14 +308,8 @@ func (h *AuthHandler) UpdateOwnProfile(c echo.Context) error {
 			return mapUserAuthError(err)
 		}
 	}
-	if user == nil {
-		// Nothing to change: answer with the current state rather than 400, so a
-		// no-op request is idempotent instead of an error.
-		user, err = h.users.GetByID(c.Request().Context(), *sess.UserID)
-		if err != nil {
-			return mapUserAuthError(err)
-		}
-	}
+	// 走到这里至少有一个字段被处理过：viewmodel 的 Validate 会拒绝
+	// 「两个字段都没传」的请求，所以不存在 user == nil 的中间态。
 	return c.JSON(http.StatusOK, viewmodel.NewUserResponse(user))
 }
 

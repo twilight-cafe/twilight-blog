@@ -1,7 +1,7 @@
 // public-pages-1.test.tsx —— NotFound / Home / Archive / Moments / PageDetail
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, Link } from 'react-router-dom'
 import NotFound from '../pages/public/NotFound'
 import Home from '../pages/public/Home'
 import Archive from '../pages/public/Archive'
@@ -9,6 +9,7 @@ import Moments from '../pages/public/Moments'
 import PageDetail from '../pages/public/PageDetail'
 import { ToastProvider } from '../lib/toast'
 import { fmtDateTime } from '../lib/format'
+import { setLocale } from '../lib/i18n'
 import { getSharedClientMock, NOW, makeArticle, makeComment, makeMedia, makeMoment, makePage } from './helpers'
 
 vi.mock('../lib/client', async () => {
@@ -89,6 +90,19 @@ describe('Home', () => {
     await waitFor(() => expect(screen.getByText('还没有文章')).toBeTruthy())
     expect(client.blog.listArticles).toHaveBeenLastCalledWith({ page: 2, pageSize: 12 })
     unmount()
+  })
+
+  it('页码从 URL 恢复：带 ?page=2 打开直接请求第 2 页，翻页后按新页码请求', async () => {
+    client.blog.listArticles.mockResolvedValue(paged([], 2, 3, 30))
+    renderPage(<Home />, '/?page=2', '/')
+
+    await waitFor(() => expect(client.blog.listArticles).toHaveBeenCalledWith({ page: 2, pageSize: 12 }))
+    // 分页器也要认这个页码，而不是停在 1。
+    expect(screen.getByRole('button', { name: 'Page 2' }).getAttribute('aria-current')).toBe('page')
+
+    client.blog.listArticles.mockResolvedValue(paged([], 3, 3, 30))
+    fireEvent.click(screen.getByRole('button', { name: 'Page 3' }))
+    await waitFor(() => expect(client.blog.listArticles).toHaveBeenCalledWith({ page: 3, pageSize: 12 }))
   })
 
   it('加载失败回退空态', async () => {
@@ -237,7 +251,19 @@ describe('Archive', () => {
     expect(text.indexOf('甲年第二篇')).toBeLessThan(text.indexOf('甲年文章'))
     expect(text.indexOf('甲年文章')).toBeLessThan(text.indexOf('乙年文章'))
     void order
-    expect(screen.getByText('Go')).toBeTruthy() // 首个标签 chip；空标签用占位 span
+    // 归档行不展示标签：即使文章带标签也不出现 chip。
+    expect(document.querySelector('.tl-row .chip')).toBeNull()
+  })
+
+  it('加载骨架与真实归档行一致：只有日期与标题两列', () => {
+    // 归档不再展示标签后，骨架若仍画第三根灰条，它会掉进 grid 的下一行，
+    // 在内容到达前先闪出一条并不存在的“标签行”。
+    client.blog.listArticles.mockImplementation(() => new Promise(() => {}))
+    const { container, unmount } = renderPage(<Archive />, '/archive', '/archive')
+    const row = container.querySelector('.skl-archive .tl-row')
+    expect(row).toBeTruthy()
+    expect(row?.children).toHaveLength(2)
+    unmount()
   })
 
   it('单页直接返回；失败回退空归档', async () => {
@@ -398,5 +424,51 @@ describe('PageDetail', () => {
     renderPage(<PageDetail />, '/pages/abc', '/pages/:id')
     await waitFor(() => expect(screen.getByText('404')).toBeTruthy())
     expect(client.blog.getPage).not.toHaveBeenCalled()
+  })
+
+  // 页面与文章共享同一套逐字段回退规则：只译了标题也要能切到英文标题，
+  // 同时正文继续显示中文，而不是变成空白。
+  it('切换语言：标题取英文、正文缺失时回退中文', async () => {
+    client.blog.getPage.mockResolvedValueOnce(makePage({
+      id: 12,
+      title: '关于本站',
+      content: '# 中文正文',
+      title_en: 'About this site',
+      content_en: '',
+    }))
+
+    renderPage(<PageDetail />, '/pages/12', '/pages/:id')
+    await waitFor(() => expect(screen.getByText('关于本站')).toBeTruthy())
+    expect(screen.getByText('中文正文')).toBeTruthy()
+
+    act(() => setLocale('en'))
+    await waitFor(() => expect(screen.getByText('About this site')).toBeTruthy())
+    expect(screen.queryByText('关于本站')).toBeNull()
+    expect(screen.getByText('中文正文')).toBeTruthy()
+  })
+
+  it('切换页面时旧请求晚到不覆盖新页面', async () => {
+    const first = deferred<ReturnType<typeof makePage>>()
+    const second = deferred<ReturnType<typeof makePage>>()
+    client.blog.getPage.mockImplementation((id: number) => (
+      id === 1 ? first.promise : second.promise
+    ) as never)
+
+    renderPage(<><PageDetail /><Link to="/pages/2">下一页</Link></>, '/pages/1', '/pages/:id')
+    await waitFor(() => expect(client.blog.getPage).toHaveBeenCalledWith(1))
+
+    fireEvent.click(screen.getByText('下一页'))
+    await waitFor(() => expect(client.blog.getPage).toHaveBeenCalledWith(2))
+
+    await act(async () => {
+      second.resolve(makePage({ id: 2, title: '页面二', content: '正文二' }))
+    })
+    await waitFor(() => expect(screen.getByText('页面二')).toBeTruthy())
+
+    await act(async () => {
+      first.resolve(makePage({ id: 1, title: '页面一', content: '正文一' }))
+    })
+    expect(screen.queryByText('页面一')).toBeNull()
+    expect(screen.getByText('页面二')).toBeTruthy()
   })
 })

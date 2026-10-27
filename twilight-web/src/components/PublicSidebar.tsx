@@ -21,12 +21,17 @@ import type { CSSProperties } from 'react'
 import type { TocItem } from '../lib/markdown'
 import { buildNav, isNavActive } from '../lib/nav'
 import { useSiteDescription } from '../lib/site'
+import { useI18n, useLocale } from '../lib/i18n'
 import AuthorAvatar from './AuthorAvatar'
 import ModeToggle from './ModeToggle'
+import LanguageSwitcher from './LanguageSwitcher'
 
 export default function PublicSidebar({ pages, toc = [] }: { pages: Page[]; toc?: TocItem[] }) {
   const location = useLocation()
-  const navItems = buildNav(pages)
+  // 订阅语言：切换语言时侧栏自己重渲染，导航（含独立页面名）与目录标题跟着换文案。
+  const locale = useLocale()
+  const { t } = useI18n()
+  const navItems = buildNav(pages, locale)
   const description = useSiteDescription()
   // 目录的 id 列表按 toc 记忆：useScrollSpy 的 effect 依赖这个数组，内联
   // 新建的数组会让它每次渲染都重挂一遍监听。offset 用库的默认 96px（与
@@ -35,7 +40,7 @@ export default function PublicSidebar({ pages, toc = [] }: { pages: Page[]; toc?
   const activeId = useScrollSpy(ids)
 
   return (
-    <aside className="public-sidebar" aria-label="侧边栏">
+    <aside className="public-sidebar" aria-label={t('侧边栏', 'Sidebar')}>
       <div className="box home-all">
         <div className="author">
           <AuthorAvatar />
@@ -44,7 +49,7 @@ export default function PublicSidebar({ pages, toc = [] }: { pages: Page[]; toc?
             <p>{description}</p>
           </div>
         </div>
-        <nav className="homenav-row" aria-label="侧边栏导航">
+        <nav className="homenav-row" aria-label={t('侧边栏导航', 'Sidebar navigation')}>
           {navItems.map((item) => (
             <Link key={item.to} to={item.to} className={isNavActive(location.pathname, item.to) ? 'on' : ''}>
               {item.label}
@@ -54,16 +59,19 @@ export default function PublicSidebar({ pages, toc = [] }: { pages: Page[]; toc?
         <div className="tools">
           <span className="mono">TWILIGHT BLOG</span>
           <span className="sp" />
+          {/* 语言切换与亮/暗切换并排：两者都是「整站的显示偏好」，放在同一行
+              比把语言藏在页头更容易被找到；尺寸也保持一致（见 app.css）。 */}
+          <LanguageSwitcher />
           <ModeToggle />
         </div>
       </div>
       {toc.length > 0 ? (
         <div className="box toc-box">
           <div className="toc-head">
-            <b>目录</b>
+            <b>{t('目录', 'Contents')}</b>
             <span className="kicker">TOC</span>
           </div>
-          <nav className="toc-list" aria-label="文章目录">
+          <nav className="toc-list" aria-label={t('文章目录', 'Table of contents')}>
             {toc.map((item, index) => (
               <a
                 key={item.id}

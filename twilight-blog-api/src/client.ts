@@ -25,6 +25,8 @@ import { createSearchApi } from './endpoints/search';
 import type { SearchApi } from './endpoints/search';
 import { createSiteApi } from './endpoints/site';
 import type { SiteApi } from './endpoints/site';
+import { createTranslateApi } from './endpoints/translate';
+import type { TranslateApi } from './endpoints/translate';
 import type {
   AdminSiteSettingsResponse,
   Article,
@@ -60,11 +62,17 @@ import type {
   SiteSettingsInput,
   SiteSettingsResponse,
   Tag,
+  TranslateArticleInput,
+  TranslateArticleResult,
+  TranslateConfig,
+  TranslateModelList,
+  TranslateModelQuery,
   UpdateAdminProfileInput,
   UpdateArticleInput,
   UpdateMomentInput,
   UpdatePageInput,
   UpdateProfileInput,
+  UpdateTranslateConfigInput,
   UpdateUserInput,
   UserResponse,
 } from './types';
@@ -100,6 +108,7 @@ export class BlogClient {
   private readonly mediaApi: MediaApi;
   private readonly searchApi: SearchApi;
   private readonly siteApi: SiteApi;
+  private readonly translateApi: TranslateApi;
 
   constructor(options: BlogClientOptions) {
     this.http = new HttpClient(options.baseUrl, {
@@ -117,6 +126,7 @@ export class BlogClient {
     this.mediaApi = createMediaApi(this.http);
     this.searchApi = createSearchApi(this.http);
     this.siteApi = createSiteApi(this.http);
+    this.translateApi = createTranslateApi(this.http);
   }
 
   getBaseUrl(): string {
@@ -190,6 +200,23 @@ export class BlogClient {
   // 管理端站点设置：比公开快照多一个评论通知收件地址（仅站长可读）。
   getAdminSite(): Promise<AdminSiteSettingsResponse> {
     return this.siteApi.getAdminSite();
+  }
+
+  // AI 翻译（仅站长）：执行翻译与读写配置。配置响应不含密钥。
+  translateArticle(input: TranslateArticleInput): Promise<TranslateArticleResult> {
+    return this.translateApi.translateArticle(input);
+  }
+
+  getTranslateConfig(): Promise<TranslateConfig> {
+    return this.translateApi.getTranslateConfig();
+  }
+
+  updateTranslateConfig(input: UpdateTranslateConfigInput): Promise<TranslateConfig> {
+    return this.translateApi.updateTranslateConfig(input);
+  }
+
+  listTranslateModels(input?: TranslateModelQuery): Promise<TranslateModelList> {
+    return this.translateApi.listTranslateModels(input);
   }
 
   // 文章（列表/详情公开；增删改与回收站在 /api/admin 下，需登录）

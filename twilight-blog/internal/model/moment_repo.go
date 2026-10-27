@@ -37,7 +37,7 @@ func NewSQLiteMomentRepository(db *sql.DB) *SQLiteMomentRepository {
 
 func (r *SQLiteMomentRepository) Create(ctx context.Context, moment *Moment) error {
 	logging.Debugf("[moment-repo] Create called")
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := beginTxFn(r.db, ctx)
 	if err != nil {
 		return fmt.Errorf("begin create moment transaction: %w", err)
 	}
@@ -51,7 +51,7 @@ VALUES (?, ?, ?, NULL)
 		return fmt.Errorf("insert moment: %w", err)
 	}
 
-	id, err := res.LastInsertId()
+	id, err := lastInsertIDFn(res)
 	if err != nil {
 		return fmt.Errorf("get last insert id: %w", err)
 	}
@@ -61,7 +61,7 @@ VALUES (?, ?, ?, NULL)
 		return err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := commitTxFn(tx); err != nil {
 		return fmt.Errorf("commit create moment: %w", err)
 	}
 	return nil
@@ -71,7 +71,7 @@ VALUES (?, ?, ?, NULL)
 // WHERE 带 deleted_at IS NULL：回收站里的动态不可修改，这种情况返回 ErrMomentNotFound。
 func (r *SQLiteMomentRepository) Update(ctx context.Context, moment *Moment) error {
 	logging.Debugf("[moment-repo] Update called")
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := beginTxFn(r.db, ctx)
 	if err != nil {
 		return fmt.Errorf("begin update moment transaction: %w", err)
 	}
@@ -86,7 +86,7 @@ WHERE id = ? AND deleted_at IS NULL
 		return fmt.Errorf("update moment: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
 	}
@@ -98,7 +98,7 @@ WHERE id = ? AND deleted_at IS NULL
 		return err
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := commitTxFn(tx); err != nil {
 		return fmt.Errorf("commit update moment: %w", err)
 	}
 	return nil
@@ -131,7 +131,7 @@ WHERE id IN (` + strings.Join(placeholders, ", ") + `) AND deleted_at IS NULL
 		return 0, fmt.Errorf("soft delete moments: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
 	}
@@ -149,7 +149,7 @@ WHERE id = ? AND deleted_at IS NOT NULL
 		return fmt.Errorf("restore moment: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return fmt.Errorf("rows affected: %w", err)
 	}
@@ -186,7 +186,7 @@ WHERE id IN (` + strings.Join(placeholders, ", ") + `) AND deleted_at IS NOT NUL
 		return 0, fmt.Errorf("batch restore moments: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
 	}
@@ -228,7 +228,7 @@ WHERE id IN (`+strings.Join(placeholders, ", ")+`) AND deleted_at IS NOT NULL
 		return 0, fmt.Errorf("hard delete moments: %w", err)
 	}
 
-	n, err := res.RowsAffected()
+	n, err := rowsAffectedFn(res)
 	if err != nil {
 		return 0, fmt.Errorf("rows affected: %w", err)
 	}
@@ -294,7 +294,7 @@ LIMIT ? OFFSET ?
 			}
 			moments = append(moments, *moment)
 		}
-		if err := rows.Err(); err != nil {
+		if err := rowsErrFn(rows); err != nil {
 			return fmt.Errorf("iterate moments: %w", err)
 		}
 
@@ -340,7 +340,7 @@ LIMIT ? OFFSET ?
 			}
 			moments = append(moments, *moment)
 		}
-		if err := rows.Err(); err != nil {
+		if err := rowsErrFn(rows); err != nil {
 			return fmt.Errorf("iterate deleted moments: %w", err)
 		}
 
@@ -355,7 +355,7 @@ LIMIT ? OFFSET ?
 func scanMoment(row scanner) (*Moment, error) {
 	var moment Moment
 	var deletedAt sql.NullInt64
-	if err := row.Scan(
+	if err := scanValuesFn(row,
 		&moment.ID,
 		&moment.Content,
 		&moment.CreatedAt,
@@ -420,7 +420,7 @@ ORDER BY mm.created_at ASC, m.id ASC
 		}
 		media = append(media, *item)
 	}
-	if err := rows.Err(); err != nil {
+	if err := rowsErrFn(rows); err != nil {
 		return nil, fmt.Errorf("iterate moment media: %w", err)
 	}
 	return media, nil
@@ -469,13 +469,13 @@ ORDER BY mm.moment_id ASC, mm.created_at ASC, m.id ASC
 		var item Media
 		var raw mediaRow
 		dests := append([]any{&momentID}, raw.dests(&item)...)
-		if err := rows.Scan(dests...); err != nil {
+		if err := scanValuesFn(rows, dests...); err != nil {
 			return fmt.Errorf("scan moment media: %w", err)
 		}
 		raw.apply(&item)
 		byMoment[momentID] = append(byMoment[momentID], item)
 	}
-	if err := rows.Err(); err != nil {
+	if err := rowsErrFn(rows); err != nil {
 		return fmt.Errorf("iterate moments media: %w", err)
 	}
 

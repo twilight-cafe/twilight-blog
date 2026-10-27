@@ -5,8 +5,16 @@
 // 不做兜底则会让标题渲染成 undefined。
 
 import { describe, expect, it } from 'vitest'
-import type { Article } from 'twilight-blog-api'
-import { articleContent, articleTags, articleTitle, tagName } from '../lib/localize'
+import type { Article, Page } from 'twilight-blog-api'
+import {
+  articleAIGenerated,
+  articleContent,
+  articleTags,
+  articleTitle,
+  pageContent,
+  pageTitle,
+  tagName,
+} from '../lib/localize'
 
 function article(overrides: Partial<Article> = {}): Article {
   return {
@@ -16,6 +24,7 @@ function article(overrides: Partial<Article> = {}): Article {
     title_en: 'English title',
     content_en: 'English body',
     ai_generated: false,
+    ai_generated_en: false,
     created_at: 1_700_000_000,
     updated_at: 1_700_000_000,
     cover_media_id: null,
@@ -84,6 +93,43 @@ describe('articleTags', () => {
   })
 })
 
+describe('articleAIGenerated', () => {
+  it('只有英文标记：英文界面显示声明，中文界面不显示', () => {
+    const value = article({ ai_generated: false, ai_generated_en: true })
+    expect(articleAIGenerated(value, 'en')).toBe(true)
+    expect(articleAIGenerated(value, 'zh')).toBe(false)
+  })
+
+  it('只有中文标记：中文界面显示声明，英文界面不显示', () => {
+    const value = article({ ai_generated: true, ai_generated_en: false })
+    expect(articleAIGenerated(value, 'zh')).toBe(true)
+    expect(articleAIGenerated(value, 'en')).toBe(false)
+  })
+
+  it('两种语言都标记时两边都显示', () => {
+    const value = article({ ai_generated: true, ai_generated_en: true })
+    expect(articleAIGenerated(value, 'zh')).toBe(true)
+    expect(articleAIGenerated(value, 'en')).toBe(true)
+  })
+
+  it('两份都未标记时不显示声明', () => {
+    const value = article({ ai_generated: false, ai_generated_en: false })
+    expect(articleAIGenerated(value, 'zh')).toBe(false)
+    expect(articleAIGenerated(value, 'en')).toBe(false)
+  })
+
+  it('旧后端没有 ai_generated_en 时英文界面回退中文标记', () => {
+    const legacy = article({ ai_generated: true })
+    delete (legacy as Partial<Article>).ai_generated_en
+    expect(articleAIGenerated(legacy, 'zh')).toBe(true)
+    expect(articleAIGenerated(legacy, 'en')).toBe(true)
+
+    const clean = article({ ai_generated: false })
+    delete (clean as Partial<Article>).ai_generated_en
+    expect(articleAIGenerated(clean, 'en')).toBe(false)
+  })
+})
+
 describe('tagName', () => {
   it('中文界面取中文名', () => {
     expect(tagName({ name: '前端', name_en: 'Frontend' }, 'zh')).toBe('前端')
@@ -96,5 +142,44 @@ describe('tagName', () => {
   it('英文名缺失 / 空白时回退中文', () => {
     expect(tagName({ name: '前端', name_en: '' }, 'en')).toBe('前端')
     expect(tagName({ name: '前端', name_en: '   ' }, 'en')).toBe('前端')
+  })
+})
+
+describe('页面双语回退', () => {
+  function page(overrides: Partial<Page> = {}): Page {
+    return {
+      id: 1,
+      title: '关于',
+      content: '# 中文正文',
+      title_en: 'About',
+      content_en: '# English body',
+      created_at: 1_700_000_000,
+      updated_at: 1_700_000_000,
+      ...overrides,
+    }
+  }
+
+  it('中文界面一律取中文，即使英文存在', () => {
+    expect(pageTitle(page(), 'zh')).toBe('关于')
+    expect(pageContent(page(), 'zh')).toBe('# 中文正文')
+  })
+
+  it('英文界面标题与正文各自取英文', () => {
+    expect(pageTitle(page(), 'en')).toBe('About')
+    expect(pageContent(page(), 'en')).toBe('# English body')
+  })
+
+  it('只翻了标题的页面：正文单独回退中文，不显示空内容', () => {
+    const partial = page({ content_en: '' })
+    expect(pageTitle(partial, 'en')).toBe('About')
+    expect(pageContent(partial, 'en')).toBe('# 中文正文')
+  })
+
+  it('旧后端没有英文字段时整页回退中文', () => {
+    const legacy = page()
+    delete (legacy as Partial<Page>).title_en
+    delete (legacy as Partial<Page>).content_en
+    expect(pageTitle(legacy, 'en')).toBe('关于')
+    expect(pageContent(legacy, 'en')).toBe('# 中文正文')
   })
 })

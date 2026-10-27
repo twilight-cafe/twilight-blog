@@ -66,12 +66,12 @@ LIMIT ? OFFSET ?
 
 		for rows.Next() {
 			var tag Tag
-			if err := rows.Scan(&tag.ID, &tag.Name, &tag.NameEN, &tag.ArticleCount); err != nil {
+			if err := scanValuesFn(rows, &tag.ID, &tag.Name, &tag.NameEN, &tag.ArticleCount); err != nil {
 				return fmt.Errorf("scan tag: %w", err)
 			}
 			tags = append(tags, tag)
 		}
-		if err := rows.Err(); err != nil {
+		if err := rowsErrFn(rows); err != nil {
 			return fmt.Errorf("iterate tags: %w", err)
 		}
 		return nil
@@ -128,17 +128,14 @@ func (r *SQLiteTagRepository) ListArticlesByTag(ctx context.Context, tagID int64
 			return err
 		}
 
-		if err := q.QueryRowContext(ctx, `
-SELECT COUNT(a.id)
-FROM article_tags at
-JOIN articles a ON a.id = at.article_id AND a.deleted_at IS NULL
-WHERE at.tag_id = ?
-`, tagID).Scan(&total); err != nil {
+		count, err := countArticlesByTagFn(ctx, q, tagID)
+		if err != nil {
 			return fmt.Errorf("count articles by tag: %w", err)
 		}
+		total = count
 
 		rows, err := q.QueryContext(ctx, `
-SELECT a.id, a.title, a.content, a.title_en, a.content_en, a.ai_generated, a.created_at, a.updated_at, a.cover_media_id, a.deleted_at
+SELECT a.id, a.title, a.content, a.title_en, a.content_en, a.ai_generated, a.ai_generated_en, a.created_at, a.updated_at, a.cover_media_id, a.deleted_at
 FROM articles a
 JOIN article_tags at ON at.article_id = a.id
 WHERE at.tag_id = ? AND a.deleted_at IS NULL
@@ -157,7 +154,7 @@ LIMIT ? OFFSET ?
 			}
 			articles = append(articles, *article)
 		}
-		if err := rows.Err(); err != nil {
+		if err := rowsErrFn(rows); err != nil {
 			return fmt.Errorf("iterate articles by tag: %w", err)
 		}
 
@@ -176,17 +173,42 @@ func (r *SQLiteTagRepository) CountByTag(ctx context.Context, tagID int64) (int6
 		return 0, err
 	}
 
-	var count int64
-	if err := r.db.QueryRowContext(ctx, `
-SELECT COUNT(a.id)
-FROM article_tags at
-JOIN articles a ON a.id = at.article_id AND a.deleted_at IS NULL
-WHERE at.tag_id = ?
-`, tagID).Scan(&count); err != nil {
+	count, err := countArticlesByTagFn(ctx, r.db, tagID)
+	if err != nil {
 		return 0, fmt.Errorf("count articles by tag: %w", err)
 	}
 	return count, nil
 }
+
+// countArticlesByTag 是两个「按标签计数」调用点共用的查询。
+// 抽出来同时让「查询失败」这条分支只写一次、也只需要一个测试钩子。
+func countArticlesByTag(ctx context.Context, q queryRunner, tagID int64) (int64, error) {
+	var count int64
+	err := q.QueryRowContext(ctx, `
+SELECT COUNT(a.id)
+FROM article_tags at
+JOIN articles a ON a.id = at.article_id AND a.deleted_at IS NULL
+WHERE at.tag_id = ?
+`, tagID).Scan(&count)
+	return count, err
+}
+
+var countArticlesByTagFn = countArticlesByTag
+
+// tagNameOwner 查找「除自己之外，还有谁占着这个新名字」。
+// 返回 sql.ErrNoRows 表示名字可用；返回一个 id 表示重名。
+func tagNameOwner(ctx context.Context, q queryRunner, newName string, tagID int64) (int64, error) {
+	var existingID int64
+	err := q.QueryRowContext(ctx, `
+SELECT id
+FROM tags
+WHERE name = ? COLLATE NOCASE AND id <> ?
+LIMIT 1
+`, newName, tagID).Scan(&existingID)
+	return existingID, err
+}
+
+var tagNameOwnerFn = tagNameOwner
 
 // Rename 修改标签名。有三点值得注意：
 //
@@ -210,14 +232,9 @@ WHERE id = ?
 		return fmt.Errorf("get tag name: %w", err)
 	}
 
-	var existingID int64
-	err = r.db.QueryRowContext(ctx, `
-SELECT id
-FROM tags
-WHERE name = ? COLLATE NOCASE AND id <> ?
-LIMIT 1
-`, newName, tagID).Scan(&existingID)
+	existingID, err := tagNameOwnerFn(ctx, r.db, newName, tagID)
 	if err == nil {
+		_ = existingID
 		return ErrTagNameExists
 	}
 	if !errors.Is(err, sql.ErrNoRows) {

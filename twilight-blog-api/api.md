@@ -1043,8 +1043,12 @@ page is saved.
 | `q` | string | yes | Search query |
 | `page` | int | yes | Page number, starting at 1 |
 | `page_size` | int | yes | Number of items per page; max 12 |
+| `lang` | string | no | `zh` or `en`; defaults to `zh`. Only the titles and bodies of that language are matched. |
 
 **Response `200 OK`**
+
+Article hits carry the full set of required `Article` fields, including both
+language variants and the two independent AI declarations:
 
 ```json
 {
@@ -1054,17 +1058,28 @@ page is saved.
       "id": 1,
       "title": "Hello World",
       "content": "Welcome to my blog.",
+      "title_en": "Hello World",
+      "content_en": "Welcome to my blog.",
+      "ai_generated": false,
+      "ai_generated_en": true,
       "created_at": 1700000000,
       "updated_at": 1700000000,
-      "tags": ["hello"]
+      "cover_media_id": null,
+      "tags": ["hello"],
+      "tags_en": ["hello"]
     },
     {
       "type": "page",
       "id": 2,
       "title": "About",
       "content": "This is the about page.",
+      "title_en": "About",
+      "content_en": "This is the about page.",
+      "ai_generated": false,
+      "ai_generated_en": false,
       "created_at": 1700000000,
-      "updated_at": 1700000000
+      "updated_at": 1700000000,
+      "cover_media_id": null
     }
   ],
   "page": 1,
@@ -1073,6 +1088,9 @@ page is saved.
   "total_pages": 1
 }
 ```
+
+Page hits do not carry `tags` / `tags_en`; the two AI flags are always present and
+are `false` for pages.
 
 **Errors**
 
@@ -1610,6 +1628,7 @@ Creates an article.
   "title_en": "Hello World",
   "content_en": "Welcome to my blog.",
   "ai_generated": false,
+  "ai_generated_en": false,
   "tags": ["hello", "world"]
 }
 ```
@@ -1617,8 +1636,10 @@ Creates an article.
 `title` and `content` are the Chinese versions and are always required.
 `title_en` and `content_en` are the optional English versions: an empty string
 (or an omitted key) means "no English version", and the front end then falls back
-to the Chinese text field by field. `ai_generated` is the owner's explicit mark
-("this was written by AI"); the server never infers it.
+to the Chinese text field by field. `ai_generated` and `ai_generated_en` are the
+owner's explicit AI marks for the Chinese and English versions respectively. They
+are independent: marking the English text as AI-generated never marks the Chinese
+text, and vice versa. An omitted key is treated as `false` on create.
 
 **Response `201 Created`**
 
@@ -1630,6 +1651,7 @@ to the Chinese text field by field. `ai_generated` is the owner's explicit mark
   "title_en": "",
   "content_en": "",
   "ai_generated": false,
+  "ai_generated_en": false,
   "created_at": 1700000000,
   "updated_at": 1700000000,
   "tags": ["hello", "world"],
@@ -1668,9 +1690,10 @@ Updates an existing non-deleted article.
 
 `title` and `content` are always applied. `tags` is optional and its absence is meaningful: **omitting it leaves the existing tags untouched**, while sending `[]` clears them. This is why an update that merely edits the body does not need to restate the tags.
 
-`title_en`, `content_en` and `ai_generated` follow the same three-state rule as
-`content`: omit the key to leave it alone, send a string (including an empty one)
-to replace it, send `false` to clear the AI mark.
+`title_en`, `content_en`, `ai_generated` and `ai_generated_en` follow the same
+three-state rule as `content`: omit the key to leave it alone, send a value
+(including an empty string or `false`) to replace it. The two AI flags are
+independent — updating `ai_generated_en` does not change `ai_generated`.
 
 **Response `200 OK`**
 

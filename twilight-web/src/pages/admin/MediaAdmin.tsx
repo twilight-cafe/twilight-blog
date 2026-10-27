@@ -26,6 +26,7 @@ import { useToast } from '../../lib/toast'
 import { Empty, Loading } from '../../components/common'
 import { useDelayedLoading } from '../../lib/loading'
 import { useI18n } from '../../lib/i18n'
+import { usePageParam } from '../../lib/page-param'
 import ProgressiveImage from '../../components/ProgressiveImage'
 import { ImageGroup } from '../../lib/imageGroup'
 import Icon from '../../lib/icons'
@@ -52,7 +53,8 @@ export default function MediaAdmin() {
   const { confirm, prompt } = useDialog()
   const inputRef = useRef<HTMLInputElement>(null)
   const [list, setList] = useState<MediaItem[]>([])
-  const [page, setPage] = useState(1)
+  // 页码进 URL：刷新或后退回来时仍停在原来的页。
+  const [page, setPage] = usePageParam()
   const [totalPages, setTotalPages] = useState(1)
   const [loading, setLoading] = useState(true)
   // 首屏加载超过阈值才显示等待提示（见 lib/loading.ts）。

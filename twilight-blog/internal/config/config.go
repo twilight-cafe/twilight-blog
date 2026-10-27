@@ -17,10 +17,12 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"text/template"
 	"unicode"
 	"unicode/utf8"
 
@@ -133,6 +135,20 @@ const (
 // 400 与升级前 .post-cover img 的写死值一致：新增可配置项不应该顺带改变任何
 // 既有站点的观感。
 const DefaultPostBannerHeight = 400
+
+// AI 翻译（OpenAI 兼容接口）的超时与输出预算。
+//
+// 超时下界 5 秒：再短的等待几乎必然在模型开始输出前就被打断，表现为「总是失败」
+// 却看不出原因；上界 600 秒覆盖长文翻译，同时保证一个卡死的上游不会永久占住
+// 请求 goroutine（服务端 Read/WriteTimeout 是 5 分钟，超过它的配置没有意义）。
+const (
+	DefaultTranslateTimeoutSeconds = 60
+	MinTranslateTimeoutSeconds     = 5
+	MaxTranslateTimeoutSeconds     = 600
+	DefaultTranslateMaxTokens      = 4096
+	MinTranslateMaxTokens          = 256
+	MaxTranslateMaxTokens          = 32768
+)
 
 // validatePostBannerHeight 校验 post_banner_height 的取值。
 // 0 表示「未设置」，交给 ApplyDefaults 兜底；显式写下的值必须落在区间内。
@@ -327,6 +343,199 @@ func (m *MailConfig) ResolveAPIKey() (key string, source string) {
 // 它让文件本身说明「密钥从哪来」，而不是留下一个空字符串让人猜。
 func MailAPIKeyEnvRef() string { return mailAPIKeyEnvPrefix + MailAPIKeyEnvVar }
 
+// TranslateConfig 是 OpenAI 兼容的 AI 翻译配置。
+//
+// 它只支持一种协议：`POST <url>/chat/completions` + `Authorization: Bearer`。
+// 这是 OpenAI 以及绝大多数兼容服务（vLLM、Ollama 的 OpenAI 端点、各类中转）
+// 的公共子集；为差异更大的厂商再开分支只会让「配了却调不通」更难排查。
+//
+// APIKey 以明文保存在 settings.json 里。这是刻意的取舍：本项目是自托管单用户
+// 博客，配置页要能直接编辑密钥；文件权限固定 0600，且 settings.json 已在
+// .gitignore 中（它同时还可能含邮件密钥的引用）。若部署环境不允许明文密钥，
+// 请改用文件权限与磁盘加密，而不是把密钥塞进前端。
+type TranslateConfig struct {
+	// Enabled 控制功能开关。nil（键缺失）表示启用——这个键出现之前写下的
+	// settings.json 里没有它，缺失时必须保持「功能可用」的直觉；真正的可用性
+	// 还取决于 url / api_key / model 是否齐备。
+	Enabled *bool `json:"enabled"`
+	// URL 是 OpenAI 兼容服务的地址。可以写到 `/v1`，也可以直接给完整的
+	// `/v1/chat/completions`；客户端对两种形式都能识别。
+	URL string `json:"url"`
+	// APIKey 是 bearer token。空串表示未配置。
+	APIKey string `json:"api_key"`
+	// Model 是模型名（如 gpt-4o-mini）。
+	Model string `json:"model"`
+	// TimeoutSeconds 是单次翻译请求的超时；0 表示用默认值。
+	TimeoutSeconds int `json:"timeout_seconds"`
+	// MaxTokens 是输出预算；0 表示用默认值。
+	MaxTokens int `json:"max_tokens"`
+	// PromptTemplate 是自定义提示词模板（Go text/template 语法）。空串表示
+	// 使用内置默认模板；模板里用 {{.Title}}/{{.Content}}（或 JSON 安全形式）
+	// 把标题与正文一起代入。
+	PromptTemplate string `json:"prompt_template"`
+	// ThinkingEffort 是思维强度档位（OpenAI 兼容的 reasoning_effort）。
+	// 空串表示不发送该字段，交给模型默认值；本项只对支持该参数的模型生效。
+	ThinkingEffort string `json:"thinking_effort"`
+}
+
+// IsEnabled 报告功能开关是否打开（键缺失 = 打开）。
+func (t *TranslateConfig) IsEnabled() bool {
+	return t == nil || t.Enabled == nil || *t.Enabled
+}
+
+// IsConfigured 报告「现在真的可以发起翻译」：开关打开，且 url / api_key / model
+// 三项都非空。任何一项缺失都只是「未配置」，不是错误——站点照常运行，
+// 翻译端点返回 503 并说明原因。
+func (t *TranslateConfig) IsConfigured() bool {
+	if t == nil || !t.IsEnabled() {
+		return false
+	}
+	return strings.TrimSpace(t.URL) != "" &&
+		strings.TrimSpace(t.APIKey) != "" &&
+		strings.TrimSpace(t.Model) != ""
+}
+
+// normalizeTranslateConfig 去空白并补默认值。nil 会被换成空配置，保证返回值非 nil。
+func normalizeTranslateConfig(t *TranslateConfig) *TranslateConfig {
+	if t == nil {
+		t = &TranslateConfig{}
+	}
+	t.URL = strings.TrimSpace(t.URL)
+	t.APIKey = strings.TrimSpace(t.APIKey)
+	t.Model = strings.TrimSpace(t.Model)
+	t.PromptTemplate = strings.TrimSpace(t.PromptTemplate)
+	t.ThinkingEffort = strings.ToLower(strings.TrimSpace(t.ThinkingEffort))
+	if t.TimeoutSeconds == 0 {
+		t.TimeoutSeconds = DefaultTranslateTimeoutSeconds
+	}
+	if t.MaxTokens == 0 {
+		t.MaxTokens = DefaultTranslateMaxTokens
+	}
+	return t
+}
+
+// ValidateTranslateURL 校验一个 OpenAI 兼容端点地址。
+//
+// 空值合法（功能未配置）。非空时必须是绝对 http/https URL，且不得带用户名密码：
+// 把凭据塞进 URL 会同时出现在日志、错误信息与反向代理的访问日志里，而它本来
+// 就应该走 Authorization 头。
+//
+// 这里刻意**不**限制主机名或私网地址：自托管场景下把翻译服务跑在
+// `http://127.0.0.1:11434/v1` 是正常用法，而能改这个配置的人已经是站长。
+func ValidateTranslateURL(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("invalid translate.url %q: %v", value, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("invalid translate.url %q: scheme must be http or https", value)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("invalid translate.url %q: host is required", value)
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("invalid translate.url %q: credentials must not be embedded in the URL", value)
+	}
+	if parsed.Fragment != "" {
+		return fmt.Errorf("invalid translate.url %q: fragments are not allowed", value)
+	}
+	return nil
+}
+
+// validateTranslatePrompt 校验自定义提示词模板：长度受限，且必须是可解析的
+// text/template。空串合法，表示使用内置默认模板。
+func validateTranslatePrompt(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	const maxPromptRunes = 20_000
+	if utf8.RuneCountInString(value) > maxPromptRunes {
+		return fmt.Errorf("translate.prompt_template must be at most %d characters", maxPromptRunes)
+	}
+	if _, err := template.New("prompt").Parse(value); err != nil {
+		return fmt.Errorf("translate.prompt_template is invalid: %v", err)
+	}
+	return nil
+}
+
+// validateTranslateThinkingEffort 校验思维强度档位。
+//
+// 只接受预设档位，空串表示「不发送该字段」。不同厂商支持的档位并不一致：
+// minimal ~ high 是 OpenAI 的常见集合，xhigh / max / ultra 常见于其他兼容服务；
+// 这里一并放行，真正不被上游接受的档位会在一次翻译后以 400 暴露。
+// 不做自由文本是为了避免拼写错误悄悄变成一次失败请求。
+func validateTranslateThinkingEffort(value string) error {
+	switch value {
+	case "", "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
+		return nil
+	default:
+		return fmt.Errorf(
+			"invalid translate.thinking_effort %q: must be empty, minimal, low, medium, high, xhigh, max or ultra",
+			value)
+	}
+}
+
+// ValidateTranslateConfig 校验整段翻译配置。
+//
+// 规则有两条容易误解，先写在这里：
+//   - URL 为空 = 功能未配置，即使 model / api_key 还留着也合法（方便先关掉再换）；
+//   - URL 非空 = 必须同时有 model 与 api_key。半套配置只会在第一次点击翻译时
+//     才以 503 的形式暴露，不如启动/保存时就拒绝。
+func ValidateTranslateConfig(t *TranslateConfig) error {
+	if t == nil {
+		return nil
+	}
+	if err := ValidateTranslateURL(t.URL); err != nil {
+		return err
+	}
+	if err := validateTranslatePrompt(t.PromptTemplate); err != nil {
+		return err
+	}
+	if err := validateTranslateThinkingEffort(strings.ToLower(strings.TrimSpace(t.ThinkingEffort))); err != nil {
+		return err
+	}
+	if strings.TrimSpace(t.URL) == "" {
+		return nil
+	}
+	if strings.TrimSpace(t.Model) == "" {
+		return fmt.Errorf("translate.model is required when translate.url is set")
+	}
+	if strings.TrimSpace(t.APIKey) == "" {
+		return fmt.Errorf("translate.api_key is required when translate.url is set")
+	}
+	return nil
+}
+
+// validateTranslateNumbers 校验超时与输出预算：0 表示「用默认值」，
+// 显式值必须落在区间内。负数一律拒绝而不是当成 0。
+func validateTranslateNumbers(t *TranslateConfig) error {
+	if t == nil {
+		return nil
+	}
+	if t.TimeoutSeconds < 0 {
+		return fmt.Errorf("invalid translate.timeout_seconds %d: cannot be negative", t.TimeoutSeconds)
+	}
+	if t.TimeoutSeconds > 0 &&
+		(t.TimeoutSeconds < MinTranslateTimeoutSeconds || t.TimeoutSeconds > MaxTranslateTimeoutSeconds) {
+		return fmt.Errorf("invalid translate.timeout_seconds %d: must be between %d and %d (0 means the default %d)",
+			t.TimeoutSeconds, MinTranslateTimeoutSeconds, MaxTranslateTimeoutSeconds, DefaultTranslateTimeoutSeconds)
+	}
+	if t.MaxTokens < 0 {
+		return fmt.Errorf("invalid translate.max_tokens %d: cannot be negative", t.MaxTokens)
+	}
+	if t.MaxTokens > 0 &&
+		(t.MaxTokens < MinTranslateMaxTokens || t.MaxTokens > MaxTranslateMaxTokens) {
+		return fmt.Errorf("invalid translate.max_tokens %d: must be between %d and %d (0 means the default %d)",
+			t.MaxTokens, MinTranslateMaxTokens, MaxTranslateMaxTokens, DefaultTranslateMaxTokens)
+	}
+	return nil
+}
+
 // RateLimitConfig 配置按 IP 的限流额度。
 //
 // 单项额度为 0（或负数）表示「用包内默认值」而不是「禁止请求」——
@@ -449,6 +658,10 @@ type Config struct {
 	// （为空时前台回退到内置文案，而不是显示一片空白）。
 	SiteDescription string `json:"site_description"`
 
+	// SiteDescriptionEN 是站点描述的英文版；空串表示没有英文版，
+	// 前台在英文界面回退到中文描述。
+	SiteDescriptionEN string `json:"site_description_en"`
+
 	// CodeBlockMaxLines 限制 Markdown 围栏代码块（``` 块）在页面上最多显示的行数，
 	// 超出部分在块内上下滚动。0 表示「未设置」，由 ApplyDefaults 兜底成
 	// DefaultCodeBlockMaxLines；显式配置的值必须落在
@@ -535,6 +748,10 @@ type Config struct {
 	// Mail 是 Resend 发信配置。为 nil 时 ApplyDefaults 会补一个空配置，
 	// 于是发信功能处于「已禁用」状态（相关接口返回 503）。
 	Mail *MailConfig `json:"mail"`
+
+	// Translate 是 OpenAI 兼容的 AI 翻译配置。为 nil 时 ApplyDefaults 会补一个
+	// 空配置，于是翻译端点返回 503（未配置），站点其余部分不受影响。
+	Translate *TranslateConfig `json:"translate"`
 }
 
 // Load 读取并规范化 settings.json，必要时就地完成旧格式迁移。
@@ -606,6 +823,7 @@ func Load(path string) (*Config, error) {
 	cfg.AdminUsername = strings.TrimSpace(cfg.AdminUsername)
 	cfg.AdminNickname = strings.TrimSpace(cfg.AdminNickname)
 	cfg.SiteDescription = strings.TrimSpace(cfg.SiteDescription)
+	cfg.SiteDescriptionEN = strings.TrimSpace(cfg.SiteDescriptionEN)
 	cfg.CookieSecure = strings.ToLower(strings.TrimSpace(cfg.CookieSecure))
 
 	// An absent trusted_proxies key means "use the loopback default"; an explicit
@@ -644,6 +862,14 @@ func Load(path string) (*Config, error) {
 	cfg.Mail = normalizeMailConfig(cfg.Mail)
 	if err := ValidateEmailAddress(cfg.Mail.CommentNotifyTo); err != nil {
 		return nil, fmt.Errorf("invalid mail.comment_notify_to: %w", err)
+	}
+
+	cfg.Translate = normalizeTranslateConfig(cfg.Translate)
+	if err := ValidateTranslateConfig(cfg.Translate); err != nil {
+		return nil, err
+	}
+	if err := validateTranslateNumbers(cfg.Translate); err != nil {
+		return nil, err
 	}
 
 	if _, err := logging.ParseLevel(cfg.LogLevel); err != nil {
@@ -796,6 +1022,13 @@ func (c *Config) SiteDescriptionValue() string {
 	return c.SiteDescription
 }
 
+// SiteDescriptionENValue 返回英文站点描述；未配置时返回空串，前台回退中文。
+func (c *Config) SiteDescriptionENValue() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.SiteDescriptionEN
+}
+
 // SetAdminLoginName 只在内存里更新登录名，**不负责落盘**，调用方需自行 Save。
 //
 // 空输入被拒绝：一个空的登录名等于把管理员账号永久锁在门外，
@@ -832,6 +1065,14 @@ func (c *Config) SetSiteDescription(description string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.SiteDescription = strings.TrimSpace(description)
+}
+
+// SetSiteDescriptionEN 只在内存里更新英文站点描述，**不负责落盘**。
+// 空串表示没有英文版，前台在英文界面回退中文。
+func (c *Config) SetSiteDescriptionEN(description string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.SiteDescriptionEN = strings.TrimSpace(description)
 }
 
 // SearchEnabledValue 报告搜索（内嵌 Meilisearch）是否启用。
@@ -1002,6 +1243,49 @@ func (c *Config) SetCommentNotifyTo(address string) error {
 	return nil
 }
 
+// TranslateConfigValue 返回 AI 翻译配置的**副本**（默认值已补齐）。
+//
+// 返回副本而不是指针有两个理由：handler 会把它交给一次 HTTP 请求；
+// 而设置页保存时会并发替换 c.Translate，共享指针会让「这次请求用的是哪份配置」
+// 变得不确定。Enabled 也要深拷贝，否则调用方改写 bool 会直接影响配置对象。
+func (c *Config) TranslateConfigValue() TranslateConfig {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.Translate == nil {
+		value := TranslateConfig{}
+		normalizeTranslateConfig(&value)
+		return value
+	}
+	value := *c.Translate
+	if value.Enabled != nil {
+		enabled := *value.Enabled
+		value.Enabled = &enabled
+	}
+	normalizeTranslateConfig(&value)
+	return value
+}
+
+// SetTranslateConfig 校验并只在内存里更新翻译配置，**不负责落盘**。
+// 调用方（设置 handler）在 Save 失败时必须用 TranslateConfigValue 的旧副本回滚。
+func (c *Config) SetTranslateConfig(next TranslateConfig) error {
+	if err := ValidateTranslateConfig(&next); err != nil {
+		return err
+	}
+	if err := validateTranslateNumbers(&next); err != nil {
+		return err
+	}
+	normalized := normalizeTranslateConfig(&next)
+	if normalized.Enabled != nil {
+		enabled := *normalized.Enabled
+		normalized.Enabled = &enabled
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Translate = normalized
+	return nil
+}
+
 // ValidateEmailAddress 校验一个**纯邮箱地址**（不含显示名）。
 //
 // 空串合法：它表示「不配置」。非空时要求 net/mail 能解析，且解析结果里不能
@@ -1076,6 +1360,10 @@ func (c *Config) ApplyDefaults() {
 	if c.Mail == nil {
 		c.Mail = &MailConfig{}
 	}
+	if c.Translate == nil {
+		c.Translate = &TranslateConfig{}
+	}
+	c.Translate = normalizeTranslateConfig(c.Translate)
 }
 
 // validateCookieSecure 校验 cookie_secure 取值。
@@ -1264,6 +1552,9 @@ func (c *Config) Save(path string) error {
 	c.ApplyDefaults()
 	if c.Mail != nil {
 		c.Mail = normalizeMailConfig(c.Mail)
+	}
+	if c.Translate != nil {
+		c.Translate = normalizeTranslateConfig(c.Translate)
 	}
 	// 旧版明文字段只用于迁移读取，绝不写回磁盘。
 	c.Password = ""

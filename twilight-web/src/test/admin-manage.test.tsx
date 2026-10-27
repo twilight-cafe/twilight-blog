@@ -165,7 +165,8 @@ describe('UsersAdmin', () => {
     await waitFor(() => expect(screen.getAllByText('邮箱已被占用').length).toBeGreaterThan(0))
     expect(container.querySelector('.uedit')).toBeTruthy() // 仍在编辑态
 
-    // 再保存成功
+    // 再保存成功（失败后的 busy=false 与 toast 是两帧，等按钮恢复「保存」再点）。
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeTruthy())
     client.blog.updateUser.mockResolvedValueOnce({ message: 'ok' })
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
     await waitFor(() => expect(client.blog.updateUser).toHaveBeenCalledWith(7, { username: 'alice2', nickname: '爱丽丝2', email: 'a2@x.com' }))

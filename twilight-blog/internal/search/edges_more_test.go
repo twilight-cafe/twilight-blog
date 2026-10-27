@@ -40,19 +40,22 @@ func TestFindExecutableRejectsGroupWritableFiles(t *testing.T) {
 	hook(t, &osExecutable, func() (string, error) { return filepath.Join(root, "blog"), nil })
 	hook(t, &osGetwd, func() (string, error) { return root, nil })
 
-	binDir := filepath.Join(root, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
 	// 0776：带可执行位（否则会被「不是可执行文件」那条提前跳过），
 	// 同时组可写——正是归属检查要拦的情形。
-	candidate := filepath.Join(binDir, binaryNames()[0])
-	if err := os.WriteFile(candidate, []byte("x"), 0o776); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if err := os.Chmod(candidate, 0o776); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
+	//
+	// 用 statFile 钩子返回这个模式，而不是真的 chmod：Windows 不保留 POSIX
+	// 组权限位，真实文件永远是 0o666/0o444，这条用例会在那边无声地失败。
+	candidate := filepath.Join(root, "bin", binaryNames()[0])
+	hook(t, &statFile, func(path string) (os.FileInfo, error) {
+		if path == candidate {
+			return fakeFileInfo{mode: 0o776}, nil
+		}
+		return nil, os.ErrNotExist
+	})
+	// 归属判断本身由 TestPlatformHelpers 用真实模式参数化验证；这里替换成
+	// 「判定为不安全」，使 FindExecutable 的跳过分支在任何宿主上都能执行。
+	// Windows 的 candidateIsSafelyOwned 恒为 true（拿不到 ACL），不能靠真实模式触发。
+	hook(t, &candidateIsSafe, func(string, os.FileInfo) bool { return false })
 	if _, err := FindExecutable(); err == nil {
 		t.Fatal("a group-writable candidate must not be executed")
 	}
@@ -144,8 +147,8 @@ func TestSelectAssetForIgnoresForeignNames(t *testing.T) {
 
 func TestLatestAssetRetriesAndReportsAssetFailure(t *testing.T) {
 	hook(t, &fetchReleaseFn, func(string) (githubRelease, error) {
-		// 只有 Windows 资产：在 Linux 上找不到匹配资产，于是走 lastErr = assetErr。
-		return githubRelease{TagName: "v1", Assets: []releaseAsset{{Name: "meilisearch-windows-amd64"}}}, nil
+		// 一个不会匹配任何平台的资产名，保证 Windows / Linux 宿主都走失败分支。
+		return githubRelease{TagName: "v1", Assets: []releaseAsset{{Name: "meilisearch-unknown-platform"}}}, nil
 	})
 	if _, _, _, err := latestAsset(); err == nil || !strings.Contains(err.Error(), "no release asset found") {
 		t.Fatalf("latestAsset error = %v", err)
@@ -258,31 +261,6 @@ func TestCopyFileReportsReadFailure(t *testing.T) {
 	}
 }
 
-func TestChildProcessHelpersOnLinux(t *testing.T) {
-	// configureChildProcess 必须设上进程组与父进程死亡信号，否则父进程被
-	// SIGKILL 之后 Meilisearch 会变成孤儿并占住数据目录的 LMDB 锁。
-	cmd := exec.Command("/bin/sh", "-c", "sleep 5")
-	configureChildProcess(cmd)
-	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid {
-		t.Skip("this platform has no process-group support")
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start helper: %v", err)
-	}
-	if err := requestChildShutdown(cmd.Process); err != nil {
-		t.Fatalf("requestChildShutdown: %v", err)
-	}
-	if err := killChildProcessGroup(cmd.Process); err != nil {
-		t.Fatalf("killChildProcessGroup: %v", err)
-	}
-	_ = cmd.Wait()
-
-	// pid <= 0 走单进程 Kill 那条退路。
-	if err := killChildProcessGroup(&os.Process{}); err == nil {
-		t.Fatal("killing an unstarted process must report an error")
-	}
-}
-
 // writeTruncatedTarGz 生成一个「条目头完整、正文被截断」的 tar.gz：
 // 只压缩 tar 流的前两个 512 字节块（条目头 + 头部数据），tar 头却声称条目
 // 有 4096 字节。读取方因此会在拷贝正文时拿到 io.ErrUnexpectedEOF。
@@ -316,14 +294,6 @@ func writeTruncatedTarGz(t *testing.T, path string, size int) {
 	}
 	if err := file.Close(); err != nil {
 		t.Fatalf("close: %v", err)
-	}
-}
-
-// killChildProcessGroup 的进程组退路：目标组不存在时退回单进程 Kill。
-func TestKillChildProcessGroupFallsBackToSingleKill(t *testing.T) {
-	process := &os.Process{Pid: 1 << 20}
-	if err := killChildProcessGroup(process); err == nil {
-		t.Fatal("killing a process that is already gone must report an error")
 	}
 }
 

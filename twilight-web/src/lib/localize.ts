@@ -14,7 +14,7 @@
 // 读出来是 undefined。这里把它们与空串同等对待（回退中文），而不是让
 // `<h1>` 渲染出 undefined。
 
-import type { Article, Tag } from 'twilight-blog-api'
+import type { Article, Page, Tag } from 'twilight-blog-api'
 import type { Locale } from './i18n'
 
 /**
@@ -25,7 +25,7 @@ import type { Locale } from './i18n'
  */
 export type LocalizableArticle = Pick<
   Article,
-  'title' | 'content' | 'title_en' | 'content_en' | 'tags' | 'tags_en'
+  'title' | 'content' | 'title_en' | 'content_en' | 'tags' | 'tags_en' | 'ai_generated' | 'ai_generated_en'
 >
 
 /** 能取英文名的标签。name_en 在旧后端上缺席，所以是可选读取。 */
@@ -66,8 +66,47 @@ export function articleTags(article: LocalizableArticle, locale: Locale): string
   return article.tags.map((tag, index) => pickEnglish(english[index], tag))
 }
 
+/** 判断「是否 AI 生成」只需要这两个字段，与标题正文无关。 */
+export type AIGeneratedArticle = Pick<Article, 'ai_generated' | 'ai_generated_en'>
+
+/**
+ * 文章是否带 AI 生成声明 —— **按语言**判断。
+ *
+ * 库里中英文各存一份标记，前台只读当前语言那一份：英文版是 AI 产物时，
+ * 只有英文读者看到声明；中文仍由人撰写，就不该替它认领一个 AI 标记。
+ *
+ * 旧后端没有 ai_generated_en（读出来是 undefined）时，英文界面回退到中文标记，
+ * 与升级前的行为一致；反之中文界面永远只看 ai_generated。
+ */
+export function articleAIGenerated(article: AIGeneratedArticle, locale: Locale): boolean {
+  if (locale !== 'en') return article.ai_generated === true
+  return (article.ai_generated_en ?? article.ai_generated) === true
+}
+
 /** 标签云 / 标签页标题里的标签名。 */
 export function tagName(tag: LocalizableTag, locale: Locale): string {
   if (locale !== 'en') return tag.name
   return pickEnglish(tag.name_en, tag.name)
+}
+
+/**
+ * 独立页面里参与本地化的字段。
+ *
+ * 与文章不同，页面只有标题和正文两份文本；旧后端没有 *_en 键，因此读成可选。
+ */
+export type LocalizablePage = Pick<Page, 'title' | 'content'> & {
+  title_en?: string
+  content_en?: string
+}
+
+/** 页面标题：英文缺失（或只有空白）时回退中文。 */
+export function pageTitle(page: LocalizablePage, locale: Locale): string {
+  if (locale !== 'en') return page.title
+  return pickEnglish(page.title_en, page.title)
+}
+
+/** 页面正文：规则与标题一致。 */
+export function pageContent(page: LocalizablePage, locale: Locale): string {
+  if (locale !== 'en') return page.content
+  return pickEnglish(page.content_en, page.content)
 }

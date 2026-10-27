@@ -50,12 +50,14 @@ func (s *PageService) deletePages(ctx context.Context, ids []int64) {
 	}
 }
 
-func (s *PageService) Create(ctx context.Context, title, content string) (*model.Page, error) {
+func (s *PageService) Create(ctx context.Context, title, titleEN, content, contentEN string) (*model.Page, error) {
 	logging.Debugf("[page] creating page title=%q content_len=%d", title, len(content))
 	now := time.Now().Unix()
 	page := &model.Page{
 		Title:     title,
+		TitleEN:   titleEN,
 		Content:   content,
+		ContentEN: contentEN,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -71,9 +73,9 @@ func (s *PageService) Create(ctx context.Context, title, content string) (*model
 
 // Update 覆盖标题与正文。先读后写，同样存在读-改-写竞态。
 //
-// content 为 nil 表示「这次不改正文」——与文章 Update 同一套语义，理由也同一个：
-// 非指针时只改标题的 PUT 会静默清空正文。
-func (s *PageService) Update(ctx context.Context, id int64, title string, content *string) (*model.Page, error) {
+// content / contentEN / titleEN 为 nil 表示「这次不改这一份」——与文章 Update
+// 同一套语义，理由也同一个：非指针时只改中文标题的 PUT 会静默清空英文版本。
+func (s *PageService) Update(ctx context.Context, id int64, title string, titleEN *string, content, contentEN *string) (*model.Page, error) {
 	logging.Debugf("[page] updating id=%d title=%q content_provided=%t", id, title, content != nil)
 	page, err := s.repo.GetByID(ctx, id)
 	if err != nil {
@@ -82,8 +84,14 @@ func (s *PageService) Update(ctx context.Context, id int64, title string, conten
 	}
 
 	page.Title = title
+	if titleEN != nil {
+		page.TitleEN = *titleEN
+	}
 	if content != nil {
 		page.Content = *content
+	}
+	if contentEN != nil {
+		page.ContentEN = *contentEN
 	}
 	page.UpdatedAt = time.Now().Unix()
 

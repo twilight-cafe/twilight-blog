@@ -42,13 +42,17 @@ export function createPagesApi(http: HttpClient): PagesApi {
     },
 
     createPage(input: CreatePageInput) {
+      const json: Record<string, unknown> = {
+        title: input.title,
+        content: input.content,
+      };
+      // 英文版本省略就是「没有」，服务端按空串写入（与文章创建一致）。
+      if (input.titleEn !== undefined) json.title_en = input.titleEn;
+      if (input.contentEn !== undefined) json.content_en = input.contentEn;
       return http.request<Page>({
         method: 'POST',
         path: '/api/admin/pages',
-        json: {
-          title: input.title,
-          content: input.content,
-        },
+        json,
       });
     },
 
@@ -59,6 +63,13 @@ export function createPagesApi(http: HttpClient): PagesApi {
       // 同 updateArticle：省略正文即「不改」，不要把它变成空串发出去。
       if (input.content !== undefined) {
         json.content = input.content;
+      }
+      // 英文标题 / 正文同样是三态：省略 = 不改，空串 = 清空。
+      if (input.titleEn !== undefined) {
+        json.title_en = input.titleEn;
+      }
+      if (input.contentEn !== undefined) {
+        json.content_en = input.contentEn;
       }
       return http.request<Page>({
         method: 'PUT',

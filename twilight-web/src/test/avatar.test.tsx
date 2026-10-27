@@ -423,6 +423,24 @@ describe('侧栏间距与底栏下划线的样式契约', () => {
     expect(ruleBlock('.post-cover')).toMatch(/margin-top:\s*var\(--top-gap\)/)
   })
 
+  // 头图的视觉契约：高度由站点设置固定，顶部平齐、底部到高度末端渐隐。
+  it('文章头图固定为配置高度，顶部平齐并在末端渐隐', () => {
+    const cover = ruleBlock('.post-cover')
+    expect(cover).toMatch(/height:\s*var\(--post-banner-height, 400px\)/)
+    expect(cover).toMatch(/background:\s*transparent/)
+
+    const frame = ruleBlock('.post-cover .img-frame')
+    expect(frame).toMatch(/height:\s*100%/)
+    expect(frame).toMatch(/mask-image:\s*linear-gradient\(to bottom/)
+    // 结束点必须是 100%：渐隐要一直持续到给定高度的最后。
+    expect(frame).toMatch(/transparent 100%\)/)
+
+    const img = ruleBlock('.post-cover img')
+    expect(img).toMatch(/height:\s*100%/)
+    expect(img).toMatch(/object-fit:\s*cover/)
+    expect(img).toMatch(/object-position:\s*top/)
+  })
+
   it('侧栏永不出现滑动条：弹性分配高度、滑动条隐藏、盒子只做透明度入场', () => {
     // 三件事合起来才是「滑动条总是不出现」：
     //   ① 侧栏按剩余高度分配（作者卡固定、目录盒收缩、目录列表内部滚），
